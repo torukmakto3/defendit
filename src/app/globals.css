@@ -1,0 +1,124 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ink: #101810;
+  --moss: #1f4d2e;
+  --leaf: #3f7a4e;
+  --mist: #e7efe8;
+  --fog: #f3f7f3;
+  --paper: #fbfcf9;
+  --amber: #b45309;
+  --line: rgba(16, 24, 16, 0.12);
+  --shadow: 0 18px 50px rgba(16, 40, 24, 0.08);
+  --background: var(--fog);
+  --foreground: var(--ink);
+}
+
+body {
+  color: var(--foreground);
+  background:
+    radial-gradient(1200px 600px at 10% -10%, #d9eadc 0%, transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, #cfe0d4 0%, transparent 50%),
+    linear-gradient(180deg, #eef4ef 0%, var(--fog) 40%, #e6eee7 100%);
+  min-height: 100vh;
+  font-family: var(--font-body), "Segoe UI", sans-serif;
+}
+
+h1,
+h2,
+h3,
+.brand {
+  font-family: var(--font-display), Georgia, serif;
+  letter-spacing: -0.02em;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-line {
+  0%,
+  100% {
+    transform: scaleX(0.4);
+    opacity: 0.4;
+  }
+  50% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+.animate-rise {
+  animation: rise 0.7s ease-out both;
+}
+
+.animate-rise-delay {
+  animation: rise 0.8s ease-out 0.12s both;
+}
+
+.animate-rise-delay-2 {
+  animation: rise 0.85s ease-out 0.22s both;
+}
+
+.seal-line {
+  transform-origin: left center;
+  animation: pulse-line 2.8s ease-in-out infinite;
+}
+
+.shell {
+  @apply mx-auto w-full max-w-5xl px-5 py-8 sm:px-8;
+}
+
+.panel {
+  background: color-mix(in srgb, var(--paper) 92%, white);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
+.btn {
+  @apply inline-flex items-center justify-center rounded-md px-4 py-2.5 text-sm font-medium transition;
+}
+
+.btn-primary {
+  background: var(--moss);
+  color: #f7fbf7;
+}
+
+.btn-primary:hover {
+  background: #173d24;
+}
+
+.btn-ghost {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+}
+
+.btn-ghost:hover {
+  background: rgba(31, 77, 46, 0.06);
+}
+
+.field {
+  @apply w-full rounded-md border px-3 py-2 text-sm outline-none;
+  border-color: var(--line);
+  background: #fff;
+}
+
+.field:focus {
+  border-color: var(--leaf);
+  box-shadow: 0 0 0 3px rgba(63, 122, 78, 0.15);
+}
+
+.label {
+  @apply mb-1 block text-xs font-medium uppercase tracking-[0.08em];
+  color: color-mix(in srgb, var(--ink) 65%, transparent);
+}
