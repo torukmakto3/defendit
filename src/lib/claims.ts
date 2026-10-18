@@ -23,9 +23,11 @@ export async function extractClaims(documentText: string): Promise<Claim[]> {
     ],
   });
 
+  // Claims become question text: drop markdown heading and emphasis marks.
+  const clean = (t: string) => t.replace(/^\s*#{1,6}\s+/gm, "").replace(/\*\*|__/g, "").replace(/\s+/g, " ").trim();
   return (data.claims || []).map((c, i) => ({
     id: c.id || `claim_${i + 1}`,
-    text: c.text,
+    text: clean(String(c.text || "")),
     section: c.section || "General",
     sourceSpan: c.sourceSpan || c.text.slice(0, 80),
     stakes: c.stakes || "medium",

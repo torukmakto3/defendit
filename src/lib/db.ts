@@ -155,8 +155,8 @@ async function openSqlite(): Promise<Db> {
   const { default: Database } = await import("better-sqlite3");
   // v2 schema lives in a new file so an old prototype DB is never misread.
   const path =
-    process.env.DATABASE_PATH || join(process.cwd(), "data", "defend-it-v2.db");
-  mkdirSync(dirname(path), { recursive: true });
+    process.env.DATABASE_PATH || join(/*turbopackIgnore: true*/ process.cwd(), "data", "defend-it-v2.db");
+  mkdirSync(/*turbopackIgnore: true*/ dirname(path), { recursive: true });
   const raw = new Database(path);
   raw.pragma("journal_mode = WAL");
   raw.pragma("foreign_keys = ON");

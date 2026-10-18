@@ -3,6 +3,7 @@
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMe } from "@/components/auth";
+import { Companion } from "@/components/companion/Companion";
 
 interface Probe {
   id: string;
@@ -117,7 +118,7 @@ export default function DefendPage() {
   if (error && probes.length === 0) {
     return (
       <div className="shell">
-        <p className="text-red-700">{error}</p>
+        <p className="text-danger">{error}</p>
       </div>
     );
   }
@@ -134,10 +135,10 @@ export default function DefendPage() {
     <div className="shell max-w-3xl">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="text-sm uppercase tracking-[0.12em] text-[var(--leaf)]">
+          <p className="eyebrow">
             Defend · text interview
           </p>
-          <h1 className="mt-2 text-4xl text-[var(--moss)]">Live defense</h1>
+          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">Live defense</h1>
         </div>
         <div className="text-right text-sm">
           <div>
@@ -147,20 +148,46 @@ export default function DefendPage() {
         </div>
       </div>
 
-      <div className="panel mt-8 rounded-xl p-6">
-        <p className="text-xs uppercase tracking-wide text-[var(--amber)]">
-          {current.type.replace("_", " ")}
-        </p>
-        <p className="mt-3 whitespace-pre-wrap text-lg leading-relaxed">
-          {current.question}
-        </p>
-        <form onSubmit={submitTurn} className="mt-6 space-y-3">
+      <ol className="mt-6 flex gap-1.5" aria-label="Interview progress">
+        {probes.map((p, i) => (
+          <li
+            key={p.id}
+            aria-current={i === index ? "step" : undefined}
+            className={`h-1.5 flex-1 ${
+              i < index ? "bg-[var(--blueprint)]" : i === index ? "bg-[var(--ink)]" : "bg-[var(--line)]"
+            }`}
+          >
+            <span className="sr-only">
+              Question {i + 1}
+              {i < index ? " answered" : i === index ? " current" : ""}
+            </span>
+          </li>
+        ))}
+      </ol>
+
+      <div className="panel mt-6 grid gap-5 p-5 sm:p-6">
+        <div className="grid grid-cols-[auto_1fr] items-start gap-4">
+          <Companion state={busy ? "thinking" : "listening"} size={64} />
+          <div className="min-w-0">
+            <p
+              className={`mono text-xs uppercase tracking-[0.08em] ${
+                current.type === "planted_error" ? "text-[var(--signal)]" : "text-[var(--blueprint)]"
+              }`}
+            >
+              Probe {String(index + 1).padStart(2, "0")} &middot; {current.type.replace("_", " ")}
+            </p>
+            <p className="mt-2 whitespace-pre-wrap text-lg font-semibold leading-relaxed">
+              {current.question}
+            </p>
+          </div>
+        </div>
+        <form onSubmit={submitTurn} className="space-y-3">
           <textarea
             className="field min-h-36"
             value={answer}
             onChange={(e) => setAnswer(e.target.value)}
             onPaste={() => setPasteEvents((n) => n + 1)}
-            placeholder="Answer in your own words. Timing is recorded as an integrity signal."
+            placeholder="Answer in your own words. Timing is recorded as a separate integrity signal."
             required
             disabled={busy}
           />
@@ -174,7 +201,7 @@ export default function DefendPage() {
               Show my name ({me.displayName}) on the receipt
             </label>
           )}
-          {error && <p className="text-sm text-red-700">{error}</p>}
+          {error && <p className="text-sm text-danger">{error}</p>}
           <button type="submit" className="btn btn-primary" disabled={busy}>
             {busy
               ? index + 1 < probes.length
@@ -186,10 +213,6 @@ export default function DefendPage() {
           </button>
         </form>
       </div>
-      <p className="mt-4 text-xs text-[color-mix(in_srgb,var(--ink)_55%,transparent)]">
-        Voice providers (ElevenLabs Agents / OpenAI Realtime) plug into{" "}
-        <code>src/lib/voice</code>. This build ships a solid text path.
-      </p>
     </div>
   );
 }

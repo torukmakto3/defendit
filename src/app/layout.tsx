@@ -1,18 +1,13 @@
 import type { Metadata } from "next";
-import { Fraunces, Source_Sans_3 } from "next/font/google";
+import { JetBrains_Mono, Public_Sans, Sora } from "next/font/google";
 import Link from "next/link";
 import { AccountMenu } from "@/components/auth";
+import { ThemeToggle, themeBootScript } from "@/components/theme";
 import "./globals.css";
 
-const display = Fraunces({
-  subsets: ["latin"],
-  variable: "--font-display",
-});
-
-const body = Source_Sans_3({
-  subsets: ["latin"],
-  variable: "--font-body",
-});
+const display = Sora({ subsets: ["latin"], weight: ["600", "700"], variable: "--font-display" });
+const body = Public_Sans({ subsets: ["latin"], weight: ["400", "600"], variable: "--font-body" });
+const mono = JetBrains_Mono({ subsets: ["latin"], weight: ["400", "600"], variable: "--font-mono" });
 
 export const metadata: Metadata = {
   title: "Defend It",
@@ -26,21 +21,28 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className={`${display.variable} ${body.variable} antialiased`}>
-        <header className="border-b border-[var(--line)]/70 bg-[color-mix(in_srgb,var(--paper)_70%,transparent)] backdrop-blur">
-          <div className="shell flex items-center justify-between py-4">
-            <Link href="/" className="brand text-xl text-[var(--moss)]">
-              Defend It
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
+      </head>
+      <body className={`${display.variable} ${body.variable} ${mono.variable} antialiased`}>
+        <header className="border-b-[1.5px] border-[var(--ink)] bg-[var(--card)]">
+          <div className="shell flex flex-wrap items-center justify-between gap-3 py-3">
+            <Link href="/" className="flex items-baseline gap-2">
+              <span className="brand text-lg font-bold text-[var(--ink)]">Defend It</span>
+              <span className="mono hidden text-[11px] uppercase tracking-[0.1em] text-[var(--ink-2)] sm:inline">
+                Rev B
+              </span>
             </Link>
-            <nav className="flex items-center gap-4 text-sm text-[color-mix(in_srgb,var(--ink)_70%,transparent)]">
-              <Link href="/request" className="hover:text-[var(--moss)]">
+            <nav className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--ink-2)]">
+              <Link href="/request" className="hover:text-[var(--blueprint)]">
                 Request
               </Link>
-              <Link href="/dashboard" className="hover:text-[var(--moss)]">
+              <Link href="/dashboard" className="hover:text-[var(--blueprint)]">
                 Dashboard
               </Link>
               <AccountMenu />
+              <ThemeToggle />
             </nav>
           </div>
         </header>

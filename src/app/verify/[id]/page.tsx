@@ -67,16 +67,16 @@ export default function VerifyPage() {
 
   return (
     <div className="shell max-w-2xl">
-      <h1 className="text-4xl text-[var(--moss)]">Verify receipt</h1>
-      <p className="mt-3 text-[color-mix(in_srgb,var(--ink)_70%,transparent)]">
+      <h1 className="text-3xl font-bold sm:text-4xl">Verify receipt</h1>
+      <p className="mt-3 text-[var(--ink-2)]">
         Drop your copy of the file. Hashing happens in your browser — the file
         never leaves your machine.
       </p>
 
-      {error && <p className="mt-6 text-red-700">{error}</p>}
+      {error && <p className="mt-6 text-danger">{error}</p>}
 
       {expected && (
-        <div className="panel mt-8 space-y-4 rounded-xl p-6">
+        <div className="panel mt-8 space-y-4 p-6">
           <p>
             Receipt: <strong>{outcome} · {score}/100</strong>
           </p>
@@ -98,7 +98,7 @@ export default function VerifyPage() {
           )}
           {result === "mismatch" && (
             <div>
-              <p className="text-lg font-medium text-red-800">
+              <p className="text-lg font-medium text-danger">
                 ✗ Doesn&apos;t match — the file was edited or swapped.
               </p>
               {gotHash && (

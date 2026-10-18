@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { Companion, type CompanionState } from "@/components/companion/Companion";
 
 interface GapItem {
   section: string;
@@ -19,6 +20,8 @@ export default function LearnPage() {
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The coach's read of the last answer drives the companion's reaction.
+  const [reaction, setReaction] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -39,6 +42,7 @@ export default function LearnPage() {
         if (turn.error) throw new Error(turn.error);
         setCoachMessage(turn.coachMessage);
         setGaps(turn.gaps || []);
+        setReaction(turn.gapHint?.strength ?? null);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed");
       } finally {
@@ -61,6 +65,7 @@ export default function LearnPage() {
       if (turn.error) throw new Error(turn.error);
       setCoachMessage(turn.coachMessage);
       setGaps(turn.gaps || []);
+      setReaction(turn.gapHint?.strength ?? null);
       setDone(Boolean(turn.done));
       setAnswer("");
     } catch (err) {
@@ -70,24 +75,37 @@ export default function LearnPage() {
     }
   }
 
+  const companionState: CompanionState = busy
+    ? "thinking"
+    : answer.trim()
+      ? "listening"
+      : reaction === "strong"
+        ? "surprised"
+        : reaction === "weak"
+          ? "skeptical"
+          : "listening";
+
   return (
     <div className="shell max-w-3xl">
       <div className="flex items-end justify-between gap-4">
         <div>
-          <p className="text-sm uppercase tracking-[0.12em] text-[var(--leaf)]">
+          <p className="eyebrow">
             Learn · private
           </p>
-          <h1 className="mt-2 text-4xl text-[var(--moss)]">Socratic coach</h1>
+          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">Socratic coach</h1>
         </div>
         <Link href={`/d/${token}/defend`} className="btn btn-primary">
           Ready to Defend
         </Link>
       </div>
 
-      <div className="panel mt-8 rounded-xl p-6">
-        <p className="text-lg leading-relaxed">{coachMessage}</p>
+      <div className="panel mt-8 grid gap-5 p-5 sm:p-6">
+        <div className="grid grid-cols-[auto_1fr] items-start gap-4">
+          <Companion state={companionState} size={64} />
+          <p className="min-w-0 text-lg leading-relaxed" aria-live="polite">{coachMessage}</p>
+        </div>
         {!done && (
-          <form onSubmit={submitAnswer} className="mt-6 space-y-3">
+          <form onSubmit={submitAnswer} className="space-y-3">
             <textarea
               className="field min-h-28"
               value={answer}
@@ -95,36 +113,44 @@ export default function LearnPage() {
               placeholder="Explain in your own words…"
               disabled={busy}
             />
-            {error && <p className="text-sm text-red-700">{error}</p>}
+            {error && <p className="text-sm text-danger">{error}</p>}
             <button type="submit" className="btn btn-primary" disabled={busy}>
               {busy ? "Thinking…" : "Reply"}
             </button>
           </form>
         )}
         {done && (
-          <p className="mt-6 text-sm text-[var(--leaf)]">
-            Prep complete. Your gap map is below — nothing from Learn is shared.
+          <p className="text-sm text-[var(--ok)]">
+            Prep complete. Your gap map is below. Nothing from Learn is shared.
           </p>
         )}
       </div>
 
       <div className="mt-8">
-        <h2 className="text-2xl text-[var(--moss)]">Gap map</h2>
+        <h2 className="text-2xl font-bold">Gap map</h2>
         {gaps.length === 0 ? (
-          <p className="mt-2 text-sm text-[color-mix(in_srgb,var(--ink)_60%,transparent)]">
+          <p className="mt-2 text-sm text-[var(--ink-2)]">
             Gaps appear as you answer.
           </p>
         ) : (
           <ul className="mt-4 space-y-3">
             {gaps.map((g, i) => (
-              <li key={`${g.section}-${i}`} className="panel rounded-lg px-4 py-3">
+              <li key={`${g.section}-${i}`} className="panel px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <strong>{g.section}</strong>
-                  <span className="text-xs uppercase tracking-wide text-[var(--amber)]">
+                  <span
+                    className={`mono text-xs uppercase tracking-[0.08em] ${
+                      g.strength === "strong"
+                        ? "text-[var(--ok)]"
+                        : g.strength === "weak"
+                          ? "text-[var(--signal)]"
+                          : "text-[var(--ink-2)]"
+                    }`}
+                  >
                     {g.strength}
                   </span>
                 </div>
-                <p className="mt-1 text-sm text-[color-mix(in_srgb,var(--ink)_70%,transparent)]">
+                <p className="mt-1 text-sm text-[var(--ink-2)]">
                   {g.note}
                 </p>
               </li>

@@ -82,13 +82,13 @@ export default function AdminDetailPage() {
       <Link href="/admin" className="text-sm text-[var(--moss)] underline">
         ← Admin list
       </Link>
-      <h1 className="mt-4 text-4xl text-[var(--moss)]">Grade session</h1>
+      <h1 className="mt-4 text-3xl font-bold sm:text-4xl">Grade session</h1>
       <p className="mt-2 text-sm">
         {detail.session.creator_name ?? "—"} · {detail.session.creator_email}
       </p>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
-        <div className="panel rounded-xl p-5">
+        <div className="panel p-5">
           <h2 className="text-xl">AI council</h2>
           <ul className="mt-3 space-y-2 text-sm">
             {detail.grades.map((g) => (
@@ -124,7 +124,7 @@ export default function AdminDetailPage() {
           )}
         </div>
 
-        <form onSubmit={save} className="panel space-y-3 rounded-xl p-5">
+        <form onSubmit={save} className="panel space-y-3 p-5">
           <h2 className="text-xl">Human grade</h2>
           <div>
             <label className="label" htmlFor="score">
@@ -159,13 +159,13 @@ export default function AdminDetailPage() {
       </div>
 
       <div className="mt-8">
-        <h2 className="text-2xl text-[var(--moss)]">Transcript</h2>
+        <h2 className="text-2xl font-bold">Transcript</h2>
         {detail.session.purged && (
           <p className="mt-2 text-sm opacity-70">Transcript deleted after the retention window.</p>
         )}
         <div className="mt-4 space-y-3">
           {turns.map((t, i) => (
-            <div key={i} className="panel rounded-lg p-4 text-sm">
+            <div key={i} className="panel p-4 text-sm">
               <p className="font-medium">Q: {t.question}</p>
               <p className="mt-2">A: {t.answer}</p>
               <p className="mt-1 text-xs opacity-60">{t.latencyMs} ms</p>

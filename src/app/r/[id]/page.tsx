@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { Companion } from "@/components/companion/Companion";
 import type { SignedReceipt } from "@/lib/types";
 
 interface ReceiptView {
@@ -28,7 +29,7 @@ export default function ReceiptPage() {
   if (error) {
     return (
       <div className="shell">
-        <p className="text-red-700">{error}</p>
+        <p className="text-danger">{error}</p>
       </div>
     );
   }
@@ -43,78 +44,66 @@ export default function ReceiptPage() {
   const p = data.receipt.payload;
   const diff = p.difficulty.charAt(0).toUpperCase() + p.difficulty.slice(1);
 
+  const defended = p.outcome === "Defended";
+
   return (
     <div className="shell max-w-3xl">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <p className="text-sm uppercase tracking-[0.12em] text-[var(--leaf)]">
-            Understanding receipt
-          </p>
-          <h1 className="mt-2 text-4xl text-[var(--moss)]">
-            {p.score}/100 · {diff}
-          </h1>
-          <p className="mt-2 text-sm">
-            {data.signatureValid ? "✓ Signature valid" : "✗ Signature invalid"} ·{" "}
-            {new Date(p.createdAt).toLocaleString()}
+      <div className="grid grid-cols-[auto_1fr] items-center gap-4 sm:gap-5">
+        <Companion state={defended ? "surprised" : p.outcome === "Not defended" ? "skeptical" : "listening"} size={72} />
+        <div className="min-w-0">
+          <p className="eyebrow">Understanding receipt</p>
+          <h1 className="mt-1 text-3xl font-bold sm:text-4xl">{p.outcome}</h1>
+          <p className="mt-1 text-sm text-[var(--ink-2)]">
+            <span className={data.signatureValid ? "text-[var(--ok)]" : "text-danger"}>
+              {data.signatureValid ? "Signature valid" : "Signature invalid"}
+            </span>{" "}
+            &middot; {new Date(p.createdAt).toLocaleString()}
           </p>
         </div>
+      </div>
+
+      <div className="relative mt-10">
+        {defended && <span className="approved absolute -top-6 right-3 bg-[var(--card)] text-lg">APPROVED</span>}
+        <div className="titleblock">
+          <div><small>Outcome</small><b>{p.outcome}</b></div>
+          <div><small>Score</small><b>{p.score}/100</b></div>
+          <div><small>Level</small><b>{diff}</b></div>
+          <div><small>Date</small><b>{p.createdAt.slice(0, 10)}</b></div>
+          <div><small>Strong / partial / weak</small><b>{p.bands.strong} / {p.bands.partial} / {p.bands.weak}</b></div>
+          <div><small>Integrity (separate)</small><b>{p.integrity.status}</b></div>
+        </div>
+        <div className="titleblock titleblock-rows">
+          <div><small>SHA-256 of the defended file</small><b>{p.deliverable.sha256}</b></div>
+          <div>
+            <small>Defended by</small>
+            <b>
+              {p.creator
+                ? `${p.creator.displayName} (self-reported name, verified email sign-in)`
+                : "Not disclosed by the creator"}
+            </b>
+          </div>
+          <div><small>Receipt</small><b>{p.id} &middot; rubric {p.rubricVersion}</b></div>
+        </div>
+      </div>
+
+      <p className="mt-4 text-xs text-[var(--ink-2)]">
+        This receipt holds no document content, answers, file name or email. The deliverable stays
+        with the people it was sent to; drop it on the verify page to check it matches.
+      </p>
+
+      <div className="panel mt-8 p-5">
+        <h2 className="text-xl font-bold">Send it your way</h2>
+        <p className="mt-2 text-sm text-[var(--ink-2)]">
+          Download the stamp or printable cover, attach it to the same file you defended, and send
+          it by email, Slack or Docs. The receiver opens the verify link or drops the file to check
+          the hash. No account needed.
+        </p>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={`/api/stamp/${p.id}`}
-          alt="Defend It stamp"
-          className="h-[90px] w-auto rounded-md border border-[var(--line)] bg-white"
+          alt={`Defend It stamp: ${p.outcome}, ${p.score} of 100, ${diff}`}
+          className="mt-4 h-auto w-full max-w-[460px]"
         />
-      </div>
-
-      <div className="panel mt-8 space-y-4 rounded-xl p-6">
-        <div>
-          <div className="label">Outcome</div>
-          <div className="text-xl">{p.outcome}</div>
-        </div>
-        <div>
-          <div className="label">Deliverable fingerprint</div>
-          <div className="mt-1 break-all font-mono text-xs">
-            sha256:{p.deliverable.sha256}
-          </div>
-          <div className="text-xs opacity-70">{p.deliverable.byteLength.toLocaleString()} bytes</div>
-        </div>
-        <div>
-          <div className="label">Defended by</div>
-          <div>
-            {p.creator
-              ? `${p.creator.displayName} (name given by the creator, who signed in with a verified email)`
-              : "Not disclosed by the creator"}
-          </div>
-        </div>
-        <div className="grid gap-6 sm:grid-cols-2">
-          <div>
-            <div className="label">Claims probed</div>
-            <ul className="mt-2 space-y-1 text-sm">
-              <li className="flex justify-between gap-3"><span>Strong</span><strong>{p.bands.strong}</strong></li>
-              <li className="flex justify-between gap-3"><span>Partial</span><strong>{p.bands.partial}</strong></li>
-              <li className="flex justify-between gap-3"><span>Weak</span><strong>{p.bands.weak}</strong></li>
-            </ul>
-          </div>
-          <div>
-            <div className="label">Integrity (separate from score)</div>
-            <p className="mt-2 text-sm">
-              Status: <strong>{p.integrity.status}</strong>
-            </p>
-          </div>
-        </div>
-        <p className="text-xs opacity-70">
-          This receipt holds no document content, answers, file name or email. The deliverable
-          stays with the people it was sent to; drop it on the verify page to check it matches.
-        </p>
-      </div>
-
-      <div className="panel mt-8 rounded-xl p-5">
-        <h2 className="text-xl text-[var(--moss)]">Send it your way</h2>
-        <p className="mt-2 text-sm text-[color-mix(in_srgb,var(--ink)_70%,transparent)]">
-          Download the stamp or printable cover, attach it to the same file you
-          defended, and send via email, Slack, or Docs — no new workflow for the
-          receiver. They can open the verify link or drop the file to check the hash.
-        </p>
         <div className="mt-4 flex flex-wrap gap-3 text-sm">
           <a href={`/api/stamp/${p.id}`} className="btn btn-primary" download>
             Download stamp SVG
@@ -132,7 +121,7 @@ export default function ReceiptPage() {
           </Link>
         </div>
       </div>
-      <p className="mt-4 text-xs text-[color-mix(in_srgb,var(--ink)_55%,transparent)]">
+      <p className="mt-4 text-xs text-[var(--ink-2)]">
         Graded with {p.modelVersions.join(", ")} · {p.rubricVersion}
       </p>
     </div>

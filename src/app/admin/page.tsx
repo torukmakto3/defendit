@@ -29,15 +29,15 @@ export default function AdminPage() {
 
   return (
     <div className="shell">
-      <h1 className="text-4xl text-[var(--moss)]">Admin · human grading</h1>
-      <p className="mt-3 text-[color-mix(in_srgb,var(--ink)_70%,transparent)]">
+      <h1 className="text-3xl font-bold sm:text-4xl">Admin · human grading</h1>
+      <p className="mt-3 text-[var(--ink-2)]">
         Pilot calibration: open a transcript, enter a human score, compare to the
         AI council.
       </p>
-      {error && <p className="mt-6 text-red-700">{error} — admins are listed in ADMIN_EMAILS.</p>}
-      <div className="mt-8 overflow-x-auto panel rounded-xl">
+      {error && <p className="mt-6 text-danger">{error} — admins are listed in ADMIN_EMAILS.</p>}
+      <div className="mt-8 overflow-x-auto panel">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-[var(--line)] text-xs uppercase tracking-wide">
+          <thead className="mono border-b-[1.5px] border-[var(--ink)] text-[11px] uppercase tracking-[0.08em] text-[var(--ink-2)]">
             <tr>
               <th className="px-4 py-3">Title</th>
               <th className="px-4 py-3">Creator</th>

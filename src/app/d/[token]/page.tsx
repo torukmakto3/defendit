@@ -68,7 +68,7 @@ export default function CreatorEntryPage() {
   if (error && !data) {
     return (
       <div className="shell">
-        <p className="text-red-700">{error}</p>
+        <p className="text-danger">{error}</p>
       </div>
     );
   }
@@ -85,11 +85,11 @@ export default function CreatorEntryPage() {
 
   return (
     <div className="shell max-w-2xl">
-      <p className="text-sm uppercase tracking-[0.12em] text-[var(--leaf)]">
+      <p className="eyebrow">
         {data.kind === "receiver" ? "Defense request" : "Your deliverable"}
       </p>
-      <h1 className="mt-2 text-4xl text-[var(--moss)]">{data.title}</h1>
-      <p className="mt-3 text-[color-mix(in_srgb,var(--ink)_70%,transparent)]">
+      <h1 className="mt-2 text-3xl font-bold sm:text-4xl">{data.title}</h1>
+      <p className="mt-3 text-[var(--ink-2)]">
         Difficulty <strong>{data.difficulty}</strong> · status <strong>{data.status}</strong>
       </p>
       {data.notes && data.kind === "receiver" && (
@@ -103,7 +103,7 @@ export default function CreatorEntryPage() {
       )}
 
       {me && data.isOwner && !data.isCreator && (
-        <div className="panel mt-8 rounded-xl p-6">
+        <div className="panel mt-8 p-6">
           <p>
             You requested this defense. Share this page&apos;s link with the creator. Results appear on
             your <Link className="text-[var(--moss)] underline" href="/dashboard">dashboard</Link>.
@@ -115,11 +115,11 @@ export default function CreatorEntryPage() {
       )}
 
       {me && !mayUpload && !data.isOwner && (
-        <p className="panel mt-8 rounded-xl p-6">This defense belongs to another account.</p>
+        <p className="panel mt-8 p-6">This defense belongs to another account.</p>
       )}
 
       {me && mayUpload && !d && (
-        <form onSubmit={onUpload} className="panel mt-8 space-y-4 rounded-xl p-6">
+        <form onSubmit={onUpload} className="panel mt-8 space-y-4 p-6">
           <p className="text-sm">
             Upload the exact file you will defend (PDF, DOCX, XLSX, CSV, TXT or MD). We keep its SHA-256
             fingerprint, not the file. The extracted text is encrypted and deleted when you finish.
@@ -132,7 +132,7 @@ export default function CreatorEntryPage() {
       )}
 
       {me && data.isCreator && d && (
-        <div className="panel mt-8 space-y-4 rounded-xl p-6">
+        <div className="panel mt-8 space-y-4 p-6">
           <p>
             Uploaded <strong>{d.fileName ?? "file (name purged)"}</strong> · {d.claimCount} claims
           </p>
@@ -157,7 +157,7 @@ export default function CreatorEntryPage() {
         </div>
       )}
 
-      {error && <p className="mt-4 text-sm text-red-700">{error}</p>}
+      {error && <p className="mt-4 text-sm text-danger">{error}</p>}
     </div>
   );
 }

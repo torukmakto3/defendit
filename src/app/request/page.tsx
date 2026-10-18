@@ -40,8 +40,8 @@ export default function RequestPage() {
 
   return (
     <div className="shell max-w-2xl">
-      <h1 className="text-4xl text-[var(--moss)]">Request a defense</h1>
-      <p className="mt-3 text-[color-mix(in_srgb,var(--ink)_70%,transparent)]">
+      <h1 className="text-3xl font-bold sm:text-4xl">Request a defense</h1>
+      <p className="mt-3 text-[var(--ink-2)]">
         Pick a difficulty, get a link, send it to the creator. They upload and
         defend — nothing to install.
       </p>
@@ -51,8 +51,8 @@ export default function RequestPage() {
           <SignInCard title="Sign in to request a defense" />
         </div>
       ) : result ? (
-        <div className="panel mt-8 rounded-xl p-6">
-          <p className="text-sm uppercase tracking-wide text-[var(--leaf)]">
+        <div className="panel mt-8 p-6">
+          <p className="eyebrow">
             Link ready
           </p>
           <p className="mt-3 break-all font-mono text-sm">{result.shareUrl}</p>
@@ -70,7 +70,7 @@ export default function RequestPage() {
           </div>
         </div>
       ) : (
-        <form onSubmit={onSubmit} className="panel mt-8 space-y-4 rounded-xl p-6">
+        <form onSubmit={onSubmit} className="panel mt-8 space-y-4 p-6">
           <div>
             <label className="label" htmlFor="title">
               Deliverable title
@@ -99,7 +99,7 @@ export default function RequestPage() {
             </label>
             <textarea id="notes" name="notes" className="field min-h-24" />
           </div>
-          {error && <p className="text-sm text-red-700">{error}</p>}
+          {error && <p className="text-sm text-danger">{error}</p>}
           <button type="submit" className="btn btn-primary" disabled={loading}>
             {loading ? "Creating…" : "Create defense link"}
           </button>
