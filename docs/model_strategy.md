@@ -40,7 +40,7 @@ You meant **Jev** (TypeSafe “System One”): unstructured state in → **typed
 
 **Where not to use it:** generating interview questions or coaching dialogue (needs generative models). Keep arithmetic and hash/signature in code — Jev’s own docs warn against trusting it for precise numbers.
 
-**Beta call:** optional `JEV_API_KEY` / OpenRouter Jev for decision steps; prefer `autotrust/JEV` self-hosted if we must stay fully OSS. Groq Llama remains the workhorse for generative turns.
+**Beta call:** generative turns go through Liquid Inference (`LIQUID_API_KEY`, pinned model ids, `x-liquid-retention: none`). Jev decisions use Liquid `POST /v1/systemone` only when a decision deployment is on the book; until then the in-code heuristic stands. Do not self-host the 18–54 GB AutoTrust student for beta. Groq remains the speech path.
 
 ## Cost sketch (hypothesis)
 

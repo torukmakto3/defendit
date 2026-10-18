@@ -2,6 +2,7 @@ import { createAnthropicProvider } from "./anthropic";
 import { createMockProvider } from "./mock";
 import {
   createGroqProvider,
+  createLiquidProvider,
   createOllamaProvider,
   createOpenAICompatProvider,
   createOpenRouterProvider,
@@ -16,6 +17,7 @@ function hasAnyLiveKey(): boolean {
   return Boolean(
     process.env.OPENAI_API_KEY ||
       process.env.ANTHROPIC_API_KEY ||
+      process.env.LIQUID_API_KEY ||
       process.env.GROQ_API_KEY ||
       process.env.OPENROUTER_API_KEY ||
       process.env.OLLAMA_BASE_URL ||
@@ -42,6 +44,16 @@ export function getPrimaryLlm(): LlmProvider {
   if (useMockLlm()) return createMockProvider("mock-defend-v1");
 
   const prefer = preferProvider();
+
+  if (
+    (prefer === "liquid" || (!prefer && process.env.LIQUID_API_KEY)) &&
+    process.env.LIQUID_API_KEY
+  ) {
+    return createLiquidProvider(
+      process.env.LIQUID_API_KEY,
+      process.env.LIQUID_MODEL || "llama-3.3-70b-instruct",
+    );
+  }
 
   if (prefer === "ollama" || process.env.OLLAMA_BASE_URL) {
     if (prefer === "ollama" || !prefer) return createOllamaProvider();
@@ -83,7 +95,7 @@ export function getPrimaryLlm(): LlmProvider {
 
 /**
  * Grading council: several models from different providers when keys exist.
- * Prefers open-weight hosts (Groq / OpenRouter / Ollama) for a cheap beta.
+ * Liquid pins two model ids. Groq, OpenRouter, and Ollama still join when their keys are set.
  */
 export function getGradingCouncil(): LlmProvider[] {
   if (useMockLlm()) {
@@ -104,6 +116,18 @@ export function getGradingCouncil(): LlmProvider[] {
     council.push(p);
   };
 
+  if (process.env.LIQUID_API_KEY) {
+    const primary = process.env.LIQUID_MODEL;
+    const pinned =
+      primary && primary !== "liquid.auto" ? primary : "llama-3.3-70b-instruct";
+    add(createLiquidProvider(process.env.LIQUID_API_KEY, pinned));
+    add(
+      createLiquidProvider(
+        process.env.LIQUID_API_KEY,
+        process.env.LIQUID_MODEL_B || "qwen3-14b",
+      ),
+    );
+  }
   if (process.env.GROQ_API_KEY) {
     add(createGroqProvider(process.env.GROQ_API_KEY));
     if (process.env.GROQ_MODEL_B) {

@@ -10,6 +10,7 @@ export function createOpenAICompatProvider(opts: {
   apiKey?: string;
   baseUrl: string;
   model: string;
+  headers?: Record<string, string>;
 }): LlmProvider {
   const base = opts.baseUrl.replace(/\/$/, "");
   return {
@@ -18,6 +19,7 @@ export function createOpenAICompatProvider(opts: {
     async complete(req: LlmRequest): Promise<LlmResponse> {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
+        ...opts.headers,
       };
       if (opts.apiKey) headers.Authorization = `Bearer ${opts.apiKey}`;
 
@@ -87,5 +89,29 @@ export function createOpenRouterProvider(
     apiKey,
     baseUrl: process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1",
     model,
+  });
+}
+
+const LIQUID_BASE = "https://router.inference.ai.exchange/v1";
+
+/**
+ * Architect Liquid Inference. Pin a model id. liquid.auto may swap the
+ * deployment, so grading must not use it. Retention none is a hard buyer rule.
+ */
+export function createLiquidProvider(
+  apiKey: string,
+  model = process.env.LIQUID_MODEL || "llama-3.3-70b-instruct",
+): LlmProvider {
+  return createOpenAICompatProvider({
+    id: model,
+    provider: "liquid",
+    apiKey,
+    baseUrl: process.env.LIQUID_BASE_URL || LIQUID_BASE,
+    model,
+    headers: {
+      "x-liquid-retention": "none",
+      "x-liquid-cap-usd": process.env.LIQUID_CAP_USD || "0.05",
+      "x-liquid-tag": "defend-it",
+    },
   });
 }
