@@ -123,21 +123,28 @@ async function main() {
   check(defend.status === 200 && defend.json.probes?.length > 0, `defend started (${defend.json.probes?.length} probes)`);
   check(!JSON.stringify(defend.json).includes("expectedFocus"), "expected answers are not sent to the browser");
 
-  const now = Date.now();
-  const turns = defend.json.probes.map((p: { id: string; type: string; question: string }, i: number) => ({
-    id: `t${i}`,
-    probeId: p.id,
-    question: i === 0 ? "Swapped easy question?" : p.question,
-    answer:
-      p.type === "planted_error"
-        ? "That excerpt was altered — the figure does not match the unit economics section of the memo."
-        : "The recommendation rests on churn near 1.2% and LTV/CAC above 3. If churn doubled, IRR falls first and the round size should shrink.",
-    startedAt: new Date(now - 9000 - i * 1700).toISOString(),
-    endedAt: new Date(now).toISOString(),
-    latencyMs: 9000 + i * 1700,
-    followUpIndex: 0,
-  }));
-  const done = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId, turns, showName: true }, ana);
+  const probes = defend.json.probes as { id: string; type: string; question: string }[];
+  const skip = await post("/api/sessions/defend/answer", { sessionId: defend.json.sessionId, probeId: probes[1].id, answer: "skipping ahead" }, ana);
+  check(skip.status === 409, "answers must follow the server's question order");
+  for (const p of probes) {
+    const saved = await post(
+      "/api/sessions/defend/answer",
+      {
+        sessionId: defend.json.sessionId,
+        probeId: p.id,
+        answer:
+          p.type === "planted_error"
+            ? "That excerpt was altered — the figure does not match the unit economics section of the memo."
+            : "The recommendation rests on churn near 1.2% and LTV/CAC above 3. If churn doubled, IRR falls first and the round size should shrink.",
+      },
+      ana,
+    );
+    if (saved.status !== 200) throw new Error(`FAILED: answer not saved — ${saved.text}`);
+  }
+  console.log(`  ✓ ${probes.length} answers recorded server-side`);
+  const forged = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId, turns: [{ probeId: "x", answer: "forged", latencyMs: 9000 }] }, mallory);
+  check(forged.status === 404, "another account cannot complete this defense");
+  const done = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId, showName: true }, ana);
   check(done.status === 200, `defense graded: ${done.json?.receipt?.payload?.outcome} ${done.json?.score}/100${done.status !== 200 ? ` — ${done.text}` : ""}`);
 
   const id = done.json.receipt.payload.id as string;
@@ -159,7 +166,7 @@ async function main() {
 
   const again = await post("/api/sessions/start", { token, mode: "learn" }, ana);
   check(again.status === 410, "document text purged once the defense completed");
-  const twice = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId, turns }, ana);
+  const twice = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId }, ana);
   check(twice.status === 409, "a defense cannot be graded twice");
 
   const dash = await call("/api/dashboard", { cookie: ana });

@@ -7,22 +7,10 @@ import { completeDefendSession } from "@/lib/services";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-const turnSchema = z.object({
-  id: z.string().max(64),
-  probeId: z.string().max(64),
-  question: z.string().max(2000),
-  answer: z.string().max(4000),
-  startedAt: z.string().max(40),
-  endedAt: z.string().max(40),
-  latencyMs: z.number(),
-  followUpIndex: z.number(),
-});
-
 const schema = z.object({
   sessionId: z.string().min(1).max(64),
-  turns: z.array(turnSchema).min(1).max(40),
-  pasteEvents: z.number().optional(),
-  focusBlurEvents: z.number().optional(),
+  pasteEvents: z.number().int().min(0).max(10_000).optional(),
+  focusBlurEvents: z.number().int().min(0).max(10_000).optional(),
   showName: z.boolean().optional(),
 });
 

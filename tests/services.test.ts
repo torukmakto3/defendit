@@ -23,10 +23,11 @@ import {
   listDashboard,
   publicProbes,
   purgeExpired,
-  reconcileTurns,
+  recordDefendAnswer,
   startSession,
 } from "../src/lib/services";
 import type { InterviewPlan, TurnRecord } from "../src/lib/types";
+
 
 const memo = readFileSync(join(__dirname, "..", "fixtures", "sample-memo.md"));
 
@@ -46,17 +47,20 @@ async function signIn(email: string): Promise<{ user: User; cookie: string }> {
   return { user: res!.user, cookie: `di_session=${res!.sessionToken}` };
 }
 
-function answersFor(plan: { probes: { id: string; question: string }[] }): TurnRecord[] {
-  return plan.probes.map((p, i) => ({
-    id: `t${i}`,
-    probeId: p.id,
-    question: p.question,
-    answer: `Because the unit economics section shows churn near 1.2% and LTV/CAC above 3; if churn doubles the recommendation weakens first. (${i})`,
-    startedAt: new Date().toISOString(),
-    endedAt: new Date().toISOString(),
-    latencyMs: 6000 + i * 1700,
-    followUpIndex: 0,
-  }));
+/** Answer every probe through the server, in plan order (idempotent across racing callers). */
+async function answerAll(session: { sessionId: string; plan: { probes: { id: string }[] } }, user: User) {
+  for (const [i, p] of session.plan.probes.entries()) {
+    try {
+      await recordDefendAnswer({
+        sessionId: session.sessionId,
+        user,
+        probeId: p.id,
+        answer: `Because the unit economics section shows churn near 1.2% and LTV/CAC above 3; if churn doubles the recommendation weakens first. (${i})`,
+      });
+    } catch (e) {
+      if ((e as { status?: number }).status !== 409) throw e;
+    }
+  }
 }
 
 describe("magic-link auth", () => {
@@ -115,10 +119,10 @@ describe("creator flow: process and purge", () => {
     expect(turn.coachMessage.length).toBeGreaterThan(0);
 
     const defend = await startSession({ token: ingest.token, user, mode: "defend" });
+    await answerAll(defend, user);
     const result = await completeDefendSession({
       sessionId: defend.sessionId,
       user,
-      turns: answersFor(defend.plan),
       showName: true,
     });
 
@@ -147,7 +151,7 @@ describe("creator flow: process and purge", () => {
       startSession({ token: ingest.token, user, mode: "defend" }),
     ).rejects.toMatchObject({ status: 409 });
     await expect(
-      completeDefendSession({ sessionId: defend.sessionId, user, turns: answersFor(defend.plan) }),
+      completeDefendSession({ sessionId: defend.sessionId, user }),
     ).rejects.toMatchObject({ status: 409 });
 
     const dash = await listDashboard(user);
@@ -159,11 +163,8 @@ describe("creator flow: process and purge", () => {
     user.display_name = "Quiet Person";
     const ingest = await creatorIngest({ user, fileName: "m.md", buffer: memo });
     const defend = await startSession({ token: ingest.token, user, mode: "defend" });
-    const r = await completeDefendSession({
-      sessionId: defend.sessionId,
-      user,
-      turns: answersFor(defend.plan),
-    });
+    await answerAll(defend, user);
+    const r = await completeDefendSession({ sessionId: defend.sessionId, user });
     expect(r.receipt.payload.creator).toBeUndefined();
   });
 
@@ -238,15 +239,39 @@ describe("interview integrity", () => {
     expect(JSON.stringify(publicProbes(plan))).not.toContain("secret");
   });
 
-  it("uses server questions and drops unknown or duplicate probes", () => {
-    const base = { startedAt: "", endedAt: "", latencyMs: 5000, followUpIndex: 0 };
-    const turns = reconcileTurns(plan, [
-      { ...base, id: "a", probeId: "p1", question: "Easy swapped question", answer: "x" },
-      { ...base, id: "b", probeId: "p1", question: "dup", answer: "y" },
-      { ...base, id: "c", probeId: "zzz", question: "injected", answer: "z" },
+  it("records answers only in plan order, with server-side timing", async () => {
+    const { user } = await signIn("order@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "o.md", buffer: memo });
+    const s1 = await startSession({ token: ingest.token, user, mode: "defend" });
+    const [first, second] = s1.plan.probes;
+    await expect(
+      recordDefendAnswer({ sessionId: s1.sessionId, user, probeId: second.id, answer: "skip ahead" }),
+    ).rejects.toMatchObject({ status: 409 });
+    await expect(
+      recordDefendAnswer({ sessionId: s1.sessionId, user, probeId: first.id, answer: "   " }),
+    ).rejects.toMatchObject({ status: 400 });
+    const r = await recordDefendAnswer({ sessionId: s1.sessionId, user, probeId: first.id, answer: "first" });
+    expect(r).toMatchObject({ answered: 1, done: false });
+    await expect(
+      recordDefendAnswer({ sessionId: s1.sessionId, user, probeId: first.id, answer: "again" }),
+    ).rejects.toMatchObject({ status: 409 });
+
+    const db = await getDb();
+    const row = await db.get<{ transcript_enc: string }>(`SELECT transcript_enc FROM sessions WHERE id = ?`, [
+      s1.sessionId,
     ]);
-    expect(turns).toHaveLength(1);
-    expect(turns[0].question).toBe("Real Q1");
+    const { decryptJson } = await import("../src/lib/vault");
+    const turns = decryptJson<TurnRecord[]>(row!.transcript_enc, `sessions.transcript:${s1.sessionId}`)!;
+    expect(turns[0].question).toBe(first.question);
+    expect(turns[0].latencyMs).toBeGreaterThanOrEqual(0);
+    expect(turns[0].latencyMs).toBeLessThan(60_000);
+  });
+
+  it("refuses to grade a defense with no recorded answers", async () => {
+    const { user } = await signIn("empty@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "e.md", buffer: memo });
+    const s1 = await startSession({ token: ingest.token, user, mode: "defend" });
+    await expect(completeDefendSession({ sessionId: s1.sessionId, user })).rejects.toMatchObject({ status: 400 });
   });
 });
 
@@ -267,9 +292,9 @@ describe("one receipt per deliverable", () => {
     const ingest = await creatorIngest({ user, fileName: "n.md", buffer: memo });
     const a = await startSession({ token: ingest.token, user, mode: "defend" });
     const b = await startSession({ token: ingest.token, user, mode: "defend" });
-    await completeDefendSession({ sessionId: a.sessionId, user, turns: answersFor(a.plan) });
+    await answerAll(a, user).then(() => completeDefendSession({ sessionId: a.sessionId, user }));
     await expect(
-      completeDefendSession({ sessionId: b.sessionId, user, turns: answersFor(b.plan) }),
+      answerAll(b, user).then(() => completeDefendSession({ sessionId: b.sessionId, user })),
     ).rejects.toMatchObject({ status: 409 });
     const db = await getDb();
     const n = await db.get<{ n: number }>(
@@ -284,8 +309,8 @@ describe("one receipt per deliverable", () => {
     const ingest = await creatorIngest({ user, fileName: "d.md", buffer: memo });
     const s = await startSession({ token: ingest.token, user, mode: "defend" });
     const results = await Promise.allSettled([
-      completeDefendSession({ sessionId: s.sessionId, user, turns: answersFor(s.plan) }),
-      completeDefendSession({ sessionId: s.sessionId, user, turns: answersFor(s.plan) }),
+      answerAll(s, user).then(() => completeDefendSession({ sessionId: s.sessionId, user })),
+      answerAll(s, user).then(() => completeDefendSession({ sessionId: s.sessionId, user })),
     ]);
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
     expect(results.find((r) => r.status === "rejected")).toMatchObject({ reason: { status: 409 } });
@@ -295,7 +320,7 @@ describe("one receipt per deliverable", () => {
     const { user } = await signIn("swap@fund.example");
     const ingest = await creatorIngest({ user, fileName: "s.md", buffer: memo });
     const s = await startSession({ token: ingest.token, user, mode: "defend" });
-    await completeDefendSession({ sessionId: s.sessionId, user, turns: answersFor(s.plan) });
+    await answerAll(s, user).then(() => completeDefendSession({ sessionId: s.sessionId, user }));
     await expect(
       ingestDeliverable({ token: ingest.token, user, fileName: "other.md", buffer: Buffer.from(`${memo}\nedited`) }),
     ).rejects.toMatchObject({ status: 409 });
@@ -370,7 +395,7 @@ describe("expiry without the purge job", () => {
     const { user } = await signIn("sessttl@fund.example");
     const ingest = await creatorIngest({ user, fileName: "st.md", buffer: memo });
     const s = await startSession({ token: ingest.token, user, mode: "defend" });
-    const r = await completeDefendSession({ sessionId: s.sessionId, user, turns: answersFor(s.plan) });
+    const r = await answerAll(s, user).then(() => completeDefendSession({ sessionId: s.sessionId, user }));
     const db = await getDb();
     await db.run(`UPDATE sessions SET purge_after = ? WHERE id = ?`, [
       new Date(Date.now() - 1000).toISOString(),

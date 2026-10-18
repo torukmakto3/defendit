@@ -497,33 +497,57 @@ export async function learnCoachTurn(opts: { sessionId: string; user: User; answ
 }
 
 /**
- * Keep only answers to probes in the server-side plan, and use the plan's own
- * question text, so a client can't swap in easier questions.
+ * Record one Defend answer as it is given. The server fixes the order (the
+ * next unanswered probe in its own plan), the question text and the timing:
+ * latency is measured from the previous answer (or the session start) to
+ * this request, so a client can't swap in easier questions or fake pacing.
  */
-export function reconcileTurns(plan: InterviewPlan, turns: TurnRecord[]): TurnRecord[] {
-  const byId = new Map(plan.probes.map((p) => [p.id, p]));
-  const seen = new Set<string>();
-  const out: TurnRecord[] = [];
-  for (const t of turns) {
-    const probe = byId.get(t.probeId);
-    if (!probe) continue;
-    const key = `${t.probeId}:${t.followUpIndex ?? 0}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({
-      ...t,
-      question: probe.question,
-      answer: String(t.answer ?? "").slice(0, 4000),
-      latencyMs: Math.max(0, Number(t.latencyMs) || 0),
-    });
-  }
-  return out;
+export async function recordDefendAnswer(opts: {
+  sessionId: string;
+  user: User;
+  probeId: string;
+  answer: string;
+}) {
+  const session = await requireOwnSession(opts.sessionId, opts.user, "defend");
+  if (session.status !== "in_progress") throw new HttpError(409, "This defense is already complete.");
+  const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
+  if (!plan) throw new HttpError(410, "This session has expired. Start a new defense.");
+  const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
+
+  const probe = plan.probes[turns.length];
+  if (!probe) throw new HttpError(409, "All questions are already answered.");
+  if (probe.id !== opts.probeId) throw new HttpError(409, "Answer the current question first.");
+  const answer = opts.answer.trim().slice(0, 4000);
+  if (!answer) throw new HttpError(400, "Answer is empty.");
+
+  const now = new Date();
+  const startedAt = turns.length ? turns[turns.length - 1].endedAt : session.started_at;
+  turns.push({
+    id: `turn_${turns.length + 1}`,
+    probeId: probe.id,
+    question: probe.question,
+    answer,
+    startedAt,
+    endedAt: now.toISOString(),
+    latencyMs: Math.max(0, now.getTime() - new Date(startedAt).getTime()),
+    followUpIndex: 0,
+  });
+
+  // Optimistic concurrency: the stored ciphertext doubles as a version, so a
+  // double-submitted answer can't be recorded twice.
+  const db = await getDb();
+  const saved = await db.run(
+    `UPDATE sessions SET transcript_enc = ? WHERE id = ? AND transcript_enc = ? AND status = 'in_progress'`,
+    [encryptJson(turns, ctx.transcript(session.id)), session.id, session.transcript_enc],
+  );
+  if (saved.changes !== 1) throw new HttpError(409, "That answer was already recorded.");
+  return { answered: turns.length, total: plan.probes.length, done: turns.length >= plan.probes.length };
 }
 
 export async function completeDefendSession(opts: {
   sessionId: string;
   user: User;
-  turns: TurnRecord[];
+  /** Browser-observed signals; reported, never mixed into the score. */
   pasteEvents?: number;
   focusBlurEvents?: number;
   showName?: boolean;
@@ -546,7 +570,8 @@ export async function completeDefendSession(opts: {
     throw new HttpError(409, "This deliverable has already been defended.");
   }
 
-  const turns = reconcileTurns(plan, opts.turns);
+  // Grade only what the server recorded, never a client-supplied transcript.
+  const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
   if (turns.length === 0) throw new HttpError(400, "No answers to grade.");
 
   // Claim the session before paying for grading, so a double submit can't grade twice.
@@ -585,9 +610,8 @@ export async function completeDefendSession(opts: {
       );
       if (won.changes !== 1) throw new HttpError(409, "This deliverable has already been defended.");
       await tx.run(
-        `UPDATE sessions SET transcript_enc = ?, integrity_json = ?, status = 'completed', completed_at = ?
-         WHERE id = ?`,
-        [encryptJson(turns, ctx.transcript(session.id)), JSON.stringify(integrity), nowIso, session.id],
+        `UPDATE sessions SET integrity_json = ?, status = 'completed', completed_at = ? WHERE id = ?`,
+        [JSON.stringify(integrity), nowIso, session.id],
       );
       for (const g of grades) {
         const gradeId = newId("grd");
