@@ -2,15 +2,9 @@ import { NextResponse } from "next/server";
 import { getUserFromRequest, isAdmin, type User } from "./auth";
 import { rateLimit } from "./ratelimit";
 
-/** Thrown by services; routes map it to a status without leaking internals. */
-export class HttpError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
+import { HttpError } from "./errors";
+
+export { HttpError };
 
 export function jsonError(status: number, message: string, headers?: HeadersInit) {
   return NextResponse.json({ error: message }, { status, headers });

@@ -3,6 +3,7 @@ import { appUrl } from "./config";
 import { sha256Hex } from "./crypto";
 import { getDb } from "./db";
 import { newId } from "./ids";
+import { HttpError } from "./errors";
 import { isDeployed } from "./secrets";
 
 /**
@@ -69,6 +70,13 @@ export async function requestMagicLink(opts: {
   nextPath?: string;
 }): Promise<{ devLink?: string }> {
   const email = normalizeEmail(opts.email);
+  const canEmail = Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM);
+  if (!canEmail && !devLinksAllowed(email)) {
+    throw new HttpError(
+      503,
+      "Email sign-in isn't set up on this server yet. On a test deployment, use an allowed test address.",
+    );
+  }
   const token = randomBytes(32).toString("base64url");
   const now = new Date();
   const db = await getDb();
@@ -85,15 +93,12 @@ export async function requestMagicLink(opts: {
   );
 
   const link = appUrl(`/auth/verify#token=${token}`);
-  if (process.env.RESEND_API_KEY && process.env.EMAIL_FROM) {
+  if (canEmail) {
     await sendEmail(email, link);
     return {};
   }
-  if (devLinksAllowed(email)) {
-    console.info(`[auth] sign-in link for ${email} (dev mode, not emailed)`);
-    return { devLink: link };
-  }
-  throw new Error("Email sign-in is not configured on this server.");
+  console.info("[auth] sign-in link shown on screen (dev mode, not emailed)");
+  return { devLink: link };
 }
 
 async function sendEmail(to: string, link: string) {
