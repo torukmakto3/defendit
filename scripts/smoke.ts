@@ -99,6 +99,13 @@ async function main() {
   const token = ingest.json.token as string;
   check(token.length >= 22, "defense link token is long and random");
 
+  if (process.env.SMOKE_PDF) {
+    const pdfForm = new FormData();
+    pdfForm.set("file", new Blob([readFileSync(process.env.SMOKE_PDF)], { type: "application/pdf" }), "memo.pdf");
+    const pdf = await call("/api/creator/ingest", { method: "POST", body: pdfForm, cookie: ana });
+    check(pdf.status === 200, `PDF upload parsed (${pdf.json?.claimCount} claims)${pdf.status !== 200 ? ` — ${pdf.text}` : ""}`);
+  }
+
   const mallory = await signIn(`mallory+${run}@evil.example`);
   const steal = await post("/api/sessions/start", { token, mode: "learn" }, mallory);
   check(steal.status === 403, "another account cannot open this defense");

@@ -1,6 +1,5 @@
-import mammoth from "mammoth";
-import { PDFParse } from "pdf-parse";
-import * as XLSX from "xlsx";
+// Parsers load on demand: a parser that fails to initialise in one runtime
+// must not take down routes that never parse files.
 
 /** Parse in memory: uploads are never written to disk. */
 export async function extractText(
@@ -11,7 +10,10 @@ export async function extractText(
   const lower = fileName.toLowerCase();
 
   if (mimeType === "application/pdf" || lower.endsWith(".pdf")) {
-    const parser = new PDFParse({ data: buffer });
+    // pdf-parse/worker sets up the canvas polyfill pdfjs needs in serverless Node.
+    const { CanvasFactory } = await import("pdf-parse/worker");
+    const { PDFParse } = await import("pdf-parse");
+    const parser = new PDFParse({ data: buffer, CanvasFactory });
     try {
       const result = await parser.getText();
       return (result.text || "").trim();
@@ -25,6 +27,7 @@ export async function extractText(
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
     lower.endsWith(".docx")
   ) {
+    const mammoth = (await import("mammoth")).default;
     const result = await mammoth.extractRawText({ buffer });
     return (result.value || "").trim();
   }
@@ -37,7 +40,7 @@ export async function extractText(
     lower.endsWith(".xls") ||
     lower.endsWith(".csv")
   ) {
-    return extractSpreadsheetText(buffer);
+    return extractSpreadsheetText(buffer, await import("xlsx"));
   }
 
   if (
@@ -52,7 +55,7 @@ export async function extractText(
   return buffer.toString("utf8").trim();
 }
 
-function extractSpreadsheetText(buffer: Buffer): string {
+function extractSpreadsheetText(buffer: Buffer, XLSX: typeof import("xlsx")): string {
   const workbook = XLSX.read(buffer, { type: "buffer", cellFormula: true });
   const parts: string[] = [];
 

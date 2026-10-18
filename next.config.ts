@@ -29,6 +29,10 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   serverExternalPackages: ["better-sqlite3", "pdf-parse", "mammoth"],
   poweredByHeader: false,
+  // pdfjs loads its canvas polyfill via a dynamic require that file tracing misses.
+  outputFileTracingIncludes: {
+    "/api/**/*": ["./node_modules/@napi-rs/**/*", "./node_modules/pdfjs-dist/legacy/build/**/*"],
+  },
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },
