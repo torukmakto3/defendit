@@ -7,6 +7,7 @@ export function createAnthropicProvider(
   return {
     id: model,
     provider: "anthropic",
+    retention: "unverified",
     async complete(req: LlmRequest): Promise<LlmResponse> {
       const system = req.messages
         .filter((m) => m.role === "system")
@@ -35,8 +36,7 @@ export function createAnthropicProvider(
         }),
       });
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Anthropic error ${res.status}: ${text}`);
+        throw new Error(`Anthropic error ${res.status}`);
       }
       const data = (await res.json()) as {
         content: { type: string; text?: string }[];

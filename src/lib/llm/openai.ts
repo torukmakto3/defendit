@@ -7,6 +7,7 @@ export function createOpenAIProvider(
   return {
     id: model,
     provider: "openai",
+    retention: "unverified",
     async complete(req: LlmRequest): Promise<LlmResponse> {
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
@@ -22,8 +23,7 @@ export function createOpenAIProvider(
         }),
       });
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`OpenAI error ${res.status}: ${text}`);
+        throw new Error(`OpenAI error ${res.status}`);
       }
       const data = (await res.json()) as {
         choices: { message: { content: string } }[];

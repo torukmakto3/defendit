@@ -17,8 +17,18 @@ export interface LlmResponse {
   provider: string;
 }
 
+/**
+ * How a provider treats the prompt after answering.
+ * - zero-enforced: every call carries a rule the host must honour (Liquid, OpenRouter ZDR)
+ * - local: runs on a machine we control (Ollama / localhost)
+ * - unverified: we cannot enforce retention; refused unless explicitly allowed
+ * - mock: offline deterministic models
+ */
+export type RetentionClass = "zero-enforced" | "local" | "unverified" | "mock";
+
 export interface LlmProvider {
   id: string;
   provider: string;
+  retention: RetentionClass;
   complete(req: LlmRequest): Promise<LlmResponse>;
 }
