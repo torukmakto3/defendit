@@ -61,6 +61,43 @@ export function createDefenseRequest(input: {
   return { requestId, token, receiverId };
 }
 
+/**
+ * Creator-driven entry: drop a file, we mint a self-request token,
+ * then Learn / Defend can start immediately.
+ */
+export async function creatorIngest(opts: {
+  fileName: string;
+  buffer: Buffer;
+  creatorName: string;
+  creatorEmail: string;
+  difficulty?: Difficulty;
+  mimeType?: string;
+}) {
+  const title = opts.fileName.replace(/\.[^.]+$/, "") || "Untitled deliverable";
+  const created = createDefenseRequest({
+    receiverName: opts.creatorName,
+    receiverEmail: opts.creatorEmail,
+    difficulty: opts.difficulty || "hard",
+    title,
+    notes: "Self-initiated creator defense",
+  });
+
+  const uploaded = await ingestDeliverable({
+    token: created.token,
+    fileName: opts.fileName,
+    buffer: opts.buffer,
+    creatorName: opts.creatorName,
+    creatorEmail: opts.creatorEmail,
+    mimeType: opts.mimeType,
+  });
+
+  return {
+    ...created,
+    ...uploaded,
+    title,
+  };
+}
+
 export function getRequestByToken(token: string) {
   const db = getDb();
   return db

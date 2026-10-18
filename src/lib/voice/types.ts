@@ -21,7 +21,7 @@ export interface VoiceTranscriptEvent {
 }
 
 export interface VoiceProvider {
-  id: "text" | "elevenlabs" | "openai-realtime";
+  id: "text" | "elevenlabs" | "openai-realtime" | "oss-cascade";
   modality: InterviewModality;
   /** Start a realtime session; returns a connection handle / client secrets */
   createSession(config: VoiceSessionConfig): Promise<{

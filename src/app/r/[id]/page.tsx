@@ -145,13 +145,29 @@ export default function ReceiptPage() {
         </div>
       </div>
 
-      <div className="mt-8 flex flex-wrap gap-3 text-sm">
-        <Link href={`/verify/${p.id}`} className="btn btn-primary">
-          Verify file hash
-        </Link>
-        <a href={`/api/stamp/${p.id}`} className="btn btn-ghost" download>
-          Download stamp SVG
-        </a>
+      <div className="panel mt-8 rounded-xl p-5">
+        <h2 className="text-xl text-[var(--moss)]">Send it your way</h2>
+        <p className="mt-2 text-sm text-[color-mix(in_srgb,var(--ink)_70%,transparent)]">
+          Download the stamp or printable cover, attach it to the same file you
+          defended, and send via email, Slack, or Docs — no new workflow for the
+          receiver. They can open the verify link or drop the file to check the hash.
+        </p>
+        <div className="mt-4 flex flex-wrap gap-3 text-sm">
+          <a href={`/api/stamp/${p.id}`} className="btn btn-primary" download>
+            Download stamp SVG
+          </a>
+          <a
+            href={`/api/receipts/${p.id}/cover`}
+            className="btn btn-ghost"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open printable cover
+          </a>
+          <Link href={`/verify/${p.id}`} className="btn btn-ghost">
+            Verify file hash
+          </Link>
+        </div>
       </div>
       <p className="mt-4 text-xs text-[color-mix(in_srgb,var(--ink)_55%,transparent)]">
         Graded with {p.modelVersions.join(", ")} · {p.rubricVersion}

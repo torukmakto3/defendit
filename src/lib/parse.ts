@@ -1,6 +1,7 @@
 import { readFile } from "fs/promises";
 import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
+import * as XLSX from "xlsx";
 
 export async function extractTextFromFile(
   filePath: string,
@@ -10,10 +11,7 @@ export async function extractTextFromFile(
   const lower = fileName.toLowerCase();
   const buffer = await readFile(filePath);
 
-  if (
-    mimeType === "application/pdf" ||
-    lower.endsWith(".pdf")
-  ) {
+  if (mimeType === "application/pdf" || lower.endsWith(".pdf")) {
     const parser = new PDFParse({ data: buffer });
     try {
       const result = await parser.getText();
@@ -33,6 +31,17 @@ export async function extractTextFromFile(
   }
 
   if (
+    mimeType ===
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    mimeType === "application/vnd.ms-excel" ||
+    lower.endsWith(".xlsx") ||
+    lower.endsWith(".xls") ||
+    lower.endsWith(".csv")
+  ) {
+    return extractSpreadsheetText(buffer);
+  }
+
+  if (
     mimeType.startsWith("text/") ||
     lower.endsWith(".txt") ||
     lower.endsWith(".md") ||
@@ -41,8 +50,53 @@ export async function extractTextFromFile(
     return buffer.toString("utf8").trim();
   }
 
-  // Fallback: try utf8
   return buffer.toString("utf8").trim();
+}
+
+function extractSpreadsheetText(buffer: Buffer): string {
+  const workbook = XLSX.read(buffer, { type: "buffer", cellFormula: true });
+  const parts: string[] = [];
+
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    parts.push(`# Sheet: ${sheetName}`);
+
+    const named = workbook.Workbook?.Names || [];
+    for (const n of named) {
+      if (n.Ref && n.Ref.includes(sheetName)) {
+        parts.push(`Named range ${n.Name}: ${n.Ref}`);
+      }
+    }
+
+    const rows = XLSX.utils.sheet_to_json<(string | number | boolean | null)[]>(
+      sheet,
+      { header: 1, defval: "" },
+    ) as unknown[][];
+
+    for (const row of rows.slice(0, 200)) {
+      const cells = (row as unknown[]).map((c) => String(c ?? "").trim());
+      if (cells.some((c) => c.length > 0)) {
+        parts.push(cells.join(" | "));
+      }
+    }
+
+    // Surface a sample of formulas when present
+    const formulaHints: string[] = [];
+    for (const addr of Object.keys(sheet)) {
+      if (addr.startsWith("!")) continue;
+      const cell = sheet[addr] as { f?: string; v?: unknown } | undefined;
+      if (cell?.f) {
+        formulaHints.push(`${addr}: =${cell.f} → ${cell.v ?? ""}`);
+      }
+      if (formulaHints.length >= 40) break;
+    }
+    if (formulaHints.length) {
+      parts.push("## Key formulas");
+      parts.push(...formulaHints);
+    }
+  }
+
+  return parts.join("\n").trim();
 }
 
 export function guessMimeType(fileName: string): string {
@@ -51,6 +105,11 @@ export function guessMimeType(fileName: string): string {
   if (lower.endsWith(".docx")) {
     return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
   }
+  if (lower.endsWith(".xlsx")) {
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  }
+  if (lower.endsWith(".xls")) return "application/vnd.ms-excel";
+  if (lower.endsWith(".csv")) return "text/csv";
   if (lower.endsWith(".md") || lower.endsWith(".markdown")) {
     return "text/markdown";
   }

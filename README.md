@@ -76,35 +76,47 @@ Public key: `/.well-known/defend-it-pubkey.json`
 6. **Dashboard** → load `alex@fund.example`  
 7. **Admin** → open the session, enter a human score, compare to the council  
 
-## Turning on real models
+## Turning on real models (prefer open-weight for beta)
 
-Leave `MOCK_LLM` unset (or set `MOCK_LLM=0`) and add keys:
+Leave `MOCK_LLM` unset (or `MOCK_LLM=0`) and configure **one** cheap path:
 
 ```bash
-OPENAI_API_KEY=sk-...
-# and/or
-ANTHROPIC_API_KEY=sk-ant-...
+# Recommended beta: Groq + open-weight Llama
+MOCK_LLM=0
+LLM_PROVIDER=groq
+GROQ_API_KEY=gsk_...
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODEL_B=llama-3.1-8b-instant   # second council member
 
-# optional
-OPENAI_MODEL=gpt-4o-mini
-ANTHROPIC_MODEL=claude-sonnet-4-20250514
+# Or local
+# LLM_PROVIDER=ollama
+# OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
+# OLLAMA_MODEL=llama3.2
+
+# Or OpenRouter / generic OpenAI-compatible — see .env.example
 ```
 
-- **Primary LLM** (claims, learn, follow-ups): OpenAI if set, else Anthropic  
-- **Grading council**: every configured provider; mock compare models fill gaps so the admin UI always has ≥2 scores  
+Frontier keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) still work. Optional **Jev** (`JEV_API_KEY`) is a fast typed-decision sidecar for stakes/routing — not the interviewer. See `docs/model_strategy.md`.
 
 Never commit `.env` or `data/signing-key.json`.
 
 ### Voice later
 
 ```bash
-VOICE_PROVIDER=text              # default
-# VOICE_PROVIDER=elevenlabs      # stub — implement in src/lib/voice/providers.ts
-# VOICE_PROVIDER=openai-realtime # stub — same file
-# ELEVENLABS_API_KEY=
+VOICE_PROVIDER=text              # default (ships today)
+# VOICE_PROVIDER=elevenlabs      # stub
+# VOICE_PROVIDER=openai-realtime # stub
+# Planned: cascaded OSS (Whisper/Parakeet → LLM → Kokoro/Orpheus)
 ```
 
-Session orchestration (seed, plan, validators, grading) stays on our server; the voice provider only carries the conversation.
+Session orchestration stays on our server; the voice provider only carries the conversation.
+
+## Product direction (beta)
+
+- **Creator-first:** drag-and-drop on `/`, then Learn or Defend — no install, no receiver account required.
+- **Stamp & send:** after a pass you get a badge + printable cover; attach to the same file and send via email/Slack/Docs.
+- **Receiver links** (`/request`) remain for pilots that want to *require* a defense.
+- **Later:** embeddable widget for receiver workflows (interview portals, LMS, PR checks).
 
 ## Difficulty levels
 
