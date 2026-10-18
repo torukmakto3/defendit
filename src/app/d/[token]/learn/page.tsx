@@ -21,22 +21,13 @@ export default function LearnPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const raw = sessionStorage.getItem(`defend-it:${token}:creator`);
-    const creator = raw
-      ? (JSON.parse(raw) as { creatorName: string; creatorEmail: string })
-      : { creatorName: "Ana Analyst", creatorEmail: "ana@fund.example" };
-
     (async () => {
       setBusy(true);
       try {
         const start = await fetch("/api/sessions/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            token,
-            mode: "learn",
-            ...creator,
-          }),
+          body: JSON.stringify({ token, mode: "learn" }),
         }).then((r) => r.json());
         if (start.error) throw new Error(start.error);
         setSessionId(start.sessionId);

@@ -1,0 +1,40 @@
+import { randomBytes } from "crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
+
+/**
+ * Deployed instances must take secrets from the environment. Local dev may
+ * auto-generate them into ./data (gitignored) so `npm run dev` needs no setup.
+ */
+export function keysRequired(): boolean {
+  if (process.env.DEFEND_IT_REQUIRE_KEYS === "1") return true;
+  if (process.env.DEFEND_IT_REQUIRE_KEYS === "0") return false;
+  return process.env.VERCEL === "1" || process.env.NODE_ENV === "production";
+}
+
+/** A 32-byte secret as 64 hex chars, from env or (dev only) a local file. */
+export function load32ByteSecret(envName: string, devFile: string): Buffer {
+  const fromEnv = process.env[envName];
+  if (fromEnv) {
+    if (!/^[0-9a-fA-F]{64}$/.test(fromEnv)) {
+      throw new Error(`${envName} must be exactly 64 hex characters (32 bytes).`);
+    }
+    return Buffer.from(fromEnv, "hex");
+  }
+  if (keysRequired()) {
+    throw new Error(
+      `${envName} is not set. Generate one with: openssl rand -hex 32`,
+    );
+  }
+  const path = join(process.cwd(), "data", devFile);
+  if (existsSync(path)) {
+    const hex = (JSON.parse(readFileSync(path, "utf8")) as { hex: string }).hex;
+    return Buffer.from(hex, "hex");
+  }
+  const secret = randomBytes(32);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({ hex: secret.toString("hex") }), {
+    mode: 0o600,
+  });
+  return secret;
+}

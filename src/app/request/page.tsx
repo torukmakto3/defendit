@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { SignInCard, useMe } from "@/components/auth";
 
 export default function RequestPage() {
+  const { me } = useMe();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{
     shareUrl: string;
@@ -21,8 +23,6 @@ export default function RequestPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          receiverName: form.get("receiverName"),
-          receiverEmail: form.get("receiverEmail"),
           difficulty: form.get("difficulty"),
           title: form.get("title"),
           notes: form.get("notes") || undefined,
@@ -46,7 +46,11 @@ export default function RequestPage() {
         defend — nothing to install.
       </p>
 
-      {result ? (
+      {me === null ? (
+        <div className="mt-8">
+          <SignInCard title="Sign in to request a defense" />
+        </div>
+      ) : result ? (
         <div className="panel mt-8 rounded-xl p-6">
           <p className="text-sm uppercase tracking-wide text-[var(--leaf)]">
             Link ready
@@ -60,9 +64,6 @@ export default function RequestPage() {
             >
               Copy link
             </button>
-            <Link href={result.shareUrl} className="btn btn-ghost">
-              Open as creator
-            </Link>
             <Link href="/dashboard" className="btn btn-ghost">
               Go to dashboard
             </Link>
@@ -70,31 +71,6 @@ export default function RequestPage() {
         </div>
       ) : (
         <form onSubmit={onSubmit} className="panel mt-8 space-y-4 rounded-xl p-6">
-          <div>
-            <label className="label" htmlFor="receiverName">
-              Your name
-            </label>
-            <input
-              id="receiverName"
-              name="receiverName"
-              className="field"
-              required
-              defaultValue="Alex Partner"
-            />
-          </div>
-          <div>
-            <label className="label" htmlFor="receiverEmail">
-              Your email
-            </label>
-            <input
-              id="receiverEmail"
-              name="receiverEmail"
-              type="email"
-              className="field"
-              required
-              defaultValue="alex@fund.example"
-            />
-          </div>
           <div>
             <label className="label" htmlFor="title">
               Deliverable title

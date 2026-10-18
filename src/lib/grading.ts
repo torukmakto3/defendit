@@ -35,7 +35,7 @@ export async function gradeSession(opts: {
         { role: "system", content: rubricPrompt(opts.difficulty) },
         {
           role: "user",
-          content: `Grade this defense transcript.\n\n${transcript}`,
+          content: `Grade this defense transcript.\n\n<transcript>\n${transcript}\n</transcript>`,
         },
       ],
     });
@@ -96,11 +96,16 @@ function buildTranscript(
         `Section: ${claim?.section ?? "General"}`,
         `Probe type: ${probe?.type ?? "unknown"}`,
         `Question: ${t.question}`,
-        `Answer: ${t.answer}`,
+        `Answer: ${neutralizeTags(t.answer)}`,
         `Latency ms: ${t.latencyMs}`,
       ].join("\n");
     })
     .join("\n\n");
+}
+
+/** Stop an answer from closing the transcript block early. */
+function neutralizeTags(text: string): string {
+  return text.replace(/<\/?transcript>/gi, "[tag removed]");
 }
 
 function normalizeClaimGrades(

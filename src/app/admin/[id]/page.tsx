@@ -7,9 +7,10 @@ import { useEffect, useState } from "react";
 interface Detail {
   session: {
     id: string;
-    creator_name: string;
+    creator_name: string | null;
     creator_email: string;
-    transcript_json: string;
+    transcript: { question?: string; answer?: string; latencyMs?: number }[] | null;
+    purged: boolean;
   };
   grades: {
     modelId: string;
@@ -31,11 +32,12 @@ export default function AdminDetailPage() {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [score, setScore] = useState(70);
   const [notes, setNotes] = useState("");
-  const [graderName, setGraderName] = useState("Luis");
   const [saved, setSaved] = useState(false);
 
   async function load() {
-    const d = await fetch(`/api/admin/sessions/${id}`).then((r) => r.json());
+    const res = await fetch(`/api/admin/sessions/${id}`);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || "Failed");
     setDetail(d);
     if (d.human?.overall_score != null) setScore(d.human.overall_score);
     if (d.human?.notes) setNotes(d.human.notes);
@@ -51,7 +53,7 @@ export default function AdminDetailPage() {
     await fetch(`/api/admin/sessions/${id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ overallScore: score, notes, graderName }),
+      body: JSON.stringify({ overallScore: score, notes }),
     });
     setSaved(true);
     await load();
@@ -65,13 +67,7 @@ export default function AdminDetailPage() {
     );
   }
 
-  const turns = JSON.parse(detail.session.transcript_json || "[]") as {
-    question?: string;
-    answer?: string;
-    latencyMs?: number;
-    role?: string;
-    content?: string;
-  }[];
+  const turns = detail.session.transcript ?? [];
 
   const aiAvg =
     detail.grades.length === 0
@@ -88,7 +84,7 @@ export default function AdminDetailPage() {
       </Link>
       <h1 className="mt-4 text-4xl text-[var(--moss)]">Grade session</h1>
       <p className="mt-2 text-sm">
-        {detail.session.creator_name} · {detail.session.creator_email}
+        {detail.session.creator_name ?? "—"} · {detail.session.creator_email}
       </p>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
@@ -131,17 +127,6 @@ export default function AdminDetailPage() {
         <form onSubmit={save} className="panel space-y-3 rounded-xl p-5">
           <h2 className="text-xl">Human grade</h2>
           <div>
-            <label className="label" htmlFor="graderName">
-              Grader
-            </label>
-            <input
-              id="graderName"
-              className="field"
-              value={graderName}
-              onChange={(e) => setGraderName(e.target.value)}
-            />
-          </div>
-          <div>
             <label className="label" htmlFor="score">
               Score 0–100
             </label>
@@ -175,20 +160,15 @@ export default function AdminDetailPage() {
 
       <div className="mt-8">
         <h2 className="text-2xl text-[var(--moss)]">Transcript</h2>
+        {detail.session.purged && (
+          <p className="mt-2 text-sm opacity-70">Transcript deleted after the retention window.</p>
+        )}
         <div className="mt-4 space-y-3">
           {turns.map((t, i) => (
             <div key={i} className="panel rounded-lg p-4 text-sm">
-              {t.question ? (
-                <>
-                  <p className="font-medium">Q: {t.question}</p>
-                  <p className="mt-2">A: {t.answer}</p>
-                  <p className="mt-1 text-xs opacity-60">{t.latencyMs} ms</p>
-                </>
-              ) : (
-                <p>
-                  <strong>{t.role}:</strong> {t.content}
-                </p>
-              )}
+              <p className="font-medium">Q: {t.question}</p>
+              <p className="mt-2">A: {t.answer}</p>
+              <p className="mt-1 text-xs opacity-60">{t.latencyMs} ms</p>
             </div>
           ))}
         </div>

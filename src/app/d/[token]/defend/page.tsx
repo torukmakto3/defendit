@@ -2,6 +2,7 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useMe } from "@/components/auth";
 
 interface Probe {
   id: string;
@@ -38,6 +39,12 @@ export default function DefendPage() {
   const [focusBlurEvents, setFocusBlurEvents] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const tickRef = useRef<number | null>(null);
+  const startedRef = useRef(false);
+  const { me } = useMe();
+  const [showName, setShowName] = useState(false);
+  useEffect(() => {
+    if (me?.displayName) setShowName(true);
+  }, [me]);
 
   useEffect(() => {
     const onBlur = () => setFocusBlurEvents((n) => n + 1);
@@ -46,18 +53,16 @@ export default function DefendPage() {
   }, []);
 
   useEffect(() => {
-    const raw = sessionStorage.getItem(`defend-it:${token}:creator`);
-    const creator = raw
-      ? (JSON.parse(raw) as { creatorName: string; creatorEmail: string })
-      : { creatorName: "Ana Analyst", creatorEmail: "ana@fund.example" };
-
+    // One plan per visit, even when React re-runs effects in development.
+    if (startedRef.current) return;
+    startedRef.current = true;
     (async () => {
       setBusy(true);
       try {
         const start = await fetch("/api/sessions/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token, mode: "defend", ...creator }),
+          body: JSON.stringify({ token, mode: "defend" }),
         }).then((r) => r.json());
         if (start.error) throw new Error(start.error);
         setSessionId(start.sessionId);
@@ -124,6 +129,7 @@ export default function DefendPage() {
           turns: nextTurns,
           pasteEvents,
           focusBlurEvents,
+          showName,
         }),
       }).then((r) => r.json());
       if (result.error) throw new Error(result.error);
@@ -184,6 +190,16 @@ export default function DefendPage() {
             required
             disabled={busy}
           />
+          {index + 1 === probes.length && me?.displayName && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={showName}
+                onChange={(e) => setShowName(e.target.checked)}
+              />
+              Show my name ({me.displayName}) on the receipt
+            </label>
+          )}
           {error && <p className="text-sm text-red-700">{error}</p>}
           <button type="submit" className="btn btn-primary" disabled={busy}>
             {busy

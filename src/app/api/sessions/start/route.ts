@@ -1,21 +1,25 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { startSession } from "@/lib/services";
+import { handleError, limitOr429, requireUser } from "@/lib/http";
+import { LIMITS } from "@/lib/ratelimit";
+import { publicProbes, startSession } from "@/lib/services";
 import { getVoiceProvider } from "@/lib/voice/providers";
 
 export const runtime = "nodejs";
 
 const schema = z.object({
-  token: z.string().min(1),
+  token: z.string().min(1).max(64),
   mode: z.enum(["learn", "defend"]),
-  creatorName: z.string().min(1),
-  creatorEmail: z.string().email(),
 });
 
 export async function POST(req: Request) {
+  const guard = await requireUser(req);
+  if (guard.response) return guard.response;
   try {
+    const limited = await limitOr429(`start:${guard.user.id}`, LIMITS.sessionStartPerUser);
+    if (limited) return limited;
     const body = schema.parse(await req.json());
-    const session = startSession(body);
+    const session = await startSession({ ...body, user: guard.user });
     const voice = getVoiceProvider();
     const voiceSession = await voice.createSession({
       sessionId: session.sessionId,
@@ -23,14 +27,14 @@ export async function POST(req: Request) {
       questionPlan: session.plan.probes.map((p) => p.question),
       silenceTimeoutMs: 30_000,
     });
+    const probes = body.mode === "defend" ? publicProbes(session.plan) : undefined;
 
     return NextResponse.json({
       sessionId: session.sessionId,
       mode: body.mode,
-      plan: body.mode === "defend" ? session.plan : { probeCount: session.plan.probes.length },
-      firstQuestion:
-        body.mode === "defend" ? session.plan.probes[0]?.question : undefined,
-      probes: body.mode === "defend" ? session.plan.probes : undefined,
+      plan: body.mode === "defend" ? { ...session.plan, probes } : { probeCount: session.plan.probes.length },
+      firstQuestion: probes?.[0]?.question,
+      probes,
       voice: {
         provider: voice.id,
         modality: voice.modality,
@@ -38,9 +42,6 @@ export async function POST(req: Request) {
       },
     });
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Could not start session" },
-      { status: 400 },
-    );
+    return handleError(e, "Could not start session");
   }
 }

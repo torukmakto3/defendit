@@ -1,15 +1,14 @@
-import { readFile } from "fs/promises";
 import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
 import * as XLSX from "xlsx";
 
-export async function extractTextFromFile(
-  filePath: string,
+/** Parse in memory: uploads are never written to disk. */
+export async function extractText(
+  buffer: Buffer,
   mimeType: string,
   fileName: string,
 ): Promise<string> {
   const lower = fileName.toLowerCase();
-  const buffer = await readFile(filePath);
 
   if (mimeType === "application/pdf" || lower.endsWith(".pdf")) {
     const parser = new PDFParse({ data: buffer });

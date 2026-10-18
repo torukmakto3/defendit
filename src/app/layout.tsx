@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Fraunces, Source_Sans_3 } from "next/font/google";
 import Link from "next/link";
+import { AccountMenu } from "@/components/auth";
 import "./globals.css";
 
 const display = Fraunces({
@@ -39,9 +40,7 @@ export default function RootLayout({
               <Link href="/dashboard" className="hover:text-[var(--moss)]">
                 Dashboard
               </Link>
-              <Link href="/admin" className="hover:text-[var(--moss)]">
-                Admin
-              </Link>
+              <AccountMenu />
             </nav>
           </div>
         </header>

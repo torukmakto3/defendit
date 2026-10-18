@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 
 interface SessionRow {
   id: string;
-  creator_name: string;
   creator_email: string;
   status: string;
   title: string;
@@ -16,11 +15,16 @@ interface SessionRow {
 
 export default function AdminPage() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/admin/sessions")
-      .then((r) => r.json())
-      .then((d) => setSessions(d.sessions || []));
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || "Failed");
+        setSessions(d.sessions || []);
+      })
+      .catch((e) => setError(e.message));
   }, []);
 
   return (
@@ -30,6 +34,7 @@ export default function AdminPage() {
         Pilot calibration: open a transcript, enter a human score, compare to the
         AI council.
       </p>
+      {error && <p className="mt-6 text-red-700">{error} — admins are listed in ADMIN_EMAILS.</p>}
       <div className="mt-8 overflow-x-auto panel rounded-xl">
         <table className="w-full text-left text-sm">
           <thead className="border-b border-[var(--line)] text-xs uppercase tracking-wide">
@@ -53,7 +58,6 @@ export default function AdminPage() {
                 <tr key={s.id} className="border-t border-[var(--line)]">
                   <td className="px-4 py-3">{s.title}</td>
                   <td className="px-4 py-3">
-                    {s.creator_name}
                     <div className="text-xs opacity-70">{s.creator_email}</div>
                   </td>
                   <td className="px-4 py-3">{s.difficulty}</td>

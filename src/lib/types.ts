@@ -80,31 +80,32 @@ export interface IntegritySignals {
   focusBlurEvents: number;
 }
 
+export type ReceiptOutcome = "Defended" | "Partially defended" | "Not defended";
+
+/**
+ * v2 receipt: only what a receiver needs to trust the file they hold.
+ * No file name, email, transcript excerpts, section names or internal ids:
+ * the receipt is public to anyone with its link and must not leak the
+ * deliverable or the creator's contact details.
+ */
 export interface ReceiptPayload {
   id: string;
-  version: "defend-it-receipt-v1";
+  version: "defend-it-receipt-v2";
   createdAt: string;
   difficulty: Difficulty;
   score: number;
-  bandSummary: { section: string; band: UnderstandingBand }[];
-  creatorName: string;
-  creatorEmail: string;
+  outcome: ReceiptOutcome;
+  /** How many probed claims landed in each band. */
+  bands: { strong: number; partial: number; weak: number };
   deliverable: {
-    fileName: string;
     sha256: string;
     byteLength: number;
   };
   rubricVersion: string;
   modelVersions: string[];
-  integrity: IntegritySignals;
-  evidence: {
-    question: string;
-    excerpt: string;
-    band: UnderstandingBand;
-    reason: string;
-  }[];
-  requestId: string;
-  sessionId: string;
+  integrity: { status: IntegrityStatus };
+  /** Present only when the creator chose to show their name. */
+  creator?: { displayName: string; emailVerified: true };
   attempt: number;
   assuranceLevel: "L1";
 }
