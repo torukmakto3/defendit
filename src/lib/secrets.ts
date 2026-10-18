@@ -31,6 +31,14 @@ export function load32ByteSecret(envName: string, devFile: string): Buffer {
       `${envName} is not set. Generate one with: openssl rand -hex 32`,
     );
   }
+  // Dev keys + a shared database would write rows the deployment can't
+  // decrypt or verify (e.g. after `vercel env pull` puts DATABASE_URL in .env.local).
+  if (process.env.DATABASE_URL) {
+    throw new Error(
+      `${envName} is not set but DATABASE_URL is: refusing to use local dev keys against a shared database. ` +
+        "Unset DATABASE_URL for local dev, or set the deployment's keys.",
+    );
+  }
   const path = join(process.cwd(), "data", devFile);
   if (existsSync(path)) {
     const hex = (JSON.parse(readFileSync(path, "utf8")) as { hex: string }).hex;

@@ -53,3 +53,14 @@ describe("vault", () => {
     expect(() => encryptField("x", "ctx")).toThrow(/64 hex/);
   });
 });
+
+describe("dev keys and shared databases", () => {
+  it("refuses auto-generated dev keys when DATABASE_URL points at a shared database", () => {
+    process.env.DATABASE_URL = "postgres://u:p@db.example/x";
+    try {
+      expect(() => encryptField("x", "ctx")).toThrow(/shared database/);
+    } finally {
+      delete process.env.DATABASE_URL;
+    }
+  });
+});
