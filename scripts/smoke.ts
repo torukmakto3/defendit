@@ -97,6 +97,10 @@ async function main() {
   if (result.receipt.payload.deliverable.sha256 !== expectedHash) {
     throw new Error("Receipt hash mismatch");
   }
+  const published = JSON.stringify(result.receipt.payload);
+  if (published.includes("ana@fund.example") || published.includes("LTV and IRR")) {
+    throw new Error("Public receipt leaked email or an answer");
+  }
 
   const tampered = sha256Hex(Buffer.concat([buffer, Buffer.from("\n")]));
   if (tampered === expectedHash) throw new Error("Tamper hash should differ");

@@ -41,7 +41,7 @@ export async function GET(
   <p>Attach this sheet (or the stamp image) to <strong>${p.deliverable.fileName}</strong> when you send it.</p>
   <p><img class="stamp" src="${stampUrl}" alt="Defend It stamp"/></p>
   <p><strong>${p.score}/100 · ${diff}</strong> · ${valid ? "signature valid" : "signature invalid"}</p>
-  <p>Defended by ${p.creatorName} &lt;${p.creatorEmail}&gt;<br/>
+  <p>Defended by ${p.creatorName}<br/>
   ${new Date(p.createdAt).toLocaleString()}</p>
   <p class="meta">sha256:${p.deliverable.sha256}</p>
   <p>Verify: <a href="${verifyUrl}">${verifyUrl}</a></p>

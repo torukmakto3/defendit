@@ -38,22 +38,19 @@ export function buildSignedReceipt(opts: {
     );
     const matched = matchGradeForTurn(primary, t, opts.claims);
     return {
-      question: t.question,
-      excerpt: t.answer.slice(0, 220),
       band: (matched?.band || cg?.band || "Partial") as UnderstandingBand,
-      reason: matched?.reason || "See transcript.",
     };
   });
 
   const payload: ReceiptPayload = {
     id: newId("rcpt"),
-    version: "defend-it-receipt-v1",
+    version: "defend-it-receipt-v2",
     createdAt: new Date().toISOString(),
     difficulty: opts.difficulty,
     score,
     bandSummary: bands,
     creatorName: opts.creatorName,
-    creatorEmail: opts.creatorEmail,
+    // creatorEmail stays on the session row and is not signed into the public receipt.
     deliverable: {
       fileName: opts.fileName,
       sha256: opts.sha256,

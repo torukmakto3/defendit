@@ -12,15 +12,11 @@ interface ReceiptView {
       difficulty: string;
       createdAt: string;
       creatorName: string;
-      creatorEmail: string;
       deliverable: { fileName: string; sha256: string; byteLength: number };
       bandSummary: { section: string; band: string }[];
       integrity: { status: string; observations: string[] };
       evidence: {
-        question: string;
-        excerpt: string;
         band: string;
-        reason: string;
       }[];
       rubricVersion: string;
       modelVersions: string[];
@@ -98,9 +94,7 @@ export default function ReceiptPage() {
         </div>
         <div>
           <div className="label">Defended by</div>
-          <div>
-            {p.creatorName} · {p.creatorEmail}
-          </div>
+          <div>{p.creatorName}</div>
         </div>
         <div className="grid gap-6 sm:grid-cols-2">
           <div>
@@ -129,18 +123,16 @@ export default function ReceiptPage() {
       </div>
 
       <div className="mt-8">
-        <h2 className="text-2xl text-[var(--moss)]">Evidence</h2>
-        <div className="mt-4 space-y-4">
+        <h2 className="text-2xl text-[var(--moss)]">Bands</h2>
+        <p className="mt-2 text-sm text-[color-mix(in_srgb,var(--ink)_70%,transparent)]">
+          The signed receipt records the band for each answer. The words of the
+          interview stay on this account.
+        </p>
+        <div className="mt-4 flex flex-wrap gap-2">
           {p.evidence.map((e, i) => (
-            <div key={i} className="panel rounded-lg p-4">
-              <p className="text-sm font-medium">Q{i + 1}. {e.question}</p>
-              <p className="mt-2 text-sm italic text-[color-mix(in_srgb,var(--ink)_75%,transparent)]">
-                “{e.excerpt}”
-              </p>
-              <p className="mt-2 text-xs">
-                {e.band} — {e.reason}
-              </p>
-            </div>
+            <span key={i} className="panel rounded-lg px-3 py-2 text-sm">
+              {i + 1}. {e.band}
+            </span>
           ))}
         </div>
       </div>

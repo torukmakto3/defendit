@@ -82,13 +82,12 @@ export interface IntegritySignals {
 
 export interface ReceiptPayload {
   id: string;
-  version: "defend-it-receipt-v1";
+  version: "defend-it-receipt-v2";
   createdAt: string;
   difficulty: Difficulty;
   score: number;
   bandSummary: { section: string; band: UnderstandingBand }[];
   creatorName: string;
-  creatorEmail: string;
   deliverable: {
     fileName: string;
     sha256: string;
@@ -97,11 +96,9 @@ export interface ReceiptPayload {
   rubricVersion: string;
   modelVersions: string[];
   integrity: IntegritySignals;
+  /** Bands only. Questions and answers stay in the private session. */
   evidence: {
-    question: string;
-    excerpt: string;
     band: UnderstandingBand;
-    reason: string;
   }[];
   requestId: string;
   sessionId: string;
