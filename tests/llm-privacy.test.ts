@@ -16,6 +16,8 @@ const LLM_ENV = [
   "OLLAMA_BASE_URL",
   "OPENAI_COMPAT_BASE_URL",
   "LLM_ALLOW_UNVERIFIED_RETENTION",
+  "LIQUID_BASE_URL",
+  "VERCEL",
 ];
 
 let saved: Record<string, string | undefined> = {};
@@ -139,5 +141,47 @@ describe("retention guard", () => {
     await expect(completeJson(getPrimaryLlm(), req)).rejects.not.toThrow(
       /secret memo/,
     );
+  });
+});
+
+describe("council and deployment safety", () => {
+  it("leaves a leftover retaining-provider key out of the council", async () => {
+    process.env.LIQUID_API_KEY = "liq_test";
+    process.env.GROQ_API_KEY = "gsk_test";
+    const council = getGradingCouncil();
+    expect(council.map((m) => m.provider)).toEqual(["liquid"]);
+  });
+
+  it("refuses to fall back to mock models on a deployment", () => {
+    process.env.VERCEL = "1";
+    expect(() => getPrimaryLlm()).toThrow(/No LLM provider/);
+    process.env.MOCK_LLM = "1";
+    expect(getPrimaryLlm().provider).toBe("mock");
+  });
+
+  it("treats IPv6 loopback as local and remote model servers as unverified", () => {
+    process.env.OLLAMA_BASE_URL = "http://[::1]:11434/v1";
+    expect(getPrimaryLlm().retention).toBe("local");
+    process.env.OLLAMA_BASE_URL = "https://ollama.example.com/v1";
+    expect(getPrimaryLlm().retention).toBe("unverified");
+  });
+
+  it("drops the zero-retention label when the Liquid base URL is overridden", () => {
+    process.env.LIQUID_API_KEY = "liq_test";
+    process.env.LIQUID_BASE_URL = "https://proxy.example.com/v1";
+    expect(getPrimaryLlm().retention).toBe("unverified");
+  });
+
+  it("keeps provider error bodies out of thrown errors", async () => {
+    process.env.LIQUID_API_KEY = "liq_test";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: { code: "bad_request", message: "secret memo echoed" } }), {
+          status: 400,
+        }),
+      ),
+    );
+    await expect(getPrimaryLlm().complete(req)).rejects.toThrow("liquid error 400: bad_request");
   });
 });

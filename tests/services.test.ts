@@ -15,6 +15,7 @@ import {
   completeDefendSession,
   createDefenseRequest,
   creatorIngest,
+  getAdminSessionDetail,
   getReceipt,
   getRequestView,
   ingestDeliverable,
@@ -257,5 +258,144 @@ describe("rate limiting", () => {
     const third = await rateLimit(key, 2, 60);
     expect(third.ok).toBe(false);
     expect(third.retryAfterSec).toBeGreaterThan(0);
+  });
+});
+
+describe("one receipt per deliverable", () => {
+  it("refuses a second receipt from a parallel Defend session", async () => {
+    const { user } = await signIn("bestofn@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "n.md", buffer: memo });
+    const a = await startSession({ token: ingest.token, user, mode: "defend" });
+    const b = await startSession({ token: ingest.token, user, mode: "defend" });
+    await completeDefendSession({ sessionId: a.sessionId, user, turns: answersFor(a.plan) });
+    await expect(
+      completeDefendSession({ sessionId: b.sessionId, user, turns: answersFor(b.plan) }),
+    ).rejects.toMatchObject({ status: 409 });
+    const db = await getDb();
+    const n = await db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM receipts r JOIN defense_requests q ON q.id = r.request_id WHERE q.token = ?`,
+      [ingest.token],
+    );
+    expect(Number(n?.n)).toBe(1);
+  });
+
+  it("grades a double-submitted session once", async () => {
+    const { user } = await signIn("double@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "d.md", buffer: memo });
+    const s = await startSession({ token: ingest.token, user, mode: "defend" });
+    const results = await Promise.allSettled([
+      completeDefendSession({ sessionId: s.sessionId, user, turns: answersFor(s.plan) }),
+      completeDefendSession({ sessionId: s.sessionId, user, turns: answersFor(s.plan) }),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.find((r) => r.status === "rejected")).toMatchObject({ reason: { status: 409 } });
+  });
+
+  it("refuses a re-upload after the deliverable was defended", async () => {
+    const { user } = await signIn("swap@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "s.md", buffer: memo });
+    const s = await startSession({ token: ingest.token, user, mode: "defend" });
+    await completeDefendSession({ sessionId: s.sessionId, user, turns: answersFor(s.plan) });
+    await expect(
+      ingestDeliverable({ token: ingest.token, user, fileName: "other.md", buffer: Buffer.from(`${memo}\nedited`) }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+describe("no plaintext leftovers", () => {
+  it("never stores the file name as the request title", async () => {
+    const { user } = await signIn("title@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "Project-Falcon-LOI.md", buffer: memo });
+    const db = await getDb();
+    const row = await db.get<{ title: string }>(`SELECT title FROM defense_requests WHERE token = ?`, [ingest.token]);
+    expect(row?.title).not.toContain("Falcon");
+    expect((await getRequestView(ingest.token, user)).title).toBe("Project-Falcon-LOI");
+    const dash = await listDashboard(user);
+    expect(dash.find((r) => r.token === ingest.token)?.title).toBe("Project-Falcon-LOI");
+  });
+
+  it("leaves no request behind when a file can't be parsed", async () => {
+    const { user } = await signIn("orphan@fund.example");
+    const db = await getDb();
+    const before = await db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM defense_requests`);
+    await expect(
+      creatorIngest({ user, fileName: "tiny.txt", buffer: Buffer.from("too short") }),
+    ).rejects.toMatchObject({ status: 400 });
+    const after = await db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM defense_requests`);
+    expect(Number(after?.n)).toBe(Number(before?.n));
+  });
+});
+
+describe("expiry without the purge job", () => {
+  it("treats expired document text as deleted even before purge runs", async () => {
+    const { user } = await signIn("lazy@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "l.md", buffer: memo });
+    const db = await getDb();
+    await db.run(`UPDATE deliverables SET text_purge_after = ? WHERE id = ?`, [
+      new Date(Date.now() - 1000).toISOString(),
+      ingest.deliverableId,
+    ]);
+    await expect(startSession({ token: ingest.token, user, mode: "learn" })).rejects.toMatchObject({ status: 410 });
+    // Claims are still within retention, so a defense can still start.
+    await expect(startSession({ token: ingest.token, user, mode: "defend" })).resolves.toBeDefined();
+    expect((await getRequestView(ingest.token, user)).deliverable?.documentAvailable).toBe(false);
+
+    await db.run(`UPDATE deliverables SET purge_after = ? WHERE id = ?`, [
+      new Date(Date.now() - 1000).toISOString(),
+      ingest.deliverableId,
+    ]);
+    await expect(startSession({ token: ingest.token, user, mode: "defend" })).rejects.toMatchObject({ status: 410 });
+  });
+
+  it("purges only document text when the text TTL passes", async () => {
+    const { user } = await signIn("textttl@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "t.md", buffer: memo });
+    const db = await getDb();
+    await db.run(`UPDATE deliverables SET text_purge_after = ? WHERE id = ?`, [
+      new Date(Date.now() - 1000).toISOString(),
+      ingest.deliverableId,
+    ]);
+    await purgeExpired();
+    const row = await db.get<Record<string, string | null>>(
+      `SELECT text_enc, claims_enc, file_name_enc, purged_at FROM deliverables WHERE id = ?`,
+      [ingest.deliverableId],
+    );
+    expect(row?.text_enc).toBeNull();
+    expect(row?.claims_enc).not.toBeNull();
+    expect(row?.file_name_enc).not.toBeNull();
+    expect(row?.purged_at).toBeNull();
+  });
+
+  it("purges transcripts and grades after the retention window", async () => {
+    const { user } = await signIn("sessttl@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "st.md", buffer: memo });
+    const s = await startSession({ token: ingest.token, user, mode: "defend" });
+    const r = await completeDefendSession({ sessionId: s.sessionId, user, turns: answersFor(s.plan) });
+    const db = await getDb();
+    await db.run(`UPDATE sessions SET purge_after = ? WHERE id = ?`, [
+      new Date(Date.now() - 1000).toISOString(),
+      s.sessionId,
+    ]);
+    await purgeExpired();
+    const detail = await getAdminSessionDetail(s.sessionId);
+    expect(detail?.session.purged).toBe(true);
+    expect(detail?.grades).toHaveLength(0);
+    expect((await getReceipt(r.receipt.payload.id))?.payload.id).toBe(r.receipt.payload.id);
+  });
+});
+
+describe("receiver links", () => {
+  it("stops the requester from claiming their own link", async () => {
+    const { user: receiver } = await signIn("selfclaim@fund.example");
+    const req = await createDefenseRequest({
+      owner: receiver,
+      kind: "receiver",
+      difficulty: "standard",
+      title: "Self",
+    });
+    expect((await getRequestView(req.token, receiver)).canClaim).toBe(false);
+    await expect(
+      ingestDeliverable({ token: req.token, user: receiver, fileName: "x.md", buffer: memo }),
+    ).rejects.toMatchObject({ status: 403 });
   });
 });

@@ -14,6 +14,8 @@ export default function VerifyPage() {
 
   useEffect(() => {
     const t = new URLSearchParams(window.location.hash.slice(1)).get("token");
+    // Effects can run twice in development; the second run sees an empty hash.
+    if (!t) return;
     setToken(t);
     // Drop the token from the address bar and history.
     window.history.replaceState(null, "", window.location.pathname);

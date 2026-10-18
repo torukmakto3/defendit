@@ -7,7 +7,6 @@ import type {
   InterviewPlan,
   ModelGrade,
   TurnRecord,
-  UnderstandingBand,
 } from "./types";
 
 export { RUBRIC_VERSION };
@@ -26,26 +25,36 @@ export async function gradeSession(opts: {
   const council = getGradingCouncil();
   const transcript = buildTranscript(opts.claims, opts.plan, opts.turns);
 
-  const grades: ModelGrade[] = [];
-  for (const model of council) {
-    const { data, raw } = await completeJson<GradeJson>(model, {
-      purpose: "grade",
-      temperature: 0.1,
-      messages: [
-        { role: "system", content: rubricPrompt(opts.difficulty) },
-        {
-          role: "user",
-          content: `Grade this defense transcript.\n\n<transcript>\n${transcript}\n</transcript>`,
-        },
-      ],
-    });
-
-    grades.push({
-      modelId: raw.modelId,
-      provider: raw.provider,
-      claimGrades: normalizeClaimGrades(data.claimGrades, opts.claims),
-      overallScore: clampScore(data.overallScore),
-    });
+  // Members grade in parallel; a defense survives one member failing as long
+  // as a majority returns a grade.
+  const settled = await Promise.allSettled(
+    council.map(async (model): Promise<ModelGrade> => {
+      const { data, raw } = await completeJson<GradeJson>(model, {
+        purpose: "grade",
+        temperature: 0.1,
+        messages: [
+          { role: "system", content: rubricPrompt(opts.difficulty) },
+          {
+            role: "user",
+            content: `Grade this defense transcript.\n\n<transcript>\n${transcript}\n</transcript>`,
+          },
+        ],
+      });
+      return {
+        modelId: raw.modelId,
+        provider: raw.provider,
+        claimGrades: normalizeClaimGrades(data.claimGrades, opts.claims),
+        overallScore: clampScore(data.overallScore),
+      };
+    }),
+  );
+  const grades = settled
+    .filter((r): r is PromiseFulfilledResult<ModelGrade> => r.status === "fulfilled")
+    .map((r) => r.value);
+  const needed = Math.floor(council.length / 2) + 1;
+  if (grades.length < needed) {
+    const first = settled.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    throw first?.reason instanceof Error ? first.reason : new Error("Grading failed");
   }
   return grades;
 }
@@ -55,31 +64,6 @@ export function aggregateScore(grades: ModelGrade[]): number {
   const avg =
     grades.reduce((s, g) => s + g.overallScore, 0) / grades.length;
   return Math.round(avg);
-}
-
-export function bandSummary(
-  grades: ModelGrade[],
-  claims: Claim[],
-): { section: string; band: UnderstandingBand }[] {
-  const bySection = new Map<string, number[]>();
-  for (const g of grades) {
-    for (const cg of g.claimGrades) {
-      const claim = claims.find((c) => c.id === cg.claimId);
-      const section = cg.section || claim?.section || "General";
-      const avg =
-        Object.values(cg.scores).reduce((a, b) => a + b, 0) /
-        Object.values(cg.scores).length;
-      const list = bySection.get(section) || [];
-      list.push(avg);
-      bySection.set(section, list);
-    }
-  }
-  return [...bySection.entries()].map(([section, vals]) => {
-    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-    const band: UnderstandingBand =
-      avg >= 3 ? "Strong" : avg >= 2 ? "Partial" : "Weak";
-    return { section, band };
-  });
 }
 
 function buildTranscript(

@@ -3,7 +3,7 @@ import { appUrl } from "./config";
 import { sha256Hex } from "./crypto";
 import { getDb } from "./db";
 import { newId } from "./ids";
-import { keysRequired } from "./secrets";
+import { isDeployed } from "./secrets";
 
 /**
  * Passwordless email sign-in.
@@ -27,16 +27,41 @@ export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+/**
+ * Post-login redirect target: same-origin path only. Browsers strip tabs and
+ * newlines from URLs, so "/\t/evil.com" would otherwise become "//evil.com".
+ */
 export function safeNextPath(next: string | null | undefined): string {
-  if (!next || !next.startsWith("/") || next.startsWith("//") || next.includes("\\")) {
+  if (!next || !next.startsWith("/") || /[\u0000-\u001F\u007F\\]/.test(next)) return "/";
+  try {
+    const base = "http://same-origin.invalid";
+    const url = new URL(next, base);
+    if (url.origin !== base) return "/";
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
     return "/";
   }
-  return next;
 }
 
-/** Dev links are returned to the browser only where email isn't wired up. */
-export function devLinksAllowed(): boolean {
-  return process.env.AUTH_DEV_LINKS === "1" || !keysRequired();
+function matchesPattern(email: string, pattern: string): boolean {
+  const p = pattern.trim().toLowerCase();
+  if (!p) return false;
+  return p.startsWith("*@") ? email.endsWith(p.slice(1)) : email === p;
+}
+
+/**
+ * Showing the sign-in link on screen means anyone can sign in as any email,
+ * so it is only for local dev or a throwaway test deploy:
+ * - never for admin accounts;
+ * - on a deployment only with AUTH_DEV_LINKS=1, and only for addresses
+ *   matching AUTH_DEV_LINK_ALLOW (e.g. "*@example.com") when that is set.
+ */
+export function devLinksAllowed(email: string): boolean {
+  if (isAdminEmail(email)) return false;
+  if (!isDeployed()) return true;
+  if (process.env.AUTH_DEV_LINKS !== "1") return false;
+  const allow = (process.env.AUTH_DEV_LINK_ALLOW || "").split(",").filter((p) => p.trim());
+  return allow.length === 0 || allow.some((p) => matchesPattern(email, p));
 }
 
 export async function requestMagicLink(opts: {
@@ -64,7 +89,7 @@ export async function requestMagicLink(opts: {
     await sendEmail(email, link);
     return {};
   }
-  if (devLinksAllowed()) {
+  if (devLinksAllowed(email)) {
     console.info(`[auth] sign-in link for ${email} (dev mode, not emailed)`);
     return { devLink: link };
   }
@@ -74,6 +99,7 @@ export async function requestMagicLink(opts: {
 async function sendEmail(to: string, link: string) {
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
+    signal: AbortSignal.timeout(10_000),
     headers: {
       Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
       "Content-Type": "application/json",
@@ -111,17 +137,17 @@ export async function consumeMagicLink(token: string): Promise<{
     );
     if (!row) return null;
 
-    let user = await tx.get<User>(
+    // Two first-time sign-ins for one email can race; the unique email wins either way.
+    await tx.run(
+      `INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, NULL, ?)
+       ON CONFLICT (email) DO NOTHING`,
+      [newId("usr"), row.email, nowIso],
+    );
+    const user = await tx.get<User>(
       `SELECT id, email, display_name FROM users WHERE email = ?`,
       [row.email],
     );
-    if (!user) {
-      user = { id: newId("usr"), email: row.email, display_name: null };
-      await tx.run(
-        `INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, NULL, ?)`,
-        [user.id, user.email, nowIso],
-      );
-    }
+    if (!user) return null;
 
     const sessionToken = randomBytes(32).toString("base64url");
     await tx.run(
@@ -142,7 +168,12 @@ function readCookie(req: Request, name: string): string | null {
   if (!header) return null;
   for (const part of header.split(";")) {
     const [k, ...v] = part.trim().split("=");
-    if (k === name) return decodeURIComponent(v.join("="));
+    if (k !== name) continue;
+    try {
+      return decodeURIComponent(v.join("="));
+    } catch {
+      return null;
+    }
   }
   return null;
 }
@@ -175,19 +206,22 @@ export async function setDisplayName(userId: string, name: string | null) {
   ]);
 }
 
-export function isAdmin(user: User | null): boolean {
-  if (!user) return false;
+function isAdminEmail(email: string): boolean {
   const admins = (process.env.ADMIN_EMAILS || "")
     .split(",")
     .map((e) => normalizeEmail(e))
     .filter(Boolean);
-  return admins.includes(user.email);
+  return admins.includes(normalizeEmail(email));
+}
+
+export function isAdmin(user: User | null): boolean {
+  return !!user && isAdminEmail(user.email);
 }
 
 export function sessionCookieOptions() {
   return {
     httpOnly: true,
-    secure: keysRequired(),
+    secure: isDeployed(),
     sameSite: "lax" as const,
     path: "/",
     maxAge: SESSION_TTL_SEC,

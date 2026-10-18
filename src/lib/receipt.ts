@@ -54,7 +54,7 @@ export function buildSignedReceipt(opts: {
     assuranceLevel: "L1",
   };
   if (opts.displayName) {
-    payload.creator = { displayName: opts.displayName, emailVerified: true };
+    payload.creator = { displayName: opts.displayName, nameSelfReported: true };
   }
 
   const { signature, publicKey } = signPayload(payload);

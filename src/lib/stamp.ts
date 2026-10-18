@@ -1,11 +1,7 @@
 import QRCode from "qrcode";
+import { escapeHtml } from "./escape";
 import type { ReceiptPayload } from "./types";
 
-function esc(s: string): string {
-  return s.replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
-  );
-}
 
 /** Rendered on demand from the signed payload; nothing is written to disk. */
 export async function generateStampSvg(opts: {
@@ -31,8 +27,8 @@ export async function generateStampSvg(opts: {
   </defs>
   <rect width="420" height="120" rx="10" fill="url(#bg)" stroke="#1f4d2e" stroke-width="2"/>
   <text x="20" y="36" font-family="Georgia, serif" font-size="18" fill="#1f4d2e" font-weight="700">Defend It</text>
-  <text x="20" y="68" font-family="Georgia, serif" font-size="20" fill="#0f1c14">${esc(p.outcome)} ${mark} ${p.score}/100 · ${esc(diffLabel)}</text>
-  <text x="20" y="96" font-family="ui-monospace, monospace" font-size="10" fill="#3d5c45">${esc(opts.verifyUrl.replace(/^https?:\/\//, ""))}</text>
+  <text x="20" y="68" font-family="Georgia, serif" font-size="20" fill="#0f1c14">${escapeHtml(p.outcome)} ${mark} ${p.score}/100 · ${escapeHtml(diffLabel)}</text>
+  <text x="20" y="96" font-family="ui-monospace, monospace" font-size="10" fill="#3d5c45">${escapeHtml(opts.verifyUrl.replace(/^https?:\/\//, ""))}</text>
   <image x="290" y="12" width="96" height="96" href="${qrDataUrl}"/>
 </svg>`;
 }

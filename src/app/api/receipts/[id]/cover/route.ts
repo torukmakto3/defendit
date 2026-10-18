@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { escapeHtml } from "@/lib/escape";
 import { appUrl } from "@/lib/config";
 import { jsonError } from "@/lib/http";
 import { verifyReceipt } from "@/lib/receipt";
@@ -6,11 +7,6 @@ import { getReceipt } from "@/lib/services";
 
 export const runtime = "nodejs";
 
-function esc(s: string): string {
-  return s.replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
-  );
-}
 
 /** Printable cover sheet — attach or paste into email/Slack with the stamp. */
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
@@ -23,7 +19,9 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   const diff = p.difficulty.charAt(0).toUpperCase() + p.difficulty.slice(1);
   const stampUrl = appUrl(`/api/stamp/${p.id}`);
   const verifyUrl = receipt.verifyUrl;
-  const who = p.creator ? `Defended by ${esc(p.creator.displayName)} (verified email)` : "Defended";
+  const who = p.creator
+    ? `Defended by ${escapeHtml(p.creator.displayName)} (self-reported name; verified email sign-in)`
+    : "Defended";
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -40,14 +38,14 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 <body>
   <h1>Defend It · Understanding cover</h1>
   <p>Attach this sheet (or the stamp image) to the deliverable when you send it.</p>
-  <p><img class="stamp" src="${esc(stampUrl)}" alt="Defend It stamp"/></p>
-  <p><strong>${esc(p.outcome)} · ${p.score}/100 · ${esc(diff)}</strong> · ${valid ? "signature valid" : "signature invalid"}</p>
-  <p>${who}<br/>${esc(new Date(p.createdAt).toUTCString())}</p>
+  <p><img class="stamp" src="${escapeHtml(stampUrl)}" alt="Defend It stamp"/></p>
+  <p><strong>${escapeHtml(p.outcome)} · ${p.score}/100 · ${escapeHtml(diff)}</strong> · ${valid ? "signature valid" : "signature invalid"}</p>
+  <p>${who}<br/>${escapeHtml(new Date(p.createdAt).toUTCString())}</p>
   <p>Claims probed: ${p.bands.strong} strong · ${p.bands.partial} partial · ${p.bands.weak} weak</p>
-  <p>Integrity (reported separately): ${esc(p.integrity.status)}</p>
-  <p class="meta">sha256:${esc(p.deliverable.sha256)}</p>
-  <p>Verify: <a href="${esc(verifyUrl)}">${esc(verifyUrl)}</a></p>
-  <p style="margin-top:48px;font-size:12px;color:#666">Rubric ${esc(p.rubricVersion)} · Models ${esc(p.modelVersions.join(", "))}</p>
+  <p>Integrity (reported separately): ${escapeHtml(p.integrity.status)}</p>
+  <p class="meta">sha256:${escapeHtml(p.deliverable.sha256)}</p>
+  <p>Verify: <a href="${escapeHtml(verifyUrl)}">${escapeHtml(verifyUrl)}</a></p>
+  <p style="margin-top:48px;font-size:12px;color:#666">Rubric ${escapeHtml(p.rubricVersion)} · Models ${escapeHtml(p.modelVersions.join(", "))}</p>
 </body>
 </html>`;
 

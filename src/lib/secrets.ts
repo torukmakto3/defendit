@@ -2,17 +2,22 @@ import { randomBytes } from "crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 
-/**
- * Deployed instances must take secrets from the environment. Local dev may
- * auto-generate them into ./data (gitignored) so `npm run dev` needs no setup.
- */
-export function keysRequired(): boolean {
-  if (process.env.DEFEND_IT_REQUIRE_KEYS === "1") return true;
-  if (process.env.DEFEND_IT_REQUIRE_KEYS === "0") return false;
+/** Running as a real deployment (not `npm run dev` / tests). Not overridable. */
+export function isDeployed(): boolean {
   return process.env.VERCEL === "1" || process.env.NODE_ENV === "production";
 }
 
-/** A 32-byte secret as 64 hex chars, from env or (dev only) a local file. */
+/** Whether secrets must come from env. DEFEND_IT_REQUIRE_KEYS overrides for local `npm start`. */
+export function keysRequired(): boolean {
+  if (process.env.DEFEND_IT_REQUIRE_KEYS === "1") return true;
+  if (process.env.DEFEND_IT_REQUIRE_KEYS === "0") return false;
+  return isDeployed();
+}
+
+/**
+ * A 32-byte secret as 64 hex chars. Deployed instances must take it from the
+ * environment; local dev auto-generates it into ./data (gitignored).
+ */
 export function load32ByteSecret(envName: string, devFile: string): Buffer {
   const fromEnv = process.env[envName];
   if (fromEnv) {

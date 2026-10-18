@@ -38,7 +38,8 @@ export function createOpenAICompatProvider(opts: {
       const res = await fetch(`${base}/chat/completions`, {
         method: "POST",
         headers,
-        signal: AbortSignal.timeout(Number(process.env.LLM_TIMEOUT_MS || "90000")),
+        // Below the 60s route budget, so a slow model fails cleanly instead of the function being killed.
+        signal: AbortSignal.timeout(Number(process.env.LLM_TIMEOUT_MS || "45000")),
         body: JSON.stringify({
           model: opts.model,
           temperature: req.temperature ?? 0.3,
@@ -81,13 +82,22 @@ async function safeErrorCode(res: Response): Promise<string> {
   }
 }
 
+/** A base-URL override pointing elsewhere loses the vendor's retention guarantee. */
+function vendorRetention(baseUrl: string, vendorHost: string): RetentionClass {
+  try {
+    return new URL(baseUrl).hostname === vendorHost ? "zero-enforced" : "unverified";
+  } catch {
+    return "unverified";
+  }
+}
+
 function isLocalUrl(url: string): boolean {
   try {
     const host = new URL(url).hostname;
     return (
       host === "localhost" ||
       host === "127.0.0.1" ||
-      host === "::1" ||
+      host === "[::1]" ||
       host.endsWith(".local") ||
       host.endsWith(".internal")
     );
@@ -112,14 +122,14 @@ export function createLiquidProvider(
     .map((c) => c.trim())
     .filter(Boolean);
   const capUsd = Number(process.env.LIQUID_CAP_USD || "0.05");
+  const baseUrl = process.env.LIQUID_BASE_URL || "https://router.inference.ai.exchange/v1";
   return createOpenAICompatProvider({
     id: model,
     provider: "liquid",
     apiKey,
-    baseUrl:
-      process.env.LIQUID_BASE_URL || "https://router.inference.ai.exchange/v1",
+    baseUrl,
     model,
-    retention: "zero-enforced",
+    retention: vendorRetention(baseUrl, "router.inference.ai.exchange"),
     extraHeaders: {
       "x-liquid-retention": "none",
       "x-liquid-tag": process.env.LIQUID_TAG || "defend-it",
@@ -185,13 +195,14 @@ export function createOpenRouterProvider(
   apiKey: string,
   model = process.env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct",
 ): LlmProvider {
+  const baseUrl = process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
   return createOpenAICompatProvider({
     id: model,
     provider: "openrouter",
     apiKey,
-    baseUrl: process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1",
+    baseUrl,
     model,
-    retention: "zero-enforced",
+    retention: vendorRetention(baseUrl, "openrouter.ai"),
     extraBody: {
       provider: { zdr: true, data_collection: "deny" },
     },

@@ -104,8 +104,11 @@ export interface ReceiptPayload {
   rubricVersion: string;
   modelVersions: string[];
   integrity: { status: IntegrityStatus };
-  /** Present only when the creator chose to show their name. */
-  creator?: { displayName: string; emailVerified: true };
+  /**
+   * Present only when the creator chose to show their name. The name is
+   * self-reported; only the account's email was verified at sign-in.
+   */
+  creator?: { displayName: string; nameSelfReported: true };
   attempt: number;
   assuranceLevel: "L1";
 }

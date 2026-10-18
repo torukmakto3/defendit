@@ -72,7 +72,8 @@ function extractSpreadsheetText(buffer: Buffer, XLSX: typeof import("xlsx")): st
 
     const rows = XLSX.utils.sheet_to_json<(string | number | boolean | null)[]>(
       sheet,
-      { header: 1, defval: "" },
+      // Formatted text ("1.2%", "$12M"), not raw numbers, so questions match what the creator sees.
+      { header: 1, defval: "", raw: false },
     ) as unknown[][];
 
     for (const row of rows.slice(0, 200)) {

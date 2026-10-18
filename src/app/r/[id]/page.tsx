@@ -81,7 +81,9 @@ export default function ReceiptPage() {
         <div>
           <div className="label">Defended by</div>
           <div>
-            {p.creator ? `${p.creator.displayName} · verified email` : "Not disclosed by the creator"}
+            {p.creator
+              ? `${p.creator.displayName} (name given by the creator, who signed in with a verified email)`
+              : "Not disclosed by the creator"}
           </div>
         </div>
         <div className="grid gap-6 sm:grid-cols-2">

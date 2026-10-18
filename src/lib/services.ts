@@ -10,7 +10,7 @@ import { nextLearnTurn, type GapItem } from "./learn";
 import { llmModeLabel } from "./llm";
 import { extractText, guessMimeType } from "./parse";
 import { buildInterviewPlan, buildLearnPlan } from "./probes";
-import { buildSignedReceipt, outcomeFor } from "./receipt";
+import { buildSignedReceipt } from "./receipt";
 import type {
   Claim,
   Difficulty,
@@ -48,6 +48,39 @@ const ctx = {
   scores: (id: string) => `grades.scores:${id}`,
 };
 
+const isPast = (iso: string | null | undefined) => !!iso && iso < new Date().toISOString();
+
+/**
+ * Expiry is enforced on every read, not only by the purge job: if the cron
+ * is misconfigured or late, expired content still behaves as deleted.
+ */
+function liveText(d: DeliverableRow): string | null {
+  if (!d.text_enc || isPast(d.text_purge_after) || isPast(d.purge_after)) return null;
+  return decryptField(d.text_enc, ctx.text(d.id));
+}
+
+function liveClaims(d: DeliverableRow): Claim[] | null {
+  if (d.purged_at || isPast(d.purge_after)) return null;
+  return decryptJson<Claim[]>(d.claims_enc, ctx.claims(d.id));
+}
+
+function liveFileName(d: DeliverableRow): string | null {
+  if (d.purged_at || isPast(d.purge_after)) return null;
+  return decryptField(d.file_name_enc, ctx.fileName(d.id));
+}
+
+/** Stored title for creator-initiated defenses: never the file name, which can be sensitive. */
+const PRIVATE_TITLE = "Private deliverable";
+
+let lastOpportunisticPurge = 0;
+/** Backstop for the daily cron: at most hourly per instance, never fails the caller. */
+function maybePurge() {
+  const now = Date.now();
+  if (now - lastOpportunisticPurge < 3600_000) return;
+  lastOpportunisticPurge = now;
+  purgeExpired().catch((e) => console.error("[purge] opportunistic purge failed", e instanceof Error ? e.message : e));
+}
+
 interface RequestRow {
   id: string;
   token: string;
@@ -73,6 +106,8 @@ interface DeliverableRow {
   file_name_enc: string | null;
   text_enc: string | null;
   claims_enc: string | null;
+  text_purge_after: string | null;
+  purge_after: string;
   purged_at: string | null;
   created_at: string;
 }
@@ -91,17 +126,19 @@ interface SessionRow {
   status: string;
   started_at: string;
   completed_at: string | null;
+  purge_after: string;
 }
 
-export async function createDefenseRequest(input: {
+interface NewRequest {
   owner: User;
   kind: "creator" | "receiver";
   difficulty: Difficulty;
   title: string;
   notes?: string;
   pinnedClaims?: string;
-}) {
-  const db = await getDb();
+}
+
+async function insertRequest(db: Db, input: NewRequest) {
   const requestId = newId("req");
   const token = newToken();
   await db.run(
@@ -124,6 +161,64 @@ export async function createDefenseRequest(input: {
   return { requestId, token };
 }
 
+export async function createDefenseRequest(input: NewRequest) {
+  return insertRequest(await getDb(), input);
+}
+
+interface PreparedUpload {
+  fileName: string;
+  mime: string;
+  sha256: string;
+  byteLength: number;
+  text: string;
+  claims: Claim[];
+}
+
+/** Parse and extract claims before anything is written, so failures leave no rows behind. */
+async function prepareUpload(fileName: string, buffer: Buffer, mimeType?: string): Promise<PreparedUpload> {
+  if (buffer.length > MAX_UPLOAD_BYTES) {
+    throw new HttpError(413, `File is larger than ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)} MB`);
+  }
+  const mime = mimeType || guessMimeType(fileName);
+  let text: string;
+  try {
+    text = (await extractText(buffer, mime, fileName)).slice(0, MAX_TEXT_CHARS);
+  } catch {
+    throw new HttpError(400, "Could not read that file. Try PDF, DOCX, XLSX, CSV, TXT or MD.");
+  }
+  if (!text || text.length < 20) {
+    throw new HttpError(400, "Could not extract enough text from the upload.");
+  }
+  const claims = await extractClaims(text);
+  return { fileName, mime, sha256: sha256Hex(buffer), byteLength: buffer.length, text, claims };
+}
+
+async function insertDeliverable(db: Db, requestId: string, user: User, u: PreparedUpload) {
+  const deliverableId = newId("del");
+  await db.run(
+    `INSERT INTO deliverables
+      (id, request_id, owner_user_id, mime_type, byte_length, sha256, claim_count,
+       file_name_enc, text_enc, claims_enc, text_purge_after, purge_after, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      deliverableId,
+      requestId,
+      user.id,
+      u.mime,
+      u.byteLength,
+      u.sha256,
+      u.claims.length,
+      encryptField(u.fileName.slice(0, 255), ctx.fileName(deliverableId)),
+      encryptField(u.text, ctx.text(deliverableId)),
+      encryptJson(u.claims, ctx.claims(deliverableId)),
+      hoursFromNow(documentTtlHours()),
+      hoursFromNow(retentionDays() * 24),
+      new Date().toISOString(),
+    ],
+  );
+  return deliverableId;
+}
+
 /** Creator-driven entry: drop a file, we mint a self-request, then Learn / Defend. */
 export async function creatorIngest(opts: {
   user: User;
@@ -132,21 +227,31 @@ export async function creatorIngest(opts: {
   difficulty?: Difficulty;
   mimeType?: string;
 }) {
-  const title = opts.fileName.replace(/\.[^.]+$/, "").slice(0, 120) || "Untitled deliverable";
-  const created = await createDefenseRequest({
-    owner: opts.user,
-    kind: "creator",
-    difficulty: opts.difficulty || "hard",
-    title,
+  maybePurge();
+  const upload = await prepareUpload(opts.fileName, opts.buffer, opts.mimeType);
+  const db = await getDb();
+  const result = await db.transaction(async (tx) => {
+    const created = await insertRequest(tx, {
+      owner: opts.user,
+      kind: "creator",
+      difficulty: opts.difficulty || "hard",
+      title: PRIVATE_TITLE,
+    });
+    const deliverableId = await insertDeliverable(tx, created.requestId, opts.user, upload);
+    await tx.run(`UPDATE defense_requests SET status = 'uploaded' WHERE id = ?`, [created.requestId]);
+    return { ...created, deliverableId };
   });
-  const uploaded = await ingestDeliverable({
-    token: created.token,
-    user: opts.user,
-    fileName: opts.fileName,
-    buffer: opts.buffer,
-    mimeType: opts.mimeType,
-  });
-  return { ...created, ...uploaded, title };
+  return {
+    ...result,
+    sha256: upload.sha256,
+    claimCount: upload.claims.length,
+    textLength: upload.text.length,
+    title: displayTitle(opts.fileName),
+  };
+}
+
+function displayTitle(fileName: string | null): string {
+  return fileName?.replace(/\.[^.]+$/, "").slice(0, 120) || PRIVATE_TITLE;
 }
 
 export async function getRequestByToken(token: string) {
@@ -175,9 +280,14 @@ export async function getRequestView(token: string, user: User | null) {
   const request = await requireRequest(token);
   const isCreator = !!user && request.creator_user_id === user.id;
   const isOwner = !!user && request.owner_user_id === user.id;
-  const canClaim = !!user && !request.creator_user_id && request.kind === "receiver";
+  const canClaim =
+    !!user &&
+    !request.creator_user_id &&
+    request.kind === "receiver" &&
+    request.owner_user_id !== user.id;
   const view = {
     title: request.title,
+    // Creator-initiated titles are filled in from the encrypted file name below.
     difficulty: request.difficulty,
     status: request.status,
     kind: request.kind,
@@ -197,14 +307,17 @@ export async function getRequestView(token: string, user: User | null) {
   if (isCreator || isOwner) {
     const d = await getLatestDeliverable(request.id);
     if (d) {
+      const fileName = liveFileName(d);
+      const purged = !!d.purged_at || isPast(d.purge_after);
       view.deliverable = {
-        fileName: decryptField(d.file_name_enc, ctx.fileName(d.id)),
+        fileName,
         sha256: d.sha256,
         byteLength: d.byte_length,
         claimCount: d.claim_count,
-        documentAvailable: !!d.text_enc,
-        purged: !!d.purged_at,
+        documentAvailable: !purged && !!d.text_enc && !isPast(d.text_purge_after),
+        purged,
       };
+      if (request.kind === "creator") view.title = displayTitle(fileName);
     }
   }
   return view;
@@ -217,68 +330,45 @@ export async function ingestDeliverable(opts: {
   buffer: Buffer;
   mimeType?: string;
 }) {
-  if (opts.buffer.length > MAX_UPLOAD_BYTES) {
-    throw new HttpError(413, `File is larger than ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)} MB`);
-  }
+  maybePurge();
   const request = await requireRequest(opts.token);
-  if (request.kind === "receiver" && !request.creator_user_id) {
-    // First signed-in uploader on a receiver link becomes its creator.
+  const claiming = request.kind === "receiver" && !request.creator_user_id;
+  if (claiming) {
+    if (request.owner_user_id === opts.user.id) {
+      throw new HttpError(403, "Send this link to the person who should defend the deliverable.");
+    }
   } else {
     assertCreator(request, opts.user);
   }
-
-  const mime = opts.mimeType || guessMimeType(opts.fileName);
-  const sha256 = sha256Hex(opts.buffer);
-  let text: string;
-  try {
-    text = (await extractText(opts.buffer, mime, opts.fileName)).slice(0, MAX_TEXT_CHARS);
-  } catch {
-    throw new HttpError(400, "Could not read that file. Try PDF, DOCX, XLSX, CSV, TXT or MD.");
-  }
-  if (!text || text.length < 20) {
-    throw new HttpError(400, "Could not extract enough text from the upload.");
+  if (request.status === "defended") {
+    throw new HttpError(409, "This deliverable has already been defended.");
   }
 
-  const claims = await extractClaims(text);
-  const deliverableId = newId("del");
-  const nowIso = new Date().toISOString();
+  const upload = await prepareUpload(opts.fileName, opts.buffer, opts.mimeType);
   const db = await getDb();
-
-  await db.transaction(async (tx) => {
-    if (!request.creator_user_id) {
+  const deliverableId = await db.transaction(async (tx) => {
+    if (claiming) {
       const claimed = await tx.run(
         `UPDATE defense_requests SET creator_user_id = ? WHERE id = ? AND creator_user_id IS NULL`,
         [opts.user.id, request.id],
       );
-      if (claimed.changes !== 1) {
-        throw new HttpError(403, "This defense belongs to another account");
-      }
+      if (claimed.changes !== 1) throw new HttpError(403, "This defense belongs to another account");
     }
-    await tx.run(
-      `INSERT INTO deliverables
-        (id, request_id, owner_user_id, mime_type, byte_length, sha256, claim_count,
-         file_name_enc, text_enc, claims_enc, text_purge_after, purge_after, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        deliverableId,
-        request.id,
-        opts.user.id,
-        mime,
-        opts.buffer.length,
-        sha256,
-        claims.length,
-        encryptField(opts.fileName.slice(0, 255), ctx.fileName(deliverableId)),
-        encryptField(text, ctx.text(deliverableId)),
-        encryptJson(claims, ctx.claims(deliverableId)),
-        hoursFromNow(documentTtlHours()),
-        hoursFromNow(retentionDays() * 24),
-        nowIso,
-      ],
+    // Never move a defended request back: its receipt is bound to the earlier hash.
+    const open = await tx.run(
+      `UPDATE defense_requests SET status = 'uploaded' WHERE id = ? AND status <> 'defended'`,
+      [request.id],
     );
-    await tx.run(`UPDATE defense_requests SET status = 'uploaded' WHERE id = ?`, [request.id]);
+    if (open.changes !== 1) throw new HttpError(409, "This deliverable has already been defended.");
+    return insertDeliverable(tx, request.id, opts.user, upload);
   });
 
-  return { deliverableId, sha256, claimCount: claims.length, textLength: text.length };
+  return {
+    deliverableId,
+    sha256: upload.sha256,
+    claimCount: upload.claims.length,
+    textLength: upload.text.length,
+  };
 }
 
 async function getLatestDeliverable(requestId: string) {
@@ -294,22 +384,18 @@ export async function startSession(opts: {
   user: User;
   mode: "learn" | "defend";
 }) {
+  maybePurge();
   const request = await requireRequest(opts.token);
   assertCreator(request, opts.user);
   const deliverable = await getLatestDeliverable(request.id);
   if (!deliverable) throw new HttpError(400, "Upload a deliverable first");
-  const claims = decryptJson<Claim[]>(deliverable.claims_enc, ctx.claims(deliverable.id));
+  const claims = liveClaims(deliverable);
   if (!claims) throw new HttpError(410, "This upload has been purged. Upload the file again.");
-  if (opts.mode === "learn" && !deliverable.text_enc) {
+  if (opts.mode === "learn" && !liveText(deliverable)) {
     throw new HttpError(410, "The document text has been purged. Upload the file again to keep learning.");
   }
-  if (opts.mode === "defend") {
-    const db = await getDb();
-    const done = await db.get<{ id: string }>(
-      `SELECT id FROM receipts WHERE request_id = ? LIMIT 1`,
-      [request.id],
-    );
-    if (done) throw new HttpError(409, "This deliverable has already been defended.");
+  if (opts.mode === "defend" && request.status === "defended") {
+    throw new HttpError(409, "This deliverable has already been defended.");
   }
 
   const seed = newId("seed");
@@ -363,6 +449,7 @@ async function requireOwnSession(sessionId: string, user: User, mode: "learn" | 
   if (!session || session.mode !== mode || session.user_id !== user.id) {
     throw new HttpError(404, `${mode === "learn" ? "Learn" : "Defend"} session not found`);
   }
+  if (isPast(session.purge_after)) throw new HttpError(410, "This session has expired.");
   return session;
 }
 
@@ -372,10 +459,8 @@ export async function learnCoachTurn(opts: { sessionId: string; user: User; answ
   const deliverable = await db.get<DeliverableRow>(`SELECT * FROM deliverables WHERE id = ?`, [
     session.deliverable_id,
   ]);
-  const text = deliverable ? decryptField(deliverable.text_enc, ctx.text(deliverable.id)) : null;
-  const claims = deliverable
-    ? decryptJson<Claim[]>(deliverable.claims_enc, ctx.claims(deliverable.id))
-    : null;
+  const text = deliverable ? liveText(deliverable) : null;
+  const claims = deliverable ? liveClaims(deliverable) : null;
   if (!deliverable || !text || !claims) {
     throw new HttpError(410, "The document text has been purged. Upload the file again to keep learning.");
   }
@@ -444,7 +529,6 @@ export async function completeDefendSession(opts: {
   showName?: boolean;
 }) {
   const session = await requireOwnSession(opts.sessionId, opts.user, "defend");
-  if (session.status === "completed") throw new HttpError(409, "This defense is already complete.");
   const db = await getDb();
 
   const request = await db.get<RequestRow>(`SELECT * FROM defense_requests WHERE id = ?`, [
@@ -454,57 +538,78 @@ export async function completeDefendSession(opts: {
     session.deliverable_id,
   ]);
   const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
-  const claims = deliverable
-    ? decryptJson<Claim[]>(deliverable.claims_enc, ctx.claims(deliverable.id))
-    : null;
+  const claims = deliverable ? liveClaims(deliverable) : null;
   if (!request || !deliverable || !plan || !claims) {
     throw new HttpError(410, "This session has expired. Start a new defense.");
+  }
+  if (request.status === "defended") {
+    throw new HttpError(409, "This deliverable has already been defended.");
   }
 
   const turns = reconcileTurns(plan, opts.turns);
   if (turns.length === 0) throw new HttpError(400, "No answers to grade.");
 
-  // Grading sees probe metadata and answers only, never the document text.
-  const grades = await gradeSession({ difficulty: request.difficulty, claims, plan, turns });
-  const integrity = computeIntegrity({
-    turns,
-    pasteEvents: opts.pasteEvents,
-    focusBlurEvents: opts.focusBlurEvents,
-  });
-  const signed = buildSignedReceipt({
-    difficulty: request.difficulty,
-    sha256: deliverable.sha256,
-    byteLength: deliverable.byte_length,
-    grades,
-    integrity,
-    displayName: opts.showName ? opts.user.display_name : null,
-  });
+  // Claim the session before paying for grading, so a double submit can't grade twice.
+  const claimed = await db.run(
+    `UPDATE sessions SET status = 'grading' WHERE id = ? AND status = 'in_progress'`,
+    [session.id],
+  );
+  if (claimed.changes !== 1) throw new HttpError(409, "This defense is already complete.");
 
-  const nowIso = new Date().toISOString();
-  await db.transaction(async (tx) => {
-    const closed = await tx.run(
-      `UPDATE sessions SET transcript_enc = ?, integrity_json = ?, status = 'completed', completed_at = ?
-       WHERE id = ? AND status <> 'completed'`,
-      [encryptJson(turns, ctx.transcript(session.id)), JSON.stringify(integrity), nowIso, session.id],
-    );
-    if (closed.changes !== 1) throw new HttpError(409, "This defense is already complete.");
-    for (const g of grades) {
-      const gradeId = newId("grd");
-      await tx.run(
-        `INSERT INTO grades (id, session_id, model_id, provider, scores_enc, overall_score, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [gradeId, session.id, g.modelId, g.provider, encryptJson(g, ctx.scores(gradeId)), g.overallScore, nowIso],
+  let signed: SignedReceipt;
+  let grades: ModelGrade[];
+  let integrity: ReturnType<typeof computeIntegrity>;
+  try {
+    // Grading sees probe metadata and answers only, never the document text.
+    grades = await gradeSession({ difficulty: request.difficulty, claims, plan, turns });
+    integrity = computeIntegrity({
+      turns,
+      pasteEvents: opts.pasteEvents,
+      focusBlurEvents: opts.focusBlurEvents,
+    });
+    signed = buildSignedReceipt({
+      difficulty: request.difficulty,
+      sha256: deliverable.sha256,
+      byteLength: deliverable.byte_length,
+      grades,
+      integrity,
+      displayName: opts.showName ? opts.user.display_name : null,
+    });
+
+    const nowIso = new Date().toISOString();
+    await db.transaction(async (tx) => {
+      // One receipt per deliverable: two parallel Defend sessions can't both mint one.
+      const won = await tx.run(
+        `UPDATE defense_requests SET status = 'defended' WHERE id = ? AND status <> 'defended'`,
+        [request.id],
       );
-    }
-    await tx.run(
-      `INSERT INTO receipts (id, session_id, request_id, payload_json, signature, public_key, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [signed.payload.id, session.id, request.id, JSON.stringify(signed), signed.signature, signed.publicKey, nowIso],
-    );
-    await tx.run(`UPDATE defense_requests SET status = 'defended' WHERE id = ?`, [request.id]);
-    // The defense is done: the document body is no longer needed.
-    await tx.run(`UPDATE deliverables SET text_enc = NULL WHERE id = ?`, [deliverable.id]);
-  });
+      if (won.changes !== 1) throw new HttpError(409, "This deliverable has already been defended.");
+      await tx.run(
+        `UPDATE sessions SET transcript_enc = ?, integrity_json = ?, status = 'completed', completed_at = ?
+         WHERE id = ?`,
+        [encryptJson(turns, ctx.transcript(session.id)), JSON.stringify(integrity), nowIso, session.id],
+      );
+      for (const g of grades) {
+        const gradeId = newId("grd");
+        await tx.run(
+          `INSERT INTO grades (id, session_id, model_id, provider, scores_enc, overall_score, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [gradeId, session.id, g.modelId, g.provider, encryptJson(g, ctx.scores(gradeId)), g.overallScore, nowIso],
+        );
+      }
+      await tx.run(
+        `INSERT INTO receipts (id, session_id, request_id, payload_json, signature, public_key, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [signed.payload.id, session.id, request.id, JSON.stringify(signed), signed.signature, signed.publicKey, nowIso],
+      );
+      // The defense is done: the document body is no longer needed.
+      await tx.run(`UPDATE deliverables SET text_enc = NULL WHERE id = ?`, [deliverable.id]);
+    });
+  } catch (e) {
+    // Release the claim so the creator can retry after a grading or storage failure.
+    await db.run(`UPDATE sessions SET status = 'in_progress' WHERE id = ? AND status = 'grading'`, [session.id]);
+    throw e;
+  }
 
   return {
     receipt: signed,
@@ -539,11 +644,18 @@ export async function listDashboard(user: User) {
     creator_user_id: string | null;
     receipt_id: string | null;
     payload_json: string | null;
+    deliverable_id: string | null;
+    file_name_enc: string | null;
+    purge_after: string | null;
+    purged_at: string | null;
   }>(
     `SELECT r.id, r.token, r.title, r.kind, r.difficulty, r.status, r.created_at,
-            r.owner_user_id, r.creator_user_id, rc.id AS receipt_id, rc.payload_json
+            r.owner_user_id, r.creator_user_id, rc.id AS receipt_id, rc.payload_json,
+            d.id AS deliverable_id, d.file_name_enc, d.purge_after, d.purged_at
      FROM defense_requests r
      LEFT JOIN receipts rc ON rc.request_id = r.id
+     LEFT JOIN deliverables d ON d.id =
+       (SELECT id FROM deliverables WHERE request_id = r.id ORDER BY created_at DESC LIMIT 1)
      WHERE r.owner_user_id = ? OR r.creator_user_id = ?
      ORDER BY r.created_at DESC
      LIMIT 200`,
@@ -551,17 +663,22 @@ export async function listDashboard(user: User) {
   );
   return rows.map((r) => {
     const receipt = r.payload_json ? (JSON.parse(r.payload_json) as SignedReceipt) : null;
+    const isCreator = r.creator_user_id === user.id;
+    const fileName =
+      isCreator && r.deliverable_id && !r.purged_at && !isPast(r.purge_after)
+        ? decryptField(r.file_name_enc, ctx.fileName(r.deliverable_id))
+        : null;
     return {
       token: r.token,
-      title: r.title,
+      title: r.kind === "creator" ? displayTitle(fileName) : r.title,
       kind: r.kind,
-      role: r.creator_user_id === user.id ? "creator" : "receiver",
+      role: isCreator ? "creator" : "receiver",
       difficulty: r.difficulty,
       status: r.status,
       createdAt: r.created_at,
       receiptId: r.receipt_id,
       score: receipt?.payload.score ?? null,
-      outcome: receipt ? receipt.payload.outcome ?? outcomeFor(receipt.payload.score) : null,
+      outcome: receipt ? receipt.payload.outcome : null,
     };
   });
 }
@@ -650,9 +767,9 @@ export async function saveHumanGrade(opts: {
   );
 }
 
-/** Delete expired content. Safe to run often (cron + opportunistically). */
-export async function purgeExpired(db?: Db) {
-  db ??= await getDb();
+/** Delete expired content. Safe to run often: daily cron plus an hourly in-process backstop. */
+export async function purgeExpired() {
+  const db = await getDb();
   const nowIso = new Date().toISOString();
   const text = await db.run(
     `UPDATE deliverables SET text_enc = NULL WHERE text_enc IS NOT NULL AND text_purge_after < ?`,
@@ -670,6 +787,11 @@ export async function purgeExpired(db?: Db) {
   );
   await db.run(
     `UPDATE grades SET scores_enc = NULL WHERE scores_enc IS NOT NULL AND session_id IN
+       (SELECT id FROM sessions WHERE purge_after < ?)`,
+    [nowIso],
+  );
+  await db.run(
+    `UPDATE human_grades SET notes = NULL WHERE notes IS NOT NULL AND session_id IN
        (SELECT id FROM sessions WHERE purge_after < ?)`,
     [nowIso],
   );

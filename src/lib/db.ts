@@ -133,7 +133,8 @@ CREATE INDEX IF NOT EXISTS idx_requests_creator ON defense_requests(creator_user
 CREATE INDEX IF NOT EXISTS idx_deliverables_request ON deliverables(request_id);
 CREATE INDEX IF NOT EXISTS idx_deliverables_purge ON deliverables(purge_after);
 CREATE INDEX IF NOT EXISTS idx_sessions_purge ON sessions(purge_after);
-CREATE INDEX IF NOT EXISTS idx_receipts_request ON receipts(request_id);
+-- One receipt per deliverable request, enforced by the database too.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_receipts_request ON receipts(request_id);
 `;
 
 let dbPromise: Promise<Db> | null = null;
@@ -207,7 +208,11 @@ async function openPostgres(): Promise<Db> {
     prepare: false,
     onnotice: () => {},
   });
-  await sql.unsafe(SCHEMA);
+  // Concurrent cold starts would otherwise race on CREATE TABLE IF NOT EXISTS.
+  await sql.begin(async (tx) => {
+    await tx.unsafe("SELECT pg_advisory_xact_lock(726213)");
+    await tx.unsafe(SCHEMA);
+  });
   return postgresAdapter(sql);
 }
 

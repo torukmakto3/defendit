@@ -8,6 +8,7 @@ import {
   createOpenRouterProvider,
 } from "./openai-compat";
 import { createOpenAIProvider } from "./openai";
+import { isDeployed } from "../secrets";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./types";
 
 export type {
@@ -35,7 +36,14 @@ export function isMockLlm(): boolean {
   if (process.env.MOCK_LLM === "1" || process.env.MOCK_LLM === "true") {
     return true;
   }
-  return !hasAnyLiveKey();
+  if (hasAnyLiveKey()) return false;
+  // A deployment with no model configured must not sign mock-graded receipts.
+  if (isDeployed()) {
+    throw new Error(
+      "No LLM provider is configured. Set LIQUID_API_KEY (or another provider), or MOCK_LLM=1 for a test deployment.",
+    );
+  }
+  return true;
 }
 
 function preferProvider(): string {
@@ -123,9 +131,12 @@ export function getGradingCouncil(): LlmProvider[] {
   const env = process.env;
   const council: LlmProvider[] = [];
   const seen = new Set<string>();
+  const allowUnverified = env.LLM_ALLOW_UNVERIFIED_RETENTION === "1";
   const add = (p: LlmProvider) => {
     const key = `${p.provider}:${p.id}`;
     if (seen.has(key)) return;
+    // A leftover key for a retaining provider must not join (and break) the council.
+    if (p.retention === "unverified" && !allowUnverified) return;
     seen.add(key);
     council.push(guardRetention(p));
   };
@@ -180,7 +191,11 @@ function stripJsonFence(content: string): string {
 }
 
 export function llmModeLabel(): string {
-  if (isMockLlm()) return "mock (offline)";
-  const p = getPrimaryLlm();
-  return `live (${p.provider}:${p.id}, retention ${p.retention})`;
+  try {
+    if (isMockLlm()) return "mock (offline)";
+    const p = getPrimaryLlm();
+    return `live (${p.provider}:${p.id}, retention ${p.retention})`;
+  } catch {
+    return "not configured";
+  }
 }

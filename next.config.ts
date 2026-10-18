@@ -37,7 +37,8 @@ const nextConfig: NextConfig = {
     return [
       { source: "/:path*", headers: securityHeaders },
       // Signed-in API responses must never be cached by a shared cache.
-      { source: "/api/:path*", headers: [{ key: "Cache-Control", value: "private, no-store" }] },
+      // (The public stamp image sets its own long-lived cache header.)
+      { source: "/api/((?!stamp/).*)", headers: [{ key: "Cache-Control", value: "private, no-store" }] },
     ];
   },
 };
