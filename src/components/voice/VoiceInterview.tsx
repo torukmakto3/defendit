@@ -102,6 +102,15 @@ export function VoiceInterview({
       await room.connect(j.url, j.token);
       await room.localParticipant.setMicrophoneEnabled(true);
       if (room.state === ConnectionState.Connected) setPhase("live");
+      // If no interviewer joins, say so instead of leaving the creator in silence.
+      setTimeout(() => {
+        const hasAgent = [...room.remoteParticipants.values()].some((p) => p.isAgent);
+        if (!hasAgent && room.state === ConnectionState.Connected && !finishing.current) {
+          setError("The interviewer didn't join. Try again in a moment, or answer in writing below.");
+          setPhase("error");
+          void room.disconnect();
+        }
+      }, 20_000);
     } catch (e) {
       setError(
         e instanceof Error && /permission|denied|NotAllowed/i.test(e.message)
