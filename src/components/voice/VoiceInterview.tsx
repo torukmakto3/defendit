@@ -211,7 +211,7 @@ export function VoiceInterview({
             )}
             <ol ref={logRef} className="grid max-h-72 gap-2 overflow-y-auto pr-1" aria-live="polite" aria-label="Transcript">
               {log.length === 0 && <li className="text-sm text-[var(--ink-2)]">The examiner is about to start…</li>}
-              {log.map((e) => (
+              {mergeTurns(log).map((e) => (
                 <li key={e.id} className={`grid gap-0.5 ${e.who === "you" ? "justify-items-end text-right" : ""}`}>
                   <span className="mono text-[10px] uppercase tracking-[0.08em] text-[var(--ink-2)]">
                     {e.who === "you" ? "You" : "Examiner"}
@@ -254,4 +254,15 @@ export function VoiceInterview({
       )}
     </div>
   );
+}
+
+/** One bubble per turn: join consecutive segments from the same speaker. */
+function mergeTurns(entries: { id: string; who: "examiner" | "you"; text: string }[]) {
+  const out: typeof entries = [];
+  for (const e of entries) {
+    const last = out[out.length - 1];
+    if (last && last.who === e.who) out[out.length - 1] = { ...last, text: `${last.text} ${e.text}`.trim() };
+    else out.push({ ...e });
+  }
+  return out;
 }
