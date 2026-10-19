@@ -33,7 +33,9 @@ export function VoiceInterview({
   const [index, setIndex] = useState(0);
   const [answered, setAnswered] = useState(0);
   const [agentState, setAgentState] = useState("initializing");
-  const [caption, setCaption] = useState<{ who: "examiner" | "you"; text: string } | null>(null);
+  const [log, setLog] = useState<{ id: string; who: "examiner" | "you"; text: string }[]>([]);
+  const [showQuestion, setShowQuestion] = useState(false);
+  const logRef = useRef<HTMLOListElement>(null);
   const [error, setError] = useState<string | null>(null);
   const roomRef = useRef<Room | null>(null);
   const audioRef = useRef<HTMLDivElement>(null);
@@ -56,6 +58,10 @@ export function VoiceInterview({
   }, [onComplete]);
 
   useEffect(() => () => void roomRef.current?.disconnect(), []);
+  useEffect(() => {
+    logRef.current?.lastElementChild?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [log]);
+  useEffect(() => setShowQuestion(false), [index]);
 
   async function start() {
     setPhase("connecting");
@@ -87,12 +93,21 @@ export function VoiceInterview({
           if (msg.type === "done") void finish();
         } catch {}
       });
+      // Live transcript: one entry per spoken segment, filled in as words arrive.
       room.registerTextStreamHandler("lk.transcription", async (reader, participant) => {
-        const who = participant.identity === room.localParticipant.identity ? "you" : "examiner";
+        const who: "examiner" | "you" = participant.identity === room.localParticipant.identity ? "you" : "examiner";
+        const id = reader.info.attributes?.["lk.segment_id"] ?? reader.info.id;
         let text = "";
         for await (const chunk of reader) {
           text += chunk;
-          setCaption({ who, text });
+          const snapshot = text;
+          setLog((entries) => {
+            const i = entries.findIndex((e) => e.id === id);
+            if (i === -1) return [...entries, { id, who, text: snapshot }];
+            const next = entries.slice();
+            next[i] = { ...next[i], text: snapshot };
+            return next;
+          });
         }
       });
       room.on(RoomEvent.Disconnected, () => {
@@ -143,40 +158,74 @@ export function VoiceInterview({
       </ol>
 
       <div className="panel grid gap-5 p-5 sm:p-6">
-        <div className="grid grid-cols-[auto_1fr] items-start gap-4">
+        <div className="grid grid-cols-[auto_1fr] items-center gap-4">
           <Companion state={companion} size={84} />
           <div className="min-w-0">
-            {phase === "ready" || phase === "connecting" ? (
-              <>
-                <p className="mono text-xs uppercase tracking-[0.08em] text-[var(--blueprint)]">Live voice interview</p>
-                <p className="mt-2 text-lg font-semibold">
-                  The examiner will ask {total} questions out loud. Answer in your own words and pause when you&apos;re done.
-                </p>
-                <p className="mt-2 text-sm text-[var(--ink-2)]">
-                  Your answers are transcribed to grade them; the audio is never stored. Use headphones if you can.
-                </p>
-              </>
-            ) : (
+            {phase === "live" ? (
               <>
                 <p className="mono text-xs uppercase tracking-[0.08em] text-[var(--blueprint)]">
                   Question {Math.min(index + 1, total)} of {total}
                 </p>
-                <p className="mt-2 text-lg font-semibold">{current?.question}</p>
+                <p className="mt-1 text-lg font-semibold" aria-live="polite">
+                  {agentState === "speaking"
+                    ? "The examiner is asking…"
+                    : agentState === "thinking"
+                      ? "Saving your answer…"
+                      : "Your turn. Answer out loud, then pause."}
+                </p>
+              </>
+            ) : phase === "grading" ? (
+              <p className="text-lg font-semibold">Grading your defense…</p>
+            ) : (
+              <>
+                <p className="mono text-xs uppercase tracking-[0.08em] text-[var(--blueprint)]">Live voice interview</p>
+                <p className="mt-2 text-lg font-semibold">
+                  The examiner will ask you {total} questions out loud. Answer in your own words and pause when you&apos;re done.
+                </p>
+                <p className="mt-2 text-sm text-[var(--ink-2)]">
+                  A transcript follows along on screen. Your answers are transcribed to grade them; the audio is never
+                  stored. Headphones help.
+                </p>
               </>
             )}
           </div>
         </div>
 
-        {phase === "live" && (
-          <div className="min-h-[3.5rem] border-t-[1.5px] border-[var(--ink)] pt-3" aria-live="polite">
-            {caption ? (
-              <p className="text-sm">
-                <span className="mono mr-2 text-xs uppercase tracking-[0.08em] text-[var(--ink-2)]">{caption.who}</span>
-                {caption.text}
-              </p>
-            ) : (
-              <p className="text-sm text-[var(--ink-2)]">Captions appear here.</p>
+        {(phase === "live" || phase === "grading") && (
+          <div className="grid gap-3 border-t-[1.5px] border-[var(--ink)] pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="mono text-xs uppercase tracking-[0.08em] text-[var(--ink-2)]">Transcript</span>
+              {current && phase === "live" && (
+                <button
+                  type="button"
+                  className="mono text-xs uppercase tracking-[0.08em] text-[var(--blueprint)] underline"
+                  aria-expanded={showQuestion}
+                  onClick={() => setShowQuestion((v) => !v)}
+                >
+                  {showQuestion ? "Hide question text" : "Show question text"}
+                </button>
+              )}
+            </div>
+            {showQuestion && current && (
+              <p className="border-l-2 border-[var(--blueprint)] pl-3 text-sm">{current.question}</p>
             )}
+            <ol ref={logRef} className="grid max-h-72 gap-2 overflow-y-auto pr-1" aria-live="polite" aria-label="Transcript">
+              {log.length === 0 && <li className="text-sm text-[var(--ink-2)]">The examiner is about to start…</li>}
+              {log.map((e) => (
+                <li key={e.id} className={`grid gap-0.5 ${e.who === "you" ? "justify-items-end text-right" : ""}`}>
+                  <span className="mono text-[10px] uppercase tracking-[0.08em] text-[var(--ink-2)]">
+                    {e.who === "you" ? "You" : "Examiner"}
+                  </span>
+                  <span
+                    className={`max-w-[85%] px-3 py-2 text-sm ${
+                      e.who === "you" ? "bg-[var(--mist)]" : "border-[1.5px] border-[var(--ink)] bg-[var(--card)]"
+                    }`}
+                  >
+                    {e.text}
+                  </span>
+                </li>
+              ))}
+            </ol>
           </div>
         )}
 
@@ -185,12 +234,6 @@ export function VoiceInterview({
             {phase === "connecting" ? "Connecting…" : "Start voice interview"}
           </button>
         )}
-        {phase === "live" && (
-          <p className="mono text-xs uppercase tracking-[0.08em] text-[var(--ink-2)]">
-            {agentState === "speaking" ? "Examiner speaking" : agentState === "thinking" ? "Saving your answer" : "Listening to you"}
-          </p>
-        )}
-        {phase === "grading" && <p className="font-semibold">Grading your defense…</p>}
         {error && <p className="text-sm text-danger">{error}</p>}
         {phase === "error" && (
           <button type="button" className="btn btn-ghost justify-self-start" onClick={start}>
