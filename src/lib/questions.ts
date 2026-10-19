@@ -40,7 +40,7 @@ export async function phraseQuestions(plan: InterviewPlan, claims: Claim[]): Pro
       llm.getPrimaryLlm(),
       {
         purpose: "write_questions",
-        temperature: 0.8,
+        temperature: 0.4,
         messages: [
           {
             role: "system",
@@ -70,7 +70,10 @@ export async function phraseQuestions(plan: InterviewPlan, claims: Claim[]): Pro
     ...plan,
     probes: plan.probes.map((p) => {
       const text = written.get(p.id);
+      const claim = byId.get(p.claimId)?.text ?? "";
       if (!text || text.length < 12 || text.length > MAX_LEN) return p;
+      // A question that shares no concrete token with its claim is not grounded.
+      if (p.type !== "planted_error" && !sharesToken(text, claim)) return p;
       if (p.type === "planted_error") {
         // The model writes the lead-in only; the altered excerpt is appended by code.
         if (p.plantedContent && text.includes(p.plantedContent.slice(0, 24))) return p;
@@ -79,4 +82,12 @@ export async function phraseQuestions(plan: InterviewPlan, claims: Claim[]): Pro
       return { ...p, question: text };
     }),
   };
+}
+
+/** A question has to use something specific from the claim (a word of 5+ letters or a number). */
+function sharesToken(question: string, claim: string): boolean {
+  const tokens = claim.toLowerCase().match(/[a-z]{5,}|\d[\d,]*/g) ?? [];
+  if (tokens.length === 0) return true;
+  const q = question.toLowerCase();
+  return tokens.some((token) => q.includes(token));
 }

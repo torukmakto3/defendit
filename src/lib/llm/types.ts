@@ -9,6 +9,8 @@ export interface LlmRequest {
   json?: boolean;
   /** Label used in receipts / grading council */
   purpose?: string;
+  /** Aborts the HTTP call when the structured-output deadline fires. */
+  signal?: AbortSignal;
 }
 
 export interface LlmResponse {

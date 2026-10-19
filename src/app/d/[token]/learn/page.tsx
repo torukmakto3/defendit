@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Companion, type CompanionState } from "@/components/companion/Companion";
 
 interface GapItem {
@@ -22,38 +22,46 @@ export default function LearnPage() {
   const [error, setError] = useState<string | null>(null);
   // The coach's read of the last answer drives the companion's reaction.
   const [reaction, setReaction] = useState<string | null>(null);
+  const startedRef = useRef(false);
+  const sendingRef = useRef(false);
+
+  const boot = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const start = await fetch("/api/sessions/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, mode: "learn" }),
+      }).then((r) => r.json());
+      if (start.error) throw new Error(start.error);
+      setSessionId(start.sessionId);
+      const turn = await fetch("/api/sessions/learn", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: start.sessionId }),
+      }).then((r) => r.json());
+      if (turn.error) throw new Error(turn.error);
+      setCoachMessage(turn.coachMessage);
+      setGaps(turn.gaps || []);
+      setReaction(turn.gapHint?.strength ?? null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }, [token]);
 
   useEffect(() => {
-    (async () => {
-      setBusy(true);
-      try {
-        const start = await fetch("/api/sessions/start", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token, mode: "learn" }),
-        }).then((r) => r.json());
-        if (start.error) throw new Error(start.error);
-        setSessionId(start.sessionId);
-        const turn = await fetch("/api/sessions/learn", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId: start.sessionId }),
-        }).then((r) => r.json());
-        if (turn.error) throw new Error(turn.error);
-        setCoachMessage(turn.coachMessage);
-        setGaps(turn.gaps || []);
-        setReaction(turn.gapHint?.strength ?? null);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed");
-      } finally {
-        setBusy(false);
-      }
-    })();
-  }, [token]);
+    if (startedRef.current) return;
+    startedRef.current = true;
+    void boot();
+  }, [boot]);
 
   async function submitAnswer(e: React.FormEvent) {
     e.preventDefault();
-    if (!sessionId || !answer.trim()) return;
+    if (!sessionId || !answer.trim() || sendingRef.current) return;
+    sendingRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -71,6 +79,7 @@ export default function LearnPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
     } finally {
+      sendingRef.current = false;
       setBusy(false);
     }
   }
@@ -113,7 +122,16 @@ export default function LearnPage() {
               placeholder="Explain in your own words…"
               disabled={busy}
             />
-            {error && <p className="text-sm text-danger">{error}</p>}
+            {error && (
+              <p className="text-sm text-danger">
+                {error}{" "}
+                {!sessionId && (
+                  <button type="button" className="underline" onClick={() => void boot()}>
+                    Try again
+                  </button>
+                )}
+              </p>
+            )}
             <button type="submit" className="btn btn-primary" disabled={busy}>
               {busy ? "Thinking…" : "Reply"}
             </button>

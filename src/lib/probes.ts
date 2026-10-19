@@ -1,31 +1,56 @@
-import { mulberry32, pickN, seedFromString } from "./rng";
-import type { Claim, Difficulty, InterviewPlan, Probe, ProbeType } from "./types";
+import { mulberry32, seedFromString } from "./rng";
+import type { Claim, ClaimKind, Difficulty, InterviewPlan, Probe, ProbeType, QuestionDifficulty } from "./types";
 import { newId } from "./ids";
 
-const PROBE_WEIGHTS: Record<Difficulty, ProbeType[]> = {
-  standard: ["explain_back", "explain_back", "weakest_link", "confidence"],
+type Prefer = ClaimKind | "high";
+
+interface BlueprintSlot {
+  type: ProbeType;
+  difficulty: QuestionDifficulty;
+  prefer: Prefer[];
+}
+
+/**
+ * Fixed coverage per difficulty. The seed shuffles order and which claim fills
+ * a slot. It does not change how many of each type or difficulty are asked.
+ */
+const BLUEPRINT: Record<Difficulty, BlueprintSlot[]> = {
+  standard: [
+    { type: "explain_back", difficulty: 1, prefer: ["claim", "high"] },
+    { type: "explain_back", difficulty: 2, prefer: ["number", "high"] },
+    { type: "weakest_link", difficulty: 2, prefer: ["assumption"] },
+    { type: "confidence", difficulty: 1, prefer: ["claim"] },
+    { type: "counterfactual", difficulty: 2, prefer: ["number"] },
+  ],
   hard: [
-    "explain_back",
-    "counterfactual",
-    "planted_error",
-    "weakest_link",
-    "prediction",
+    { type: "explain_back", difficulty: 2, prefer: ["high", "claim"] },
+    { type: "counterfactual", difficulty: 3, prefer: ["number"] },
+    { type: "planted_error", difficulty: 2, prefer: ["number"] },
+    { type: "weakest_link", difficulty: 2, prefer: ["assumption"] },
+    { type: "prediction", difficulty: 3, prefer: ["assumption", "high"] },
+    { type: "confidence", difficulty: 1, prefer: ["claim"] },
   ],
   expert: [
-    "explain_back",
-    "counterfactual",
-    "counterfactual",
-    "planted_error",
-    "weakest_link",
-    "prediction",
+    { type: "explain_back", difficulty: 2, prefer: ["high", "claim"] },
+    { type: "counterfactual", difficulty: 3, prefer: ["number"] },
+    { type: "counterfactual", difficulty: 3, prefer: ["assumption", "number"] },
+    { type: "planted_error", difficulty: 3, prefer: ["number"] },
+    { type: "weakest_link", difficulty: 2, prefer: ["assumption"] },
+    { type: "prediction", difficulty: 3, prefer: ["high", "assumption"] },
+    { type: "confidence", difficulty: 2, prefer: ["claim"] },
   ],
 };
 
-const TARGET_COUNTS: Record<Difficulty, number> = {
-  standard: 5,
-  hard: 6,
-  expert: 7,
-};
+export function blueprintMix(difficulty: Difficulty): string[] {
+  return BLUEPRINT[difficulty].map((s) => `${s.type}:${s.difficulty}`).sort();
+}
+
+export function claimKind(claim: Claim): ClaimKind {
+  if (claim.kind === "claim" || claim.kind === "assumption" || claim.kind === "number") return claim.kind;
+  if (/\d/.test(claim.text) || (claim.figures?.length ?? 0) > 0) return "number";
+  if (/\b(assum|risk|depend|contingent|fragile)\b/i.test(claim.text)) return "assumption";
+  return "claim";
+}
 
 export function buildInterviewPlan(opts: {
   claims: Claim[];
@@ -34,57 +59,49 @@ export function buildInterviewPlan(opts: {
   pinnedClaimIds?: string[];
 }): InterviewPlan {
   const rand = mulberry32(seedFromString(opts.seed));
-  const types = PROBE_WEIGHTS[opts.difficulty];
-  const count = TARGET_COUNTS[opts.difficulty];
-
-  const high = opts.claims.filter((c) => c.stakes === "high");
-  const rest = opts.claims.filter((c) => c.stakes !== "high");
-  const pinned = opts.claims.filter((c) =>
-    opts.pinnedClaimIds?.includes(c.id),
-  );
-
-  const pool = [
-    ...pinned,
-    ...pickN(high, Math.max(3, Math.ceil(count * 0.6)), rand),
-    ...pickN(rest, count, rand),
-  ];
-  const unique = dedupeClaims(pool).slice(0, count);
-
-  let plantedErrorClaimId: string | undefined;
-  if (opts.difficulty !== "standard" && unique.length > 0) {
-    const idx = Math.floor(rand() * unique.length);
-    plantedErrorClaimId = unique[idx].id;
-  }
-
-  // Seeded shuffle of the type mix, so interviews don't all open the same way.
-  const order = shuffle([...types], rand);
-  const probes: Probe[] = unique.map((claim, i) => {
-    let type = order[i % order.length];
-    if (plantedErrorClaimId && claim.id === plantedErrorClaimId) {
-      type = "planted_error";
-    } else if (type === "planted_error" && claim.id !== plantedErrorClaimId) {
-      type = "counterfactual";
-    }
-    return buildProbe(claim, type, rand);
+  const slots = shuffle([...BLUEPRINT[opts.difficulty]], rand);
+  const pinned = new Set(opts.pinnedClaimIds ?? []);
+  const used = new Set<string>();
+  const probes = slots.map((slot) => {
+    const claim = pickClaim(opts.claims, slot, used, pinned, rand);
+    return buildProbe(claim, slot.type, slot.difficulty, rand);
   });
-
   return {
     seed: opts.seed,
     difficulty: opts.difficulty,
     probes,
-    plantedErrorClaimId,
+    plantedErrorClaimId: probes.find((p) => p.type === "planted_error")?.claimId,
   };
 }
 
-function dedupeClaims(claims: Claim[]): Claim[] {
-  const seen = new Set<string>();
-  const out: Claim[] = [];
-  for (const c of claims) {
-    if (seen.has(c.id)) continue;
-    seen.add(c.id);
-    out.push(c);
+function preference(claim: Claim, slot: BlueprintSlot, pinned: Set<string>): number {
+  const kind = claimKind(claim);
+  let score = 0;
+  if (slot.prefer.includes(kind)) score += 2;
+  if (slot.prefer[0] === kind) score += 1;
+  if (slot.prefer.includes("high") && claim.stakes === "high") score += 2;
+  if (pinned.has(claim.id)) score += 3;
+  return score;
+}
+
+function pickClaim(
+  claims: Claim[],
+  slot: BlueprintSlot,
+  used: Set<string>,
+  pinned: Set<string>,
+  rand: () => number,
+): Claim {
+  const pool = claims.length ? claims : [];
+  if (pool.length === 0) {
+    return { id: "claim_missing", text: "The deliverable's main claim.", section: "General", sourceSpan: "", stakes: "medium" };
   }
-  return out;
+  const unused = pool.filter((c) => !used.has(c.id));
+  const candidates = unused.length ? unused : pool;
+  const best = Math.max(...candidates.map((c) => preference(c, slot, pinned)));
+  const top = candidates.filter((c) => preference(c, slot, pinned) === best);
+  const pick = top[Math.floor(rand() * top.length)];
+  used.add(pick.id);
+  return pick;
 }
 
 function shuffle<T>(items: T[], rand: () => number): T[] {
@@ -146,7 +163,7 @@ export function plantedQuestion(lead: string, altered: string): string {
   return `${lead}\n\n"${altered}"`;
 }
 
-function buildProbe(claim: Claim, type: ProbeType, rand: () => number): Probe {
+function buildProbe(claim: Claim, type: ProbeType, difficulty: QuestionDifficulty, rand: () => number): Probe {
   const id = newId("probe");
   if (type === "planted_error") {
     const altered = plantError(claim.text, rand);
@@ -154,12 +171,13 @@ function buildProbe(claim: Claim, type: ProbeType, rand: () => number): Probe {
       id,
       claimId: claim.id,
       type,
+      difficulty,
       question: plantedQuestion(pick(PLANTED_LEADS, rand), altered),
       plantedContent: altered,
       expectedFocus: "detect alteration",
     };
   }
-  const expectedFocus: Record<typeof type, string> = {
+  const expectedFocus: Record<Exclude<ProbeType, "planted_error">, string> = {
     explain_back: claim.sourceSpan,
     counterfactual: "sensitivity / assumptions",
     weakest_link: claim.section,
@@ -170,8 +188,22 @@ function buildProbe(claim: Claim, type: ProbeType, rand: () => number): Probe {
     id,
     claimId: claim.id,
     type,
+    difficulty,
     question: fill(pick(TEMPLATES[type], rand), claim, type === "confidence" ? 100 : 160),
     expectedFocus: expectedFocus[type],
+  };
+}
+
+/** One extra question when graders disagree. Wording is fixed so it costs no model call. */
+export function makeFollowUpProbe(claim: Claim, source: Probe): Probe {
+  return {
+    id: newId("probe"),
+    claimId: claim.id,
+    type: "explain_back",
+    difficulty: source.difficulty ?? 2,
+    followUpOf: source.id,
+    question: `One more check, because that answer was read differently by different graders. What in the document supports "${truncate(claim.text, 140)}", and which assumption would change your answer?`,
+    expectedFocus: claim.sourceSpan,
   };
 }
 

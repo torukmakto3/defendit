@@ -79,6 +79,17 @@ describe("phraseQuestions", () => {
     expect(out.probes.map((p) => p.question)).toEqual(plan.probes.map((p) => p.question));
   });
 
+  it("rejects a question that is not grounded in the claim", async () => {
+    const plan = buildInterviewPlan({ claims: memoClaims, difficulty: "standard", seed: "ground" });
+    const llm = await import("../src/lib/llm");
+    vi.spyOn(llm, "completeJson").mockResolvedValue({
+      data: { questions: plan.probes.map((p) => ({ probeId: p.id, question: "What do you think about this in general terms?" })) },
+      raw: { content: "", modelId: "m", provider: "mock" },
+    } as never);
+    const out = await phraseQuestions(plan, memoClaims);
+    expect(out.probes.map((p) => p.question)).toEqual(plan.probes.map((p) => p.question));
+  });
+
   it("keeps the template plan when the model call fails", async () => {
     const plan = buildInterviewPlan({ claims: memoClaims, difficulty: "standard", seed: "err" });
     const llm = await import("../src/lib/llm");

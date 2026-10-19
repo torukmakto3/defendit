@@ -27,6 +27,7 @@ export function createAnthropicProvider(
           "anthropic-version": "2023-06-01",
           "Content-Type": "application/json",
         },
+        signal: req.signal,
         body: JSON.stringify({
           model,
           max_tokens: 4096,

@@ -2,14 +2,14 @@ import type { User } from "./auth";
 import { extractClaims } from "./claims";
 import { getPublicKeyHex, sha256Hex } from "./crypto";
 import { getDb, type Db } from "./db";
-import { aggregateScore, claimScores, gradeSession, shouldFlagForHuman } from "./grading";
+import { aggregateScore, claimScores, gradeSession, scoreDefense, shouldFlagForHuman } from "./grading";
 import { HttpError } from "./http";
 import { newId, newToken } from "./ids";
 import { computeIntegrity } from "./integrity";
 import { nextLearnTurn, type GapItem } from "./learn";
 import { llmModeLabel } from "./llm";
 import { extractText, guessMimeType } from "./parse";
-import { buildInterviewPlan, buildLearnPlan } from "./probes";
+import { buildInterviewPlan, buildLearnPlan, makeFollowUpProbe } from "./probes";
 import { phraseQuestions } from "./questions";
 import { buildSignedReceipt } from "./receipt";
 import type {
@@ -526,7 +526,14 @@ export async function recordDefendAnswer(opts: {
 }) {
   const session = await requireOwnSession(opts.sessionId, opts.user, "defend");
   if (session.channel === "voice") {
-    throw new HttpError(409, "This defense is taken by voice; answers are recorded from the call.");
+    const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
+    const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
+    const next = plan?.probes[turns.length];
+    const already = turns.some((t) => t.probeId === opts.probeId);
+    // A disagreement follow-up is typed even when the rest of the defense was spoken.
+    if (!next?.followUpOf && !already) {
+      throw new HttpError(409, "This defense is taken by voice; answers are recorded from the call.");
+    }
   }
   return storeAnswer(session, opts.probeId, opts.answer);
 }
@@ -595,12 +602,27 @@ async function storeAnswer(
   const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
   if (!plan) throw new HttpError(410, "This session has expired. Start a new defense.");
   const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
+  const answer = rawAnswer.trim().slice(0, 4000);
+  if (!answer) throw new HttpError(400, "Answer is empty.");
+
+  const progress = (rows: TurnRecord[], idempotent = false) => ({
+    answered: rows.length,
+    total: plan.probes.length,
+    done: rows.length >= plan.probes.length,
+    ...(idempotent ? { idempotent: true } : {}),
+  });
+
+  // Same answer saved twice (a retry after a dropped response) is success.
+  // A different answer for a question already stored is refused.
+  const prior = turns.find((t) => t.probeId === probeId);
+  if (prior) {
+    if (prior.answer === answer) return progress(turns, true);
+    throw new HttpError(409, "That question is already answered.");
+  }
 
   const probe = plan.probes[turns.length];
   if (!probe) throw new HttpError(409, "All questions are already answered.");
   if (probe.id !== probeId) throw new HttpError(409, "Answer the current question first.");
-  const answer = rawAnswer.trim().slice(0, 4000);
-  if (!answer) throw new HttpError(400, "Answer is empty.");
 
   const now = new Date();
   const startedAt = timing?.startedAt ?? (turns.length ? turns[turns.length - 1].endedAt : session.started_at);
@@ -613,7 +635,7 @@ async function storeAnswer(
     startedAt,
     endedAt,
     latencyMs: timing?.latencyMs ?? Math.max(0, now.getTime() - new Date(startedAt).getTime()),
-    followUpIndex: 0,
+    followUpIndex: probe.followUpOf ? 1 : 0,
   });
 
   // Optimistic concurrency: the stored ciphertext doubles as a version, so a
@@ -623,8 +645,14 @@ async function storeAnswer(
     `UPDATE sessions SET transcript_enc = ? WHERE id = ? AND transcript_enc = ? AND status = 'in_progress'`,
     [encryptJson(turns, ctx.transcript(session.id)), session.id, session.transcript_enc],
   );
-  if (saved.changes !== 1) throw new HttpError(409, "That answer was already recorded.");
-  return { answered: turns.length, total: plan.probes.length, done: turns.length >= plan.probes.length };
+  if (saved.changes !== 1) {
+    const fresh = await db.get<SessionRow>(`SELECT * FROM sessions WHERE id = ?`, [session.id]);
+    const freshTurns = decryptJson<TurnRecord[]>(fresh?.transcript_enc, ctx.transcript(session.id)) ?? [];
+    const raced = freshTurns.find((t) => t.probeId === probe.id);
+    if (raced?.answer === answer) return progress(freshTurns, true);
+    throw new HttpError(409, "That answer was already recorded.");
+  }
+  return progress(turns);
 }
 
 export async function completeDefendSession(opts: {
@@ -649,6 +677,22 @@ export async function completeDefendSession(opts: {
   if (!request || !deliverable || !plan || !claims) {
     throw new HttpError(410, "This session has expired. Start a new defense.");
   }
+  // A retry after a dropped response returns the receipt this session already minted.
+  if (session.status === "completed") {
+    const existing = await receiptForSession(db, session.id);
+    if (existing) {
+      return {
+        receipt: existing,
+        score: existing.payload.score,
+        flagged: false,
+        stampPath: `/api/stamp/${existing.payload.id}`,
+        idempotent: true,
+      };
+    }
+  }
+  if (session.status === "grading") {
+    throw new HttpError(409, "Grading is still running. Retry in a moment.");
+  }
   if (request.status === "defended") {
     throw new HttpError(409, "This deliverable has already been defended.");
   }
@@ -656,6 +700,9 @@ export async function completeDefendSession(opts: {
   // Grade only what the server recorded, never a client-supplied transcript.
   const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
   if (turns.length === 0) throw new HttpError(400, "No answers to grade.");
+  if (turns.length < plan.probes.length) {
+    throw new HttpError(409, "Answer every question before grading.");
+  }
 
   // Claim the session before paying for grading, so a double submit can't grade twice.
   const claimed = await db.run(
@@ -668,8 +715,27 @@ export async function completeDefendSession(opts: {
   let grades: ModelGrade[];
   let integrity: ReturnType<typeof computeIntegrity>;
   try {
-    // Grading sees probe metadata and answers only, never the document text.
+    // Graders see each claim and the answer, not the raw file.
     grades = await gradeSession({ difficulty: request.difficulty, claims, plan, turns });
+    const disputed = scoreDefense(grades, plan).disputedProbeIds;
+    if (disputed.length > 0 && !plan.probes.some((p) => p.followUpOf)) {
+      const source = plan.probes.find((p) => p.id === disputed[0]) ?? plan.probes[0];
+      const claim = claims.find((c) => c.id === source.claimId) ?? claims[0];
+      const extra = makeFollowUpProbe(claim, source);
+      const nextPlan: InterviewPlan = { ...plan, probes: [...plan.probes, extra] };
+      const released = await db.run(
+        `UPDATE sessions SET plan_enc = ?, status = 'in_progress' WHERE id = ? AND status = 'grading'`,
+        [encryptJson(nextPlan, ctx.plan(session.id)), session.id],
+      );
+      if (released.changes !== 1) throw new HttpError(409, "This defense is already complete.");
+      return {
+        followUp: {
+          probe: { id: extra.id, claimId: extra.claimId, type: extra.type, question: extra.question },
+          answered: turns.length,
+          total: nextPlan.probes.length,
+        },
+      };
+    }
     integrity = computeIntegrity({
       turns,
       pasteEvents: opts.pasteEvents,
@@ -684,6 +750,7 @@ export async function completeDefendSession(opts: {
       displayName: opts.showName ? opts.user.display_name : null,
       claimScores: claimScores(grades, plan),
       interviewMode: session.channel === "voice" ? "voice" : session.channel === "text_accommodation" ? "text-accommodation" : "text",
+      plan,
     });
 
     const nowIso = new Date().toISOString();
@@ -722,10 +789,15 @@ export async function completeDefendSession(opts: {
 
   return {
     receipt: signed,
-    score: aggregateScore(grades),
-    flagged: shouldFlagForHuman(grades) || integrity.status !== "Clear",
+    score: aggregateScore(grades, plan),
+    flagged: shouldFlagForHuman(grades, plan) || integrity.status !== "Clear",
     stampPath: `/api/stamp/${signed.payload.id}`,
   };
+}
+
+async function receiptForSession(db: Db, sessionId: string): Promise<SignedReceipt | null> {
+  const row = await db.get<{ payload_json: string }>(`SELECT payload_json FROM receipts WHERE session_id = ?`, [sessionId]);
+  return row ? (JSON.parse(row.payload_json) as SignedReceipt) : null;
 }
 
 export async function getReceipt(receiptId: string): Promise<SignedReceipt | null> {

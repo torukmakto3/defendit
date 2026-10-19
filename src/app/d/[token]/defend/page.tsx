@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMe } from "@/components/auth";
 import { Companion } from "@/components/companion/Companion";
 import { VoiceInterview } from "@/components/voice/VoiceInterview";
+import { canSubmit, INITIAL_INTERVIEW, interviewReducer, type InterviewState } from "@/lib/interview-state";
 
 interface Probe {
   id: string;
@@ -20,10 +21,10 @@ export default function DefendPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [channel, setChannel] = useState<"text" | "voice" | "text_accommodation" | null>(null);
   const [probes, setProbes] = useState<Probe[]>([]);
-  const [index, setIndex] = useState(0);
+  const [interview, setInterview] = useState<InterviewState>(INITIAL_INTERVIEW);
+  const interviewRef = useRef(interview);
   const [answer, setAnswer] = useState("");
   const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pasteEvents, setPasteEvents] = useState(0);
   const [focusBlurEvents, setFocusBlurEvents] = useState(0);
@@ -42,9 +43,15 @@ export default function DefendPage() {
     return () => window.removeEventListener("blur", onBlur);
   }, []);
 
+  const dispatch = useCallback((event: Parameters<typeof interviewReducer>[1]) => {
+    const next = interviewReducer(interviewRef.current, event);
+    interviewRef.current = next;
+    setInterview(next);
+    return next;
+  }, []);
+
   const begin = useCallback(
     async (accommodation = false) => {
-      setBusy(true);
       setError(null);
       try {
         const start = await fetch("/api/sessions/start", {
@@ -53,18 +60,18 @@ export default function DefendPage() {
           body: JSON.stringify({ token, mode: "defend", ...(accommodation ? { accommodation: true } : {}) }),
         }).then((r) => r.json());
         if (start.error) throw new Error(start.error);
+        const nextProbes = (start.probes || []) as Probe[];
         setSessionId(start.sessionId);
         setChannel(start.channel ?? "text");
-        setProbes(start.probes || []);
-        setIndex(0);
+        setProbes(nextProbes);
+        dispatch({ type: "start_ok", total: nextProbes.length });
         setSessionStartedAt(new Date().toISOString());
       } catch (e) {
+        dispatch({ type: "start_fail" });
         setError(e instanceof Error ? e.message : "Failed to start");
-      } finally {
-        setBusy(false);
       }
     },
-    [token],
+    [token, dispatch],
   );
 
   useEffect(() => {
@@ -75,14 +82,31 @@ export default function DefendPage() {
   }, [begin]);
 
   const completeDefense = useCallback(async () => {
-    const result = await fetch("/api/sessions/defend/complete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId, pasteEvents, focusBlurEvents, showName }),
-    }).then((r) => r.json());
-    if (result.error) throw new Error(result.error);
-    router.push(`/r/${result.receipt.payload.id}`);
-  }, [sessionId, pasteEvents, focusBlurEvents, showName, router]);
+    if (interviewRef.current.phase !== "grading") {
+      const total = interviewRef.current.total;
+      dispatch({ type: "saved", answered: total, total });
+    }
+    try {
+      const result = await fetch("/api/sessions/defend/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, pasteEvents, focusBlurEvents, showName }),
+      }).then((r) => r.json());
+      if (result.followUp?.probe) {
+        setProbes((prev) => (prev.some((p) => p.id === result.followUp.probe.id) ? prev : [...prev, result.followUp.probe]));
+        dispatch({ type: "follow_up", answered: result.followUp.answered, total: result.followUp.total });
+        setError(null);
+        return;
+      }
+      if (result.error) throw new Error(result.error);
+      if (!result.receipt?.payload?.id) throw new Error("Grading finished without a receipt. Retry.");
+      dispatch({ type: "grade_ok" });
+      router.push(`/r/${result.receipt.payload.id}`);
+    } catch (e) {
+      dispatch({ type: "grade_fail" });
+      setError(e instanceof Error ? e.message : "Grading failed");
+    }
+  }, [sessionId, pasteEvents, focusBlurEvents, showName, router, dispatch]);
 
   useEffect(() => {
     if (!sessionStartedAt) return;
@@ -94,6 +118,8 @@ export default function DefendPage() {
     };
   }, [sessionStartedAt]);
 
+  const index = interview.index;
+  const busy = interview.phase === "saving" || interview.phase === "grading" || interview.phase === "starting";
   const current = probes[index];
   const minutes = useMemo(() => {
     const s = Math.floor(elapsed / 1000);
@@ -103,7 +129,9 @@ export default function DefendPage() {
   async function submitTurn(e: React.FormEvent) {
     e.preventDefault();
     if (!current || !sessionId || !answer.trim()) return;
-    setBusy(true);
+    if (!canSubmit(interviewRef.current)) return;
+    const resume = interviewRef.current.phase === "follow_up" ? "follow_up" : "answering";
+    dispatch({ type: "submit" });
     setError(null);
     try {
       // The server records the answer and its timing; the browser only shows progress.
@@ -114,24 +142,53 @@ export default function DefendPage() {
       }).then((r) => r.json());
       if (saved.error) throw new Error(saved.error);
       setAnswer("");
-
-      if (!saved.done) {
-        setIndex(index + 1);
-        setBusy(false);
-        return;
-      }
-
-      await completeDefense();
+      dispatch({ type: "saved", answered: saved.answered, total: saved.total });
+      if (saved.done) await completeDefense();
     } catch (err) {
+      dispatch({ type: "save_fail", resume });
       setError(err instanceof Error ? err.message : "Something went wrong");
-      setBusy(false);
     }
   }
 
-  if (error && probes.length === 0) {
+  async function retryGrade() {
+    setError(null);
+    try {
+      await completeDefense();
+    } catch (err) {
+      dispatch({ type: "grade_fail" });
+      setError(err instanceof Error ? err.message : "Grading failed");
+    }
+  }
+
+  if (interview.phase === "error" || (error && probes.length === 0)) {
     return (
-      <div className="shell">
-        <p className="text-danger">{error}</p>
+      <div className="shell grid max-w-3xl gap-4">
+        <p className="text-danger">{error || "Could not start the interview."}</p>
+        <button
+          type="button"
+          className="btn btn-primary justify-self-start"
+          onClick={() => {
+            dispatch({ type: "retry" });
+            void begin();
+          }}
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+
+  if (interview.phase === "grading" || interview.phase === "completed") {
+    return (
+      <div className="shell grid max-w-3xl gap-4">
+        <Companion state="thinking" size={72} />
+        <p>{error ? "Grading didn't finish." : "Grading council scoring…"}</p>
+        {error && <p className="text-sm text-danger">{error}</p>}
+        {error && (
+          <button type="button" className="btn btn-primary justify-self-start" onClick={() => void retryGrade()}>
+            Retry grading
+          </button>
+        )}
       </div>
     );
   }
@@ -140,12 +197,12 @@ export default function DefendPage() {
     return (
       <div className="shell grid max-w-3xl gap-4">
         <Companion state="thinking" size={72} />
-        <p>{busy ? "Writing questions for your file…" : "Loading…"}</p>
+        <p>{interview.phase === "starting" ? "Writing questions for your file…" : "Loading…"}</p>
       </div>
     );
   }
 
-  if (channel === "voice" && sessionId) {
+  if (channel === "voice" && sessionId && interview.phase !== "follow_up") {
     return (
       <div className="shell grid max-w-3xl gap-6">
         <div>
@@ -217,6 +274,11 @@ export default function DefendPage() {
             <p className="mt-2 whitespace-pre-wrap text-lg font-semibold leading-relaxed">
               {current.question}
             </p>
+            {interview.phase === "follow_up" && (
+              <p className="mt-2 text-sm text-[var(--ink-2)]">
+                Graders disagreed on the previous answer, so this extra question replaces a guess.
+              </p>
+            )}
           </div>
         </div>
         <form onSubmit={submitTurn} className="space-y-3">
