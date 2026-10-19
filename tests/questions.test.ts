@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildInterviewPlan } from "../src/lib/probes";
+import { buildInterviewPlan, makeFollowUpProbe } from "../src/lib/probes";
+import { checkQuestion } from "../src/lib/question-check";
 import { phraseQuestions } from "../src/lib/questions";
 import type { Claim } from "../src/lib/types";
 
@@ -58,6 +59,7 @@ describe("phraseQuestions", () => {
     const qb = b.probes.map((p) => p.question);
     expect(qa.some((q) => qb.includes(q))).toBe(false);
     expect(qb.join(" ")).toMatch(/retry|idempotency|migration|webhook|dead-letter|load test/i);
+    expect(a.probes.every((p) => (p.sourceSpan ?? "").length >= 4)).toBe(true);
   });
 
   it("keeps the planted-error excerpt verbatim after the model's lead-in", async () => {
@@ -97,6 +99,90 @@ describe("phraseQuestions", () => {
     const out = await phraseQuestions(plan, memoClaims);
     expect(out.probes).toHaveLength(plan.probes.length);
     expect(out.probes.every((p) => p.question.length > 10)).toBe(true);
+    expect(out.probes.every((p) => p.sourceSpan)).toBe(true);
+  });
+
+  it("rewrites a question once when the first draft fails the validity check", async () => {
+    const plan = buildInterviewPlan({ claims: memoClaims, difficulty: "standard", seed: "regen" });
+    const llm = await import("../src/lib/llm");
+    let calls = 0;
+    vi.spyOn(llm, "completeJson").mockImplementation(async () => {
+      calls += 1;
+      const questions =
+        calls === 1
+          ? plan.probes.map((p) => ({ probeId: p.id, question: "What do you think about this in general terms?" }))
+          : plan.probes.map((p) => {
+              const claim = memoClaims.find((c) => c.id === p.claimId)!;
+              const question =
+                p.type === "planted_error"
+                  ? "Check this excerpt for me. Anything wrong with it?"
+                  : `Explain why "${claim.text}" holds, citing ${claim.sourceSpan}.`;
+              return { probeId: p.id, question };
+            });
+      return { data: { questions }, raw: { content: "", modelId: "m", provider: "mock" } } as never;
+    });
+    const out = await phraseQuestions(plan, memoClaims);
+    expect(calls).toBe(2);
+    for (const probe of out.probes) {
+      const claim = memoClaims.find((c) => c.id === probe.claimId)!;
+      expect(probe.sourceSpan).toBe(claim.sourceSpan);
+      expect(probe.question).not.toMatch(/general terms/);
+      const check = checkQuestion({
+        question: probe.question,
+        claim,
+        probeType: probe.type,
+        plantedContent: probe.plantedContent,
+      });
+      expect(check.ok).toBe(true);
+    }
+  });
+});
+
+describe("question validity", () => {
+  it("accepts template questions and stores the cited span", () => {
+    for (const difficulty of ["standard", "hard", "expert"] as const) {
+      for (const seed of ["a", "b", "c"]) {
+        const plan = buildInterviewPlan({ claims: memoClaims, difficulty, seed });
+        for (const probe of plan.probes) {
+          const claim = memoClaims.find((c) => c.id === probe.claimId)!;
+          expect(probe.sourceSpan).toBe(claim.sourceSpan);
+          const check = checkQuestion({
+            question: probe.question,
+            claim,
+            probeType: probe.type,
+            plantedContent: probe.plantedContent,
+          });
+          expect(check.ok, `${probe.type} ${seed}: ${check.reasons.join("; ")} :: ${probe.question}`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("rejects an ungrounded question, three questions, and an outside lookup", () => {
+    const claim = memoClaims[0];
+    expect(checkQuestion({ question: "What do you think about this in general terms?", claim, probeType: "explain_back" }).grounded).toBe(false);
+    expect(
+      checkQuestion({
+        question: `What about "${claim.text}"? Why does it hold? Are you sure?`,
+        claim,
+        probeType: "explain_back",
+      }).unambiguous,
+    ).toBe(false);
+    expect(
+      checkQuestion({
+        question: `Look this up on google: is "${claim.sourceSpan}" in "${claim.text}" right?`,
+        claim,
+        probeType: "explain_back",
+      }).answerable,
+    ).toBe(false);
+  });
+
+  it("cites the source span on a follow-up", () => {
+    const claim = memoClaims[1];
+    const plan = buildInterviewPlan({ claims: memoClaims, difficulty: "standard", seed: "fu" });
+    const extra = makeFollowUpProbe(claim, plan.probes[0]);
+    expect(extra.sourceSpan).toBe(claim.sourceSpan);
+    expect(checkQuestion({ question: extra.question, claim, probeType: extra.type }).ok).toBe(true);
   });
 });
 

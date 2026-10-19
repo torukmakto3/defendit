@@ -78,7 +78,7 @@ export default function ReceiptPage() {
           <h2 className="text-2xl font-bold">How the claims held up</h2>
           <span className="text-xs text-[var(--ink-2)]">
             {labels
-              ? "Claim names are visible only to you."
+              ? "Section and the quoted passage are visible only to you."
               : approximate
                 ? "Approximate: this receipt predates per-claim scores."
                 : "Claims are numbered; their content stays private."}

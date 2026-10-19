@@ -5,14 +5,14 @@ Working list for the beta. The receipt has to be stable enough that two defenses
 ## Now
 
 - Interview reliability: schema-checked model output, one repair turn, a deadline on every model call, idempotent answer saves, and a phase machine on the Defend page so a dropped response can be retried.
-- Scoring: a per-document claim map, a fixed blueprint of question types and difficulties, anchored 0–4 levels, median across the council, one follow-up when graders disagree by two levels, difficulty-weighted receipt score. Rubric `defend-it-rubric-v0.3`.
-- Calibration script (`npm run calibrate`) and a service-level soak (`npm run soak`) on three fixtures.
+- Scoring: a per-document claim map, a fixed blueprint of question types and difficulties, questions that cite a source span and pass a grounded / unambiguous / answerable check, anchored 0–4 levels, median across the council, one follow-up when graders disagree by two levels, then a flagged receipt (not held for a person). A non-answer scores 0. Difficulty-weighted receipt score. Rubric `defend-it-rubric-v0.4`. Voice follow-up in beta is typed.
+- Calibration script (`npm run calibrate`) and a service-level soak (`npm run soak`) on three fixtures. Known-bad and "I don't know" fixtures score 0.
 
 ## Next
 
 - Run the calibration script against the live council (Liquid / open-weight) and tighten anchors where the good/bad gap is thin.
-- Voice: the follow-up after a disagreement is typed today, including for a voice defense. Fold that question into the LiveKit agent when the agent build is in the loop.
-- Human review queue for defenses that stay disputed after the follow-up (the receipt is still issued, and flagged).
+- Voice: the follow-up after a disagreement is typed in beta, including for a voice defense. Fold that question into the LiveKit agent when the agent build is in the loop.
+- A review queue for flagged receipts is not part of beta. The receipt is issued and the flag is on it.
 
 ## Later
 

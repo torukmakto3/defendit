@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { completeJson, getGradingCouncil } from "./llm";
+import { detectNonAnswer } from "./non-answer";
 import { RUBRIC_VERSION, rubricPrompt } from "./rubric";
 import {
   graderScore,
@@ -61,7 +62,7 @@ export async function gradeSession(opts: {
           },
         ],
       }, gradeResponseSchema);
-      const claimGrades = alignGrades(data.claimGrades, opts.plan, opts.turns);
+      const claimGrades = alignGrades(data.claimGrades, opts.plan, opts.turns, opts.claims);
       const covered = claimGrades.length;
       if (covered < Math.ceil(opts.plan.probes.length / 2)) {
         throw new Error("Grader omitted too many answers");
@@ -124,25 +125,56 @@ function neutralizeTags(text: string): string {
   return text.replace(/<\/?transcript>/gi, "[tag removed]");
 }
 
+const ZERO_SCORES: DimensionScores = {
+  accuracy: 0,
+  reasoning: 0,
+  transfer: 0,
+  errorDetection: 0,
+  ownership: 0,
+};
+
 function alignGrades(
   grades: z.infer<typeof gradeResponseSchema>["claimGrades"],
   plan: InterviewPlan,
   turns: TurnRecord[],
+  claims: Claim[],
 ): ClaimGrade[] {
   const used = new Set<number>();
   const aligned: ClaimGrade[] = [];
-  plan.probes.forEach((probe, index) => {
+  for (const [index, probe] of plan.probes.entries()) {
     const turn = turns.find((t) => t.probeId === probe.id);
-    if (!turn) return;
+    if (!turn) continue;
+    const claim = claims.find((c) => c.id === probe.claimId);
     const match = matchGrade(grades, probe, index, used);
-    if (match === undefined) return;
+    const nonAnswer = detectNonAnswer({
+      answer: turn.answer,
+      question: turn.question,
+      claimText: claim?.text ?? "",
+      sourceSpan: probe.sourceSpan || claim?.sourceSpan || "",
+      figures: claim?.figures ?? [],
+      probeType: probe.type,
+    });
+    if (nonAnswer) {
+      if (match !== undefined) used.add(match);
+      aligned.push({
+        probeId: probe.id,
+        claimId: probe.claimId,
+        section: claim?.section || "General",
+        scores: { ...ZERO_SCORES },
+        band: "Weak",
+        evidence: "",
+        reason: `Non-answer (${nonAnswer.kind}): no substantive engagement with the claim.`,
+      });
+      continue;
+    }
+    if (match === undefined) continue;
     used.add(match);
     const raw = grades[match];
     const grounded = groundEvidence(
       {
         probeId: probe.id,
         claimId: probe.claimId,
-        section: raw.section || "General",
+        section: raw.section || claim?.section || "General",
         scores: raw.scores as DimensionScores,
         band: raw.band ?? "Partial",
         evidence: raw.evidence,
@@ -163,7 +195,7 @@ function alignGrades(
       },
       band: avg >= 3 ? "Strong" : avg >= 2 ? "Partial" : "Weak",
     });
-  });
+  }
   return aligned;
 }
 

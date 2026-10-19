@@ -330,7 +330,13 @@ const CHEAP_OUT = 0.6;
 function cost(calls: number, inputTokens: number, outputTokens: number): TokenCost {
   const frontierUsd = (calls * inputTokens * FRONTIER_IN + calls * outputTokens * FRONTIER_OUT) / 1_000_000;
   const cheapUsd = (calls * inputTokens * CHEAP_IN + calls * outputTokens * CHEAP_OUT) / 1_000_000;
-  return { calls, inputTokens: calls * inputTokens, outputTokens: calls * outputTokens, frontierUsd, cheapUsd };
+  return {
+    calls,
+    inputTokens: Math.round(calls * inputTokens),
+    outputTokens: Math.round(calls * outputTokens),
+    frontierUsd,
+    cheapUsd,
+  };
 }
 
 function add(parts: TokenCost[]): TokenCost {
@@ -370,9 +376,12 @@ export function estimateDefenseCost(opts: {
   const gradeIn = opts.era === "before" ? 900 + questions * 120 : 1400 + questions * 140;
   const gradeOut = opts.era === "before" ? 500 + questions * 80 : 400 + questions * 90;
   const gradeRounds = 1 + followUpRate;
+  // A failed question check is rewritten once. Most drafts pass; budget a quarter.
+  const rewrites = opts.era === "before" ? 0 : 0.25;
   return add([
     cost(1, doc + 400, extractOut),
     cost(1, 600 + questions * 80, 80 * questions),
+    cost(rewrites, 600 + questions * 80, 80 * questions),
     cost(learnTurns, doc / 2 + 500, 250),
     cost(graders * gradeRounds, gradeIn, gradeOut),
   ]);

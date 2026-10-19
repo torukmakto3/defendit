@@ -24,12 +24,17 @@ function stdev(values: number[]): number {
   return Math.sqrt(v);
 }
 
-function answerFor(kind: "good" | "bad", claim: string): string {
-  if (kind === "bad") return "I don't know, I guess it's fine.";
+function answerFor(kind: "good" | "bad" | "idk", claim: string): string {
+  if (kind === "bad") return "I guess it's fine.";
+  if (kind === "idk") return "I don't know.";
   return `Because the document says "${claim.slice(0, 160)}". If that assumption moved against us, the conclusion would weaken, and I would check the source figure before signing.`;
 }
 
-async function gradeOnce(text: string, kind: "good" | "bad", seed: string): Promise<{ receipt: number; graderScores: number[] }> {
+async function gradeOnce(
+  text: string,
+  kind: "good" | "bad" | "idk",
+  seed: string,
+): Promise<{ receipt: number; graderScores: number[] }> {
   const claims = await extractClaims(text);
   const plan: InterviewPlan = buildInterviewPlan({ claims, difficulty: "standard", seed });
   const turns: TurnRecord[] = plan.probes.map((probe, i) => {
@@ -60,28 +65,33 @@ async function main() {
   console.log(`Calibration runs=${RUNS} files=${files.join(", ")}`);
   const goodScores: number[] = [];
   const badScores: number[] = [];
+  const idkScores: number[] = [];
 
   for (const file of files) {
     const text = readFileSync(join(DIR, file), "utf8");
     const good: number[] = [];
     const bad: number[] = [];
+    const idk: number[] = [];
     let spread = 0;
     for (let i = 0; i < RUNS; i++) {
       const g = await gradeOnce(text, "good", `${file}-good`);
       const b = await gradeOnce(text, "bad", `${file}-bad`);
+      const u = await gradeOnce(text, "idk", `${file}-idk`);
       good.push(g.receipt);
       bad.push(b.receipt);
+      idk.push(u.receipt);
       spread = Math.max(spread, Math.max(...g.graderScores) - Math.min(...g.graderScores));
     }
     goodScores.push(...good);
     badScores.push(...bad);
+    idkScores.push(...idk);
     console.log(
-      `  ${file}: good mean ${avg(good).toFixed(1)} stdev ${stdev(good).toFixed(2)} (range ${Math.min(...good)}-${Math.max(...good)}), bad mean ${avg(bad).toFixed(1)} stdev ${stdev(bad).toFixed(2)}, council spread on one good run up to ${spread.toFixed(1)}`,
+      `  ${file}: good mean ${avg(good).toFixed(1)} stdev ${stdev(good).toFixed(2)} (range ${Math.min(...good)}-${Math.max(...good)}), bad "I guess it's fine." mean ${avg(bad).toFixed(2)} stdev ${stdev(bad).toFixed(2)}, "I don't know." mean ${avg(idk).toFixed(2)} stdev ${stdev(idk).toFixed(2)}, council spread on one good run up to ${spread.toFixed(1)}`,
     );
   }
 
   console.log(
-    `Measured run-to-run (same answer, ${RUNS} runs, per file above): good answers sit near ${avg(goodScores).toFixed(1)}, bad answers near ${avg(badScores).toFixed(1)}. Pooled stdev across files is ${stdev(goodScores).toFixed(2)} because the three documents score a few points apart, not because a rerun moves.`,
+    `Measured run-to-run (same answer, ${RUNS} runs, per file above): good answers sit near ${avg(goodScores).toFixed(1)}. Pooled stdev across files is ${stdev(goodScores).toFixed(2)} because the three documents score a few points apart, not because a rerun moves. Known-bad mean ${avg(badScores).toFixed(2)}. All "I don't know." mean ${avg(idkScores).toFixed(2)}.`,
   );
 
   const simGood = simulateScoreVariance({ runs: 40, seed: "report-good", quality: "good" });

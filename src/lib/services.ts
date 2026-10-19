@@ -730,7 +730,13 @@ export async function completeDefendSession(opts: {
       if (released.changes !== 1) throw new HttpError(409, "This defense is already complete.");
       return {
         followUp: {
-          probe: { id: extra.id, claimId: extra.claimId, type: extra.type, question: extra.question },
+          probe: {
+            id: extra.id,
+            claimId: extra.claimId,
+            type: extra.type,
+            question: extra.question,
+            sourceSpan: extra.sourceSpan,
+          },
           answered: turns.length,
           total: nextPlan.probes.length,
         },
@@ -949,8 +955,8 @@ export async function saveHumanGrade(opts: {
 }
 
 /**
- * Section names for a receipt's claims, for its creator only and only while
- * the defense data is within retention. The public receipt stays anonymous.
+ * Section plus the cited source span, for the creator only and only while the
+ * defense data is within retention. The public receipt stays anonymous.
  */
 export async function receiptClaimLabels(receiptId: string, user: User): Promise<string[] | null> {
   const db = await getDb();
@@ -964,7 +970,14 @@ export async function receiptClaimLabels(receiptId: string, user: User): Promise
   const claims = deliverable ? liveClaims(deliverable) : null;
   if (!plan || !claims) return null;
   const order = [...new Set(plan.probes.map((p) => p.claimId))];
-  return order.map((id) => claims.find((c) => c.id === id)?.section ?? "Claim");
+  return order.map((id) => {
+    const claim = claims.find((c) => c.id === id);
+    const probe = plan.probes.find((p) => p.claimId === id);
+    if (!claim) return "Claim";
+    const span = (probe?.sourceSpan || claim.sourceSpan || "").replace(/\s+/g, " ").trim();
+    const short = span.length > 60 ? `${span.slice(0, 59)}…` : span;
+    return short ? `${claim.section}: ${short}` : claim.section;
+  });
 }
 
 /** The signed-in creator's own deliverable behind a link, with live claims (for Learn tools). */

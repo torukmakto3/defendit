@@ -443,7 +443,28 @@ describe("receipt claim metrics", () => {
 
     const labels = await receiptClaimLabels(r.receipt!.payload.id, user);
     expect(labels).toHaveLength(scores.length);
+    expect(labels!.some((label) => label.includes(":"))).toBe(true);
+    expect(JSON.stringify(r.receipt)).not.toContain("churn");
     expect(await receiptClaimLabels(r.receipt!.payload.id, other)).toBeNull();
+  });
+
+  it("receipts an all-I-don't-know defense at 0", async () => {
+    const { user } = await signIn("idk@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "idk.md", buffer: memo });
+    const s = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
+    for (const probe of s.plan.probes) {
+      await recordDefendAnswer({
+        sessionId: s.sessionId,
+        user,
+        probeId: probe.id,
+        answer: "I don't know.",
+      });
+    }
+    const done = await completeDefendSession({ sessionId: s.sessionId, user });
+    expect(done.receipt?.payload.score).toBe(0);
+    expect(done.receipt?.payload.outcome).toBe("Not defended");
+    expect(done.receipt?.payload.claimScores?.every((n) => n === 0)).toBe(true);
+    expect(JSON.stringify(done.receipt)).not.toContain("churn");
   });
 });
 

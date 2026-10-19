@@ -115,33 +115,33 @@ function shuffle<T>(items: T[], rand: () => number): T[] {
 /**
  * Fallback wording when the model can't phrase questions. Several variants per
  * probe type, picked by the seeded RNG, so even offline interviews vary.
- * {c} = claim text, {s} = section.
+ * {c} = claim text, {s} = section, {q} = the cited source span.
  */
 const TEMPLATES: Record<Exclude<ProbeType, "planted_error">, string[]> = {
   explain_back: [
-    'Walk me through why this holds: "{c}". What in the document supports it?',
-    'Explain "{c}" as if to a skeptical partner. Where does that come from?',
-    'Your deliverable says "{c}". How did you get there?',
-    'Take "{c}". What is the reasoning behind it, step by step?',
+    'Walk me through why this holds: "{q}". What in the document supports "{c}"?',
+    'Explain "{q}" as if to a skeptical partner. Where does "{c}" come from?',
+    'Your deliverable says "{q}". How did you get to "{c}"?',
+    'Take "{q}". What is the reasoning behind "{c}", step by step?',
   ],
   counterfactual: [
-    'Suppose the main assumption behind "{c}" moved 30% against you. What breaks first?',
-    'If the inputs behind "{c}" turned out half as favourable, would your conclusion survive? Why?',
-    'What would have to change for "{c}" to stop being true, and how likely is that?',
+    'Suppose the main assumption behind "{q}" moved 30% against you. What breaks first in "{c}"?',
+    'If the inputs behind "{q}" turned out half as favourable, would "{c}" survive? Why?',
+    'What would have to change for "{c}" — specifically "{q}" — to stop being true?',
   ],
   weakest_link: [
-    'In the "{s}" section, which assumption is the most fragile, and why is it still acceptable?',
-    'If you had to bet against one part of "{s}", which would it be?',
-    'Where is "{s}" most exposed if a reviewer pushes hard?',
+    'In "{c}", the passage "{q}" carries a fragile assumption. Which one, and why is it still acceptable?',
+    'If you had to bet against "{q}" inside "{c}", which part would it be?',
+    'Where is "{c}" most exposed if a reviewer pushes on "{q}"?',
   ],
   prediction: [
-    'If someone challenged the "{s}" conclusion in a review meeting, what would they ask first?',
-    'Predict the toughest objection to "{s}". How would you answer it?',
-    'What number in "{s}" would you check first if results came in below plan?',
+    'If someone challenged "{q}" from "{c}" in a review meeting, what would they ask first?',
+    'Predict the toughest objection to "{q}" in "{c}". How would you answer it?',
+    'What number around "{q}" would you check first if "{c}" came in below plan?',
   ],
   confidence: [
-    'From 0 to 100, how confident are you that "{c}" is right? What would move that number?',
-    'How sure are you about "{c}", 0 to 100? Name one thing that would lower it.',
+    'From 0 to 100, how confident are you that "{q}" in "{c}" is right? What would move that number?',
+    'How sure are you about "{c}", citing "{q}", from 0 to 100? Name one thing that would lower it.',
   ],
 };
 
@@ -152,7 +152,14 @@ const PLANTED_LEADS = [
 ];
 
 function fill(template: string, claim: Claim, max: number): string {
-  return template.replace("{c}", truncate(claim.text, max)).replace("{s}", claim.section);
+  const quote = truncate((claim.sourceSpan || claim.text).trim() || claim.text, 80);
+  return template
+    .split("{c}")
+    .join(truncate(claim.text, max))
+    .split("{s}")
+    .join(claim.section)
+    .split("{q}")
+    .join(quote);
 }
 
 function pick<T>(items: T[], rand: () => number): T {
@@ -174,6 +181,7 @@ function buildProbe(claim: Claim, type: ProbeType, difficulty: QuestionDifficult
       difficulty,
       question: plantedQuestion(pick(PLANTED_LEADS, rand), altered),
       plantedContent: altered,
+      sourceSpan: claim.sourceSpan,
       expectedFocus: "detect alteration",
     };
   }
@@ -189,7 +197,8 @@ function buildProbe(claim: Claim, type: ProbeType, difficulty: QuestionDifficult
     claimId: claim.id,
     type,
     difficulty,
-    question: fill(pick(TEMPLATES[type], rand), claim, type === "confidence" ? 100 : 160),
+    question: fill(pick(TEMPLATES[type], rand), claim, type === "confidence" ? 100 : 140),
+    sourceSpan: claim.sourceSpan,
     expectedFocus: expectedFocus[type],
   };
 }
@@ -202,7 +211,8 @@ export function makeFollowUpProbe(claim: Claim, source: Probe): Probe {
     type: "explain_back",
     difficulty: source.difficulty ?? 2,
     followUpOf: source.id,
-    question: `One more check, because that answer was read differently by different graders. What in the document supports "${truncate(claim.text, 140)}", and which assumption would change your answer?`,
+    question: `One more check, because that answer was read differently by different graders. What in the document supports "${truncate(claim.sourceSpan || claim.text, 80)}" in "${truncate(claim.text, 120)}", and which assumption would change your answer?`,
+    sourceSpan: claim.sourceSpan,
     expectedFocus: claim.sourceSpan,
   };
 }

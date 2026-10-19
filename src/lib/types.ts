@@ -37,6 +37,11 @@ export interface Probe {
   difficulty?: QuestionDifficulty;
   /** Set when this probe was added because graders disagreed on another probe. */
   followUpOf?: string;
+  /**
+   * Verbatim span from the claim map this question tests. Stored on the probe
+   * so the creator's receipt can show it. It is not part of the public receipt.
+   */
+  sourceSpan?: string;
   /** Altered text shown for planted-error probes */
   plantedContent?: string;
   expectedFocus: string;
