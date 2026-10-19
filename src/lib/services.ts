@@ -10,6 +10,7 @@ import { nextLearnTurn, type GapItem } from "./learn";
 import { llmModeLabel } from "./llm";
 import { extractText, guessMimeType } from "./parse";
 import { buildInterviewPlan, buildLearnPlan } from "./probes";
+import { phraseQuestions } from "./questions";
 import { buildSignedReceipt } from "./receipt";
 import type {
   Claim,
@@ -399,7 +400,7 @@ export async function startSession(opts: {
   }
 
   const seed = newId("seed");
-  const plan =
+  const drafted =
     opts.mode === "learn"
       ? buildLearnPlan(claims, seed)
       : buildInterviewPlan({
@@ -410,6 +411,8 @@ export async function startSession(opts: {
             ? request.pinned_claims.split(",").map((s) => s.trim())
             : undefined,
         });
+  // Defend questions are written for this specific file (code still picks what to probe).
+  const plan = opts.mode === "defend" ? await phraseQuestions(drafted, claims) : drafted;
 
   const sessionId = newId("ses");
   const db = await getDb();

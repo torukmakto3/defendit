@@ -38,9 +38,27 @@ function mockJson(purpose: string, user: string, modelId: string): unknown {
       };
     case "grade":
       return mockGrade(user, modelId);
+    case "write_questions":
+      return mockQuestions(user);
     default:
       return { ok: true, echo: user.slice(0, 200) };
   }
+}
+
+/** Offline stand-in for the question writer: claim-specific, varied openings. */
+function mockQuestions(user: string): unknown {
+  const match = user.match(/<probes>\n([\s\S]*?)\n<\/probes>/);
+  const items = match ? (JSON.parse(match[1]) as { probeId: string; type: string; claim: string }[]) : [];
+  const openers = ["Talk me through", "Help me understand", "Defend", "Convince me of", "Unpack"];
+  return {
+    questions: items.map((it, i) => {
+      const claim = it.claim.replace(/\s+/g, " ").slice(0, 120);
+      if (it.type === "planted_error") return { probeId: it.probeId, question: "Read this line from your document carefully. Is it right?" };
+      if (it.type === "counterfactual") return { probeId: it.probeId, question: `Say the key number in "${claim}" came in 30% worse. What gives way first?` };
+      if (it.type === "confidence") return { probeId: it.probeId, question: `How confident are you, 0 to 100, that "${claim}" holds up?` };
+      return { probeId: it.probeId, question: `${openers[i % openers.length]} "${claim}". What backs it up?` };
+    }),
+  };
 }
 
 function mockClaims(user: string): { claims: unknown[] } {
