@@ -122,6 +122,20 @@ CREATE TABLE IF NOT EXISTS receipts (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS flashcards (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  request_id TEXT NOT NULL REFERENCES defense_requests(id),
+  deliverable_id TEXT NOT NULL REFERENCES deliverables(id),
+  claim_id TEXT,
+  front_enc TEXT NOT NULL,
+  back_enc TEXT NOT NULL,
+  card_json TEXT NOT NULL,
+  due TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  purge_after TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS rate_limits (
   bucket_key TEXT PRIMARY KEY,
   window_start TEXT NOT NULL,
@@ -133,6 +147,8 @@ CREATE INDEX IF NOT EXISTS idx_requests_creator ON defense_requests(creator_user
 CREATE INDEX IF NOT EXISTS idx_deliverables_request ON deliverables(request_id);
 CREATE INDEX IF NOT EXISTS idx_deliverables_purge ON deliverables(purge_after);
 CREATE INDEX IF NOT EXISTS idx_sessions_purge ON sessions(purge_after);
+CREATE INDEX IF NOT EXISTS idx_flashcards_user_due ON flashcards(user_id, due);
+CREATE INDEX IF NOT EXISTS idx_flashcards_deliverable ON flashcards(deliverable_id);
 -- One receipt per deliverable request, enforced by the database too.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_receipts_request ON receipts(request_id);
 `;

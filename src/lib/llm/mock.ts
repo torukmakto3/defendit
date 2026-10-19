@@ -40,9 +40,23 @@ function mockJson(purpose: string, user: string, modelId: string): unknown {
       return mockGrade(user, modelId);
     case "write_questions":
       return mockQuestions(user);
+    case "write_flashcards":
+      return mockFlashcards(user);
     default:
       return { ok: true, echo: user.slice(0, 200) };
   }
+}
+
+function mockFlashcards(user: string): unknown {
+  const match = user.match(/<claims>\n([\s\S]*?)\n<\/claims>/);
+  const claims = match ? (JSON.parse(match[1]) as { id: string; text: string; section: string }[]) : [];
+  return {
+    cards: claims.map((c) => ({
+      claimId: c.id,
+      front: `In "${c.section}", what does your deliverable claim, and why?`,
+      back: c.text.replace(/\s+/g, " ").slice(0, 300),
+    })),
+  };
 }
 
 /** Offline stand-in for the question writer: claim-specific, varied openings. */

@@ -794,6 +794,51 @@ export async function saveHumanGrade(opts: {
   );
 }
 
+/** The signed-in creator's own deliverable behind a link, with live claims (for Learn tools). */
+export async function loadOwnDeliverable(token: string, user: User) {
+  const request = await requireRequest(token);
+  if (request.creator_user_id !== user.id) {
+    throw new HttpError(403, "This defense belongs to another account");
+  }
+  const deliverable = await getLatestDeliverable(request.id);
+  if (!deliverable) throw new HttpError(400, "Upload a deliverable first");
+  const claims = liveClaims(deliverable);
+  if (!claims) throw new HttpError(410, "This upload has been purged. Upload the file again.");
+  return { request, deliverable, claims };
+}
+
+/** Learn hub: the creator's deliverables with what they can still do with each. */
+export async function listProjects(user: User) {
+  const db = await getDb();
+  const rows = await db.all<DeliverableRow & { token: string; status: string; difficulty: string; cards: number; due: number }>(
+    `SELECT d.*, r.token, r.status, r.difficulty,
+            (SELECT COUNT(*) FROM flashcards f WHERE f.deliverable_id = d.id) AS cards,
+            (SELECT COUNT(*) FROM flashcards f WHERE f.deliverable_id = d.id AND f.due <= ?) AS due
+     FROM defense_requests r
+     JOIN deliverables d ON d.id =
+       (SELECT id FROM deliverables WHERE request_id = r.id ORDER BY created_at DESC LIMIT 1)
+     WHERE r.creator_user_id = ?
+     ORDER BY d.created_at DESC
+     LIMIT 100`,
+    [new Date().toISOString(), user.id],
+  );
+  return rows.map((d) => {
+    const purged = !!d.purged_at || isPast(d.purge_after);
+    return {
+      token: d.token,
+      title: displayTitle(purged ? null : liveFileName(d)),
+      status: d.status,
+      difficulty: d.difficulty,
+      claimCount: d.claim_count,
+      createdAt: d.created_at,
+      documentAvailable: !purged && !!d.text_enc && !isPast(d.text_purge_after),
+      purged,
+      cards: Number(d.cards),
+      due: Number(d.due),
+    };
+  });
+}
+
 /** Delete expired content. Safe to run often: daily cron plus an hourly in-process backstop. */
 export async function purgeExpired() {
   const db = await getDb();
@@ -822,6 +867,7 @@ export async function purgeExpired() {
        (SELECT id FROM sessions WHERE purge_after < ?)`,
     [nowIso],
   );
+  await db.run(`DELETE FROM flashcards WHERE purge_after < ?`, [nowIso]);
   await db.run(`DELETE FROM login_tokens WHERE expires_at < ?`, [nowIso]);
   await db.run(`DELETE FROM auth_sessions WHERE expires_at < ?`, [nowIso]);
   await db.run(`DELETE FROM rate_limits WHERE window_start < ?`, [

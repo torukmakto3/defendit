@@ -35,6 +35,9 @@ export default function RootLayout({
               </span>
             </Link>
             <nav className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--ink-2)]">
+              <Link href="/learn" className="hover:text-[var(--blueprint)]">
+                Learn
+              </Link>
               <Link href="/request" className="hover:text-[var(--blueprint)]">
                 Request
               </Link>
