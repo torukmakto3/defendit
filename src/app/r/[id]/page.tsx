@@ -94,9 +94,9 @@ export default function ReceiptPage() {
       <div className="panel mt-8 p-5">
         <h2 className="text-xl font-bold">Send it your way</h2>
         <p className="mt-2 text-sm text-[var(--ink-2)]">
-          Download the stamp or printable cover, attach it to the same file you defended, and send
-          it by email, Slack or Docs. The receiver opens the verify link or drops the file to check
-          the hash. No account needed.
+          Attach the receipt PDF to the file you defended, or paste the stamp image into your email,
+          Slack or Docs. The receiver scans the code or opens the link and drops their copy of the
+          file to check it. No account needed.
         </p>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
@@ -105,16 +105,11 @@ export default function ReceiptPage() {
           className="mt-4 h-auto w-full max-w-[460px]"
         />
         <div className="mt-4 flex flex-wrap gap-3 text-sm">
-          <a href={`/api/stamp/${p.id}`} className="btn btn-primary" download>
-            Download stamp SVG
+          <a href={`/api/receipts/${p.id}/pdf`} className="btn btn-primary">
+            Download receipt (PDF)
           </a>
-          <a
-            href={`/api/receipts/${p.id}/cover`}
-            className="btn btn-ghost"
-            target="_blank"
-            rel="noreferrer"
-          >
-            Open printable cover
+          <a href={`/api/stamp/${p.id}?format=png&download=1`} className="btn btn-ghost">
+            Download stamp image (PNG)
           </a>
           <Link href={`/verify/${p.id}`} className="btn btn-ghost">
             Verify file hash
