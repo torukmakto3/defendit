@@ -80,6 +80,8 @@ export interface IntegritySignals {
   focusBlurEvents: number;
 }
 
+export type InterviewMode = "voice" | "text" | "text-accommodation";
+
 export type ReceiptOutcome = "Defended" | "Partially defended" | "Not defended";
 
 /**
@@ -102,6 +104,8 @@ export interface ReceiptPayload {
    * purpose: numbers only, no claim text (the receipt is public).
    */
   claimScores?: number[];
+  /** How the defense was taken: live voice, typed, or typed as an accessibility accommodation. */
+  interviewMode?: InterviewMode;
   deliverable: {
     sha256: string;
     byteLength: number;

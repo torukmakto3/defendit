@@ -128,6 +128,15 @@ interface SessionRow {
   started_at: string;
   completed_at: string | null;
   purge_after: string;
+  channel: Channel;
+}
+
+/** How a Defend session takes answers. Hard and Expert require voice unless an accommodation is requested. */
+export type Channel = "text" | "voice" | "text_accommodation";
+
+export function channelFor(difficulty: Difficulty, opts: { voice?: boolean; accommodation?: boolean }): Channel {
+  if (difficulty === "standard") return opts.voice ? "voice" : "text";
+  return opts.accommodation ? "text_accommodation" : "voice";
 }
 
 interface NewRequest {
@@ -384,6 +393,8 @@ export async function startSession(opts: {
   token: string;
   user: User;
   mode: "learn" | "defend";
+  voice?: boolean;
+  accommodation?: boolean;
 }) {
   maybePurge();
   const request = await requireRequest(opts.token);
@@ -413,13 +424,14 @@ export async function startSession(opts: {
         });
   // Defend questions are written for this specific file (code still picks what to probe).
   const plan = opts.mode === "defend" ? await phraseQuestions(drafted, claims) : drafted;
+  const channel: Channel = opts.mode === "defend" ? channelFor(request.difficulty, opts) : "text";
 
   const sessionId = newId("ses");
   const db = await getDb();
   await db.run(
     `INSERT INTO sessions
-      (id, request_id, deliverable_id, user_id, mode, seed, plan_enc, transcript_enc, gap_map_enc, status, started_at, purge_after)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?)`,
+      (id, request_id, deliverable_id, user_id, mode, seed, plan_enc, transcript_enc, gap_map_enc, status, started_at, purge_after, channel)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?)`,
     [
       sessionId,
       request.id,
@@ -432,9 +444,10 @@ export async function startSession(opts: {
       encryptJson([], ctx.gapMap(sessionId)),
       new Date().toISOString(),
       hoursFromNow(retentionDays() * 24),
+      channel,
     ],
   );
-  return { sessionId, plan };
+  return { sessionId, plan, channel };
 }
 
 /** Strip what the creator must not see before answering (expected answers). */
@@ -512,6 +525,66 @@ export async function recordDefendAnswer(opts: {
   answer: string;
 }) {
   const session = await requireOwnSession(opts.sessionId, opts.user, "defend");
+  if (session.channel === "voice") {
+    throw new HttpError(409, "This defense is taken by voice; answers are recorded from the call.");
+  }
+  return storeAnswer(session, opts.probeId, opts.answer);
+}
+
+/**
+ * A spoken answer reported by the interviewer agent (authenticated by the
+ * agent API). The agent measured when the question finished and when the
+ * creator started and stopped speaking; the server bounds-checks the times.
+ */
+export async function recordVoiceAnswer(opts: {
+  sessionId: string;
+  probeId: string;
+  answer: string;
+  questionEndedAt: string;
+  answerStartedAt: string;
+  answerEndedAt: string;
+}) {
+  const db = await getDb();
+  const session = await db.get<SessionRow>(`SELECT * FROM sessions WHERE id = ?`, [opts.sessionId]);
+  if (!session || session.mode !== "defend" || session.channel !== "voice") {
+    throw new HttpError(404, "Voice session not found");
+  }
+  const lo = new Date(session.started_at).getTime() - 5_000;
+  const hi = Date.now() + 5_000;
+  const t = [opts.questionEndedAt, opts.answerStartedAt, opts.answerEndedAt].map((x) => new Date(x).getTime());
+  if (t.some((x) => !Number.isFinite(x) || x < lo || x > hi) || !(t[0] <= t[1] + 1_000 && t[1] <= t[2])) {
+    throw new HttpError(400, "Answer timing is out of range");
+  }
+  return storeAnswer(session, opts.probeId, opts.answer, {
+    startedAt: new Date(t[0]).toISOString(),
+    endedAt: new Date(t[2]).toISOString(),
+    latencyMs: Math.max(0, t[1] - t[0]),
+  });
+}
+
+/** Questions for the voice interviewer: what it may say, in order, and progress. */
+export async function voicePlan(sessionId: string) {
+  const db = await getDb();
+  const session = await db.get<SessionRow>(`SELECT * FROM sessions WHERE id = ?`, [sessionId]);
+  if (!session || session.mode !== "defend" || session.channel !== "voice" || session.status !== "in_progress") {
+    throw new HttpError(404, "Voice session not found");
+  }
+  const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
+  const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
+  if (!plan) throw new HttpError(410, "This session has expired.");
+  return {
+    difficulty: plan.difficulty,
+    probes: publicProbes(plan).map((p) => ({ id: p.id, type: p.type, question: p.question })),
+    answered: turns.length,
+  };
+}
+
+async function storeAnswer(
+  session: SessionRow,
+  probeId: string,
+  rawAnswer: string,
+  timing?: { startedAt: string; endedAt: string; latencyMs: number },
+) {
   if (session.status !== "in_progress") throw new HttpError(409, "This defense is already complete.");
   const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
   if (!plan) throw new HttpError(410, "This session has expired. Start a new defense.");
@@ -519,20 +592,21 @@ export async function recordDefendAnswer(opts: {
 
   const probe = plan.probes[turns.length];
   if (!probe) throw new HttpError(409, "All questions are already answered.");
-  if (probe.id !== opts.probeId) throw new HttpError(409, "Answer the current question first.");
-  const answer = opts.answer.trim().slice(0, 4000);
+  if (probe.id !== probeId) throw new HttpError(409, "Answer the current question first.");
+  const answer = rawAnswer.trim().slice(0, 4000);
   if (!answer) throw new HttpError(400, "Answer is empty.");
 
   const now = new Date();
-  const startedAt = turns.length ? turns[turns.length - 1].endedAt : session.started_at;
+  const startedAt = timing?.startedAt ?? (turns.length ? turns[turns.length - 1].endedAt : session.started_at);
+  const endedAt = timing?.endedAt ?? now.toISOString();
   turns.push({
     id: `turn_${turns.length + 1}`,
     probeId: probe.id,
     question: probe.question,
     answer,
     startedAt,
-    endedAt: now.toISOString(),
-    latencyMs: Math.max(0, now.getTime() - new Date(startedAt).getTime()),
+    endedAt,
+    latencyMs: timing?.latencyMs ?? Math.max(0, now.getTime() - new Date(startedAt).getTime()),
     followUpIndex: 0,
   });
 
@@ -603,6 +677,7 @@ export async function completeDefendSession(opts: {
       integrity,
       displayName: opts.showName ? opts.user.display_name : null,
       claimScores: claimScores(grades, plan),
+      interviewMode: session.channel === "voice" ? "voice" : session.channel === "text_accommodation" ? "text-accommodation" : "text",
     });
 
     const nowIso = new Date().toISOString();

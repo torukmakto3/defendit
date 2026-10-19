@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
-export type CompanionState = "listening" | "thinking" | "skeptical" | "surprised" | "impressed";
+export type CompanionState = "listening" | "thinking" | "speaking" | "skeptical" | "surprised" | "impressed";
 
 /**
  * The Titleblock robot (see DESIGN.md). Pure SVG + CSS: states are CSS poses

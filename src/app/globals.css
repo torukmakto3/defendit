@@ -269,6 +269,10 @@ label:focus-within {
 .companion[data-state="thinking"] .c-eyes { animation: none; }
 .companion[data-state="thinking"] .c-antenna-light { animation: c-pulse 1s ease-in-out infinite; }
 
+.companion .c-mouth { transform-box: fill-box; transform-origin: center; }
+.companion[data-state="speaking"] .c-mouth { animation: c-talk 0.32s ease-in-out infinite alternate; }
+@keyframes c-talk { from { transform: scaleY(1); } to { transform: scale(0.7, 4); } }
+
 .companion[data-state="skeptical"] .c-brow-skep { opacity: 1; }
 .companion[data-state="skeptical"] .c-brow-flat { opacity: 0; }
 .companion[data-state="skeptical"] .c-eye-r { transform: scaleY(0.6); }

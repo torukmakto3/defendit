@@ -24,6 +24,8 @@ import {
   publicProbes,
   purgeExpired,
   recordDefendAnswer,
+  recordVoiceAnswer,
+  voicePlan,
   startSession,
 } from "../src/lib/services";
 import type { InterviewPlan, TurnRecord } from "../src/lib/types";
@@ -118,7 +120,7 @@ describe("creator flow: process and purge", () => {
     const turn = await learnCoachTurn({ sessionId: learn.sessionId, user });
     expect(turn.coachMessage.length).toBeGreaterThan(0);
 
-    const defend = await startSession({ token: ingest.token, user, mode: "defend" });
+    const defend = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
     await answerAll(defend, user);
     const result = await completeDefendSession({
       sessionId: defend.sessionId,
@@ -148,7 +150,7 @@ describe("creator flow: process and purge", () => {
       startSession({ token: ingest.token, user, mode: "learn" }),
     ).rejects.toMatchObject({ status: 410 });
     await expect(
-      startSession({ token: ingest.token, user, mode: "defend" }),
+      startSession({ token: ingest.token, user, mode: "defend", accommodation: true }),
     ).rejects.toMatchObject({ status: 409 });
     await expect(
       completeDefendSession({ sessionId: defend.sessionId, user }),
@@ -162,7 +164,7 @@ describe("creator flow: process and purge", () => {
     const { user } = await signIn("quiet@fund.example");
     user.display_name = "Quiet Person";
     const ingest = await creatorIngest({ user, fileName: "m.md", buffer: memo });
-    const defend = await startSession({ token: ingest.token, user, mode: "defend" });
+    const defend = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
     await answerAll(defend, user);
     const r = await completeDefendSession({ sessionId: defend.sessionId, user });
     expect(r.receipt.payload.creator).toBeUndefined();
@@ -242,7 +244,7 @@ describe("interview integrity", () => {
   it("records answers only in plan order, with server-side timing", async () => {
     const { user } = await signIn("order@fund.example");
     const ingest = await creatorIngest({ user, fileName: "o.md", buffer: memo });
-    const s1 = await startSession({ token: ingest.token, user, mode: "defend" });
+    const s1 = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
     const [first, second] = s1.plan.probes;
     await expect(
       recordDefendAnswer({ sessionId: s1.sessionId, user, probeId: second.id, answer: "skip ahead" }),
@@ -270,7 +272,7 @@ describe("interview integrity", () => {
   it("refuses to grade a defense with no recorded answers", async () => {
     const { user } = await signIn("empty@fund.example");
     const ingest = await creatorIngest({ user, fileName: "e.md", buffer: memo });
-    const s1 = await startSession({ token: ingest.token, user, mode: "defend" });
+    const s1 = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
     await expect(completeDefendSession({ sessionId: s1.sessionId, user })).rejects.toMatchObject({ status: 400 });
   });
 });
@@ -290,8 +292,8 @@ describe("one receipt per deliverable", () => {
   it("refuses a second receipt from a parallel Defend session", async () => {
     const { user } = await signIn("bestofn@fund.example");
     const ingest = await creatorIngest({ user, fileName: "n.md", buffer: memo });
-    const a = await startSession({ token: ingest.token, user, mode: "defend" });
-    const b = await startSession({ token: ingest.token, user, mode: "defend" });
+    const a = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
+    const b = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
     await answerAll(a, user).then(() => completeDefendSession({ sessionId: a.sessionId, user }));
     await expect(
       answerAll(b, user).then(() => completeDefendSession({ sessionId: b.sessionId, user })),
@@ -307,7 +309,7 @@ describe("one receipt per deliverable", () => {
   it("grades a double-submitted session once", async () => {
     const { user } = await signIn("double@fund.example");
     const ingest = await creatorIngest({ user, fileName: "d.md", buffer: memo });
-    const s = await startSession({ token: ingest.token, user, mode: "defend" });
+    const s = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
     const results = await Promise.allSettled([
       answerAll(s, user).then(() => completeDefendSession({ sessionId: s.sessionId, user })),
       answerAll(s, user).then(() => completeDefendSession({ sessionId: s.sessionId, user })),
@@ -319,7 +321,7 @@ describe("one receipt per deliverable", () => {
   it("refuses a re-upload after the deliverable was defended", async () => {
     const { user } = await signIn("swap@fund.example");
     const ingest = await creatorIngest({ user, fileName: "s.md", buffer: memo });
-    const s = await startSession({ token: ingest.token, user, mode: "defend" });
+    const s = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
     await answerAll(s, user).then(() => completeDefendSession({ sessionId: s.sessionId, user }));
     await expect(
       ingestDeliverable({ token: ingest.token, user, fileName: "other.md", buffer: Buffer.from(`${memo}\nedited`) }),
@@ -362,14 +364,14 @@ describe("expiry without the purge job", () => {
     ]);
     await expect(startSession({ token: ingest.token, user, mode: "learn" })).rejects.toMatchObject({ status: 410 });
     // Claims are still within retention, so a defense can still start.
-    await expect(startSession({ token: ingest.token, user, mode: "defend" })).resolves.toBeDefined();
+    await expect(startSession({ token: ingest.token, user, mode: "defend", accommodation: true })).resolves.toBeDefined();
     expect((await getRequestView(ingest.token, user)).deliverable?.documentAvailable).toBe(false);
 
     await db.run(`UPDATE deliverables SET purge_after = ? WHERE id = ?`, [
       new Date(Date.now() - 1000).toISOString(),
       ingest.deliverableId,
     ]);
-    await expect(startSession({ token: ingest.token, user, mode: "defend" })).rejects.toMatchObject({ status: 410 });
+    await expect(startSession({ token: ingest.token, user, mode: "defend", accommodation: true })).rejects.toMatchObject({ status: 410 });
   });
 
   it("purges only document text when the text TTL passes", async () => {
@@ -394,7 +396,7 @@ describe("expiry without the purge job", () => {
   it("purges transcripts and grades after the retention window", async () => {
     const { user } = await signIn("sessttl@fund.example");
     const ingest = await creatorIngest({ user, fileName: "st.md", buffer: memo });
-    const s = await startSession({ token: ingest.token, user, mode: "defend" });
+    const s = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
     const r = await answerAll(s, user).then(() => completeDefendSession({ sessionId: s.sessionId, user }));
     const db = await getDb();
     await db.run(`UPDATE sessions SET purge_after = ? WHERE id = ?`, [
@@ -431,7 +433,7 @@ describe("receipt claim metrics", () => {
     const { user } = await signIn("metrics@fund.example");
     const { user: other } = await signIn("metrics-other@fund.example");
     const ingest = await creatorIngest({ user, fileName: "m.md", buffer: memo });
-    const s = await startSession({ token: ingest.token, user, mode: "defend" });
+    const s = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
     await answerAll(s, user);
     const r = await completeDefendSession({ sessionId: s.sessionId, user });
     const scores = r.receipt.payload.claimScores!;
@@ -442,5 +444,52 @@ describe("receipt claim metrics", () => {
     const labels = await receiptClaimLabels(r.receipt.payload.id, user);
     expect(labels).toHaveLength(scores.length);
     expect(await receiptClaimLabels(r.receipt.payload.id, other)).toBeNull();
+  });
+});
+
+describe("voice interviews", () => {
+  it("requires voice for Hard, refuses typed answers, and records the agent's timed answers", async () => {
+    const { user } = await signIn("voice@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "v.md", buffer: memo, difficulty: "hard" });
+    const s = await startSession({ token: ingest.token, user, mode: "defend" });
+    expect(s.channel).toBe("voice");
+    await expect(
+      recordDefendAnswer({ sessionId: s.sessionId, user, probeId: s.plan.probes[0].id, answer: "typed" }),
+    ).rejects.toMatchObject({ status: 409 });
+
+    const plan = await voicePlan(s.sessionId);
+    expect(plan.probes[0].question).toBe(s.plan.probes[0].question);
+    expect(JSON.stringify(plan)).not.toContain("expectedFocus");
+
+    const now = Date.now();
+    const iso = (ms: number) => new Date(ms).toISOString();
+    await expect(
+      recordVoiceAnswer({ sessionId: s.sessionId, probeId: plan.probes[0].id, answer: "x", questionEndedAt: iso(now - 864e5), answerStartedAt: iso(now - 1000), answerEndedAt: iso(now) }),
+    ).rejects.toMatchObject({ status: 400 });
+    for (const [i, p] of plan.probes.entries()) {
+      const t = Date.now();
+      await recordVoiceAnswer({
+        sessionId: s.sessionId,
+        probeId: p.id,
+        answer: `Spoken answer ${i}: churn near 1.2% and payback of 11 months carry the case.`,
+        questionEndedAt: iso(t - 900),
+        answerStartedAt: iso(t - 650),
+        answerEndedAt: iso(t - 50),
+      });
+    }
+    const r = await completeDefendSession({ sessionId: s.sessionId, user });
+    expect(r.receipt.payload.interviewMode).toBe("voice");
+  });
+
+  it("marks a typed Hard defense as an accommodation, and keeps Standard typed", async () => {
+    const { user } = await signIn("accommodation@fund.example");
+    const hard = await creatorIngest({ user, fileName: "a.md", buffer: memo, difficulty: "hard" });
+    const s = await startSession({ token: hard.token, user, mode: "defend", accommodation: true });
+    expect(s.channel).toBe("text_accommodation");
+    await answerAll(s, user);
+    expect((await completeDefendSession({ sessionId: s.sessionId, user })).receipt.payload.interviewMode).toBe("text-accommodation");
+
+    const std = await creatorIngest({ user, fileName: "b.md", buffer: memo, difficulty: "standard" });
+    expect((await startSession({ token: std.token, user, mode: "defend" })).channel).toBe("text");
   });
 });

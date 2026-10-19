@@ -5,6 +5,7 @@ import { newReceiptId } from "./ids";
 import type {
   Difficulty,
   IntegritySignals,
+  InterviewMode,
   ModelGrade,
   ReceiptOutcome,
   ReceiptPayload,
@@ -36,6 +37,7 @@ export function buildSignedReceipt(opts: {
   integrity: IntegritySignals;
   displayName?: string | null;
   claimScores?: number[];
+  interviewMode?: InterviewMode;
   attempt?: number;
 }): SignedReceipt {
   const score = aggregateScore(opts.grades);
@@ -48,6 +50,7 @@ export function buildSignedReceipt(opts: {
     outcome: outcomeFor(score),
     bands: countBands(opts.grades),
     ...(opts.claimScores?.length ? { claimScores: opts.claimScores } : {}),
+    ...(opts.interviewMode ? { interviewMode: opts.interviewMode } : {}),
     deliverable: { sha256: opts.sha256, byteLength: opts.byteLength },
     rubricVersion: RUBRIC_VERSION,
     modelVersions: opts.grades.map((g) => `${g.provider}:${g.modelId}`),

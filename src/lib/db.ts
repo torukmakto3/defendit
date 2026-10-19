@@ -90,7 +90,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   status TEXT NOT NULL DEFAULT 'in_progress',
   started_at TEXT NOT NULL,
   completed_at TEXT,
-  purge_after TEXT NOT NULL
+  purge_after TEXT NOT NULL,
+  channel TEXT NOT NULL DEFAULT 'text'
 );
 
 CREATE TABLE IF NOT EXISTS grades (
@@ -153,6 +154,9 @@ CREATE INDEX IF NOT EXISTS idx_flashcards_deliverable ON flashcards(deliverable_
 CREATE UNIQUE INDEX IF NOT EXISTS uq_receipts_request ON receipts(request_id);
 `;
 
+/** Columns added after a table first shipped: [table, column, definition]. */
+const ADDED_COLUMNS: [string, string, string][] = [["sessions", "channel", "TEXT NOT NULL DEFAULT 'text'"]];
+
 let dbPromise: Promise<Db> | null = null;
 
 export function getDb(): Promise<Db> {
@@ -177,6 +181,10 @@ async function openSqlite(): Promise<Db> {
   raw.pragma("journal_mode = WAL");
   raw.pragma("foreign_keys = ON");
   raw.exec(SCHEMA.replaceAll("DOUBLE PRECISION", "REAL"));
+  for (const [table, column, def] of ADDED_COLUMNS) {
+    const cols = raw.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === column)) raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+  }
   return sqliteAdapter(raw);
 }
 
@@ -228,6 +236,9 @@ async function openPostgres(): Promise<Db> {
   await sql.begin(async (tx) => {
     await tx.unsafe("SELECT pg_advisory_xact_lock(726213)");
     await tx.unsafe(SCHEMA);
+    for (const [table, column, def] of ADDED_COLUMNS) {
+      await tx.unsafe(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${def}`);
+    }
   });
   return postgresAdapter(sql);
 }

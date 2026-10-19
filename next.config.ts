@@ -12,7 +12,9 @@ const securityHeaders = [
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob:",
       "font-src 'self' data:",
-      "connect-src 'self'",
+      // LiveKit signalling and media for voice interviews.
+      "connect-src 'self' wss://*.livekit.cloud https://*.livekit.cloud",
+      "media-src 'self' blob:",
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",

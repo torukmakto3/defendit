@@ -18,6 +18,8 @@
     "@resvg/resvg-js": "^2.6.2",
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.4",
+    "livekit-client": "^2.22.3",
+    "livekit-server-sdk": "^2.19.1",
     "mammoth": "^1.13.0",
     "nanoid": "^6.0.2",
     "next": "^16.4.2",

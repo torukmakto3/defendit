@@ -1,9 +1,10 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMe } from "@/components/auth";
 import { Companion } from "@/components/companion/Companion";
+import { VoiceInterview } from "@/components/voice/VoiceInterview";
 
 interface Probe {
   id: string;
@@ -17,6 +18,7 @@ export default function DefendPage() {
   const { token } = useParams<{ token: string }>();
   const router = useRouter();
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [channel, setChannel] = useState<"text" | "voice" | "text_accommodation" | null>(null);
   const [probes, setProbes] = useState<Probe[]>([]);
   const [index, setIndex] = useState(0);
   const [answer, setAnswer] = useState("");
@@ -40,30 +42,47 @@ export default function DefendPage() {
     return () => window.removeEventListener("blur", onBlur);
   }, []);
 
-  useEffect(() => {
-    // One plan per visit, even when React re-runs effects in development.
-    if (startedRef.current) return;
-    startedRef.current = true;
-    (async () => {
+  const begin = useCallback(
+    async (accommodation = false) => {
       setBusy(true);
+      setError(null);
       try {
         const start = await fetch("/api/sessions/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token, mode: "defend" }),
+          body: JSON.stringify({ token, mode: "defend", ...(accommodation ? { accommodation: true } : {}) }),
         }).then((r) => r.json());
         if (start.error) throw new Error(start.error);
         setSessionId(start.sessionId);
+        setChannel(start.channel ?? "text");
         setProbes(start.probes || []);
-        const now = new Date().toISOString();
-        setSessionStartedAt(now);
+        setIndex(0);
+        setSessionStartedAt(new Date().toISOString());
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to start");
       } finally {
         setBusy(false);
       }
-    })();
-  }, [token]);
+    },
+    [token],
+  );
+
+  useEffect(() => {
+    // One plan per visit, even when React re-runs effects in development.
+    if (startedRef.current) return;
+    startedRef.current = true;
+    void begin();
+  }, [begin]);
+
+  const completeDefense = useCallback(async () => {
+    const result = await fetch("/api/sessions/defend/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, pasteEvents, focusBlurEvents, showName }),
+    }).then((r) => r.json());
+    if (result.error) throw new Error(result.error);
+    router.push(`/r/${result.receipt.payload.id}`);
+  }, [sessionId, pasteEvents, focusBlurEvents, showName, router]);
 
   useEffect(() => {
     if (!sessionStartedAt) return;
@@ -102,13 +121,7 @@ export default function DefendPage() {
         return;
       }
 
-      const result = await fetch("/api/sessions/defend/complete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, pasteEvents, focusBlurEvents, showName }),
-      }).then((r) => r.json());
-      if (result.error) throw new Error(result.error);
-      router.push(`/r/${result.receipt.payload.id}`);
+      await completeDefense();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
       setBusy(false);
@@ -125,8 +138,33 @@ export default function DefendPage() {
 
   if (!current) {
     return (
-      <div className="shell">
-        <p>{busy ? "Preparing interview plan…" : "Loading…"}</p>
+      <div className="shell grid max-w-3xl gap-4">
+        <Companion state="thinking" size={72} />
+        <p>{busy ? "Writing questions for your file…" : "Loading…"}</p>
+      </div>
+    );
+  }
+
+  if (channel === "voice" && sessionId) {
+    return (
+      <div className="shell grid max-w-3xl gap-6">
+        <div>
+          <p className="eyebrow">Defend &middot; live voice interview</p>
+          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">Live defense</h1>
+        </div>
+        <VoiceInterview
+          sessionId={sessionId}
+          probes={probes}
+          onComplete={completeDefense}
+          onUseText={() => void begin(true)}
+        />
+        {me?.displayName && (
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={showName} onChange={(e) => setShowName(e.target.checked)} />
+            Show my name ({me.displayName}) on the receipt
+          </label>
+        )}
+        {error && <p className="text-sm text-danger">{error}</p>}
       </div>
     );
   }
@@ -136,7 +174,7 @@ export default function DefendPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="eyebrow">
-            Defend · text interview
+            Defend · {channel === "text_accommodation" ? "typed (accommodation)" : "text interview"}
           </p>
           <h1 className="mt-2 text-3xl font-bold sm:text-4xl">Live defense</h1>
         </div>
