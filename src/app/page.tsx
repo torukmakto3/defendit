@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { saveDisplayName, SignInCard, useMe } from "@/components/auth";
 import { Companion, type CompanionState } from "@/components/companion/Companion";
 
@@ -15,10 +15,8 @@ export default function HomePage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { me } = useMe();
-  const [displayName, setDisplayName] = useState("");
-  useEffect(() => {
-    if (me?.displayName) setDisplayName(me.displayName);
-  }, [me]);
+  const [displayName, setDisplayName] = useState<string | null>(null);
+  const nameValue = displayName ?? me?.displayName ?? "";
   const [difficulty, setDifficulty] = useState("hard");
   const [ready, setReady] = useState<{
     token: string;
@@ -102,9 +100,9 @@ export default function HomePage() {
                 id="displayName"
                 className="field"
                 placeholder="Shown only if you choose to"
-                value={displayName}
+                value={nameValue}
                 onChange={(e) => setDisplayName(e.target.value)}
-                onBlur={() => void saveDisplayName(displayName)}
+                onBlur={() => void saveDisplayName(nameValue)}
               />
             </div>
             <div>

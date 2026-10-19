@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 type Theme = "light" | "dark";
 const KEY = "defend-it:theme";
@@ -18,23 +18,36 @@ function effectiveTheme(): Theme {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-export function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme | null>(null);
+const listeners = new Set<() => void>();
 
-  useEffect(() => {
-    setTheme(effectiveTheme());
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const follow = () => setTheme(effectiveTheme());
-    mq.addEventListener("change", follow);
-    return () => mq.removeEventListener("change", follow);
-  }, []);
+function subscribe(onStoreChange: () => void) {
+  listeners.add(onStoreChange);
+  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  const follow = () => onStoreChange();
+  mq.addEventListener("change", follow);
+  return () => {
+    listeners.delete(onStoreChange);
+    mq.removeEventListener("change", follow);
+  };
+}
+
+function emit() {
+  for (const listener of listeners) listener();
+}
+
+function getSnapshot(): Theme | null {
+  return effectiveTheme();
+}
+
+export function ThemeToggle() {
+  const theme = useSyncExternalStore(subscribe, getSnapshot, () => null);
 
   function choose(next: Theme) {
     document.documentElement.setAttribute("data-theme", next);
     try {
       localStorage.setItem(KEY, next);
     } catch {}
-    setTheme(next);
+    emit();
   }
 
   return (

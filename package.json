@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "tsx scripts/smoke.ts"
@@ -35,7 +36,6 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@eslint/eslintrc": "^3",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^20",
     "@types/qrcode": "^1.5.6",
@@ -43,7 +43,7 @@
     "@types/react-dom": "^19",
     "@types/uuid": "^10.0.0",
     "eslint": "^9",
-    "eslint-config-next": "15.1.0",
+    "eslint-config-next": "16.4.2",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
     "tsx": "^4.23.15",

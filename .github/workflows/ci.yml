@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # better-sqlite3 is native. Prebuilds cover common runners; this toolchain
+      # is what `npm ci` needs when it has to compile the module instead.
+      - name: Install native build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Mock-mode smoke
+        env:
+          MOCK_LLM: "1"
+        run: |
+          set -euo pipefail
+          npm run dev -- --hostname 127.0.0.1 --port 3000 > /tmp/next-dev.log 2>&1 &
+          pid=$!
+          cleanup() {
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for _ in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:3000/api/keys >/dev/null; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "next dev exited before it was ready"
+              cat /tmp/next-dev.log
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "timed out waiting for next dev"
+            cat /tmp/next-dev.log
+            exit 1
+          fi
+          npm run smoke || {
+            echo "smoke failed; next dev log:"
+            cat /tmp/next-dev.log
+            exit 1
+          }
