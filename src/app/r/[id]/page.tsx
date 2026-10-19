@@ -4,6 +4,10 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Companion } from "@/components/companion/Companion";
+import { LoadTest } from "@/components/receipt/LoadTest";
+import { claimResults } from "@/components/receipt/metrics";
+import { PlotterStamp } from "@/components/receipt/PlotterStamp";
+import { ToleranceChart } from "@/components/receipt/ToleranceChart";
 import type { SignedReceipt } from "@/lib/types";
 
 interface ReceiptView {
@@ -14,6 +18,7 @@ interface ReceiptView {
 export default function ReceiptPage() {
   const { id } = useParams<{ id: string }>();
   const [data, setData] = useState<ReceiptView | null>(null);
+  const [labels, setLabels] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -24,6 +29,11 @@ export default function ReceiptPage() {
         setData(j);
       })
       .catch((e) => setError(e.message));
+    // Claim names only come back for the receipt's creator, within retention.
+    fetch(`/api/receipts/${id}/labels`)
+      .then((r) => (r.ok ? r.json() : { labels: null }))
+      .then((j) => setLabels(j.labels ?? null))
+      .catch(() => setLabels(null));
   }, [id]);
 
   if (error) {
@@ -42,12 +52,11 @@ export default function ReceiptPage() {
   }
 
   const p = data.receipt.payload;
-  const diff = p.difficulty.charAt(0).toUpperCase() + p.difficulty.slice(1);
-
   const defended = p.outcome === "Defended";
+  const { claims, approximate } = claimResults(p, labels);
 
   return (
-    <div className="shell max-w-3xl">
+    <div className="shell grid max-w-4xl gap-8">
       <div className="grid grid-cols-[auto_1fr] items-center gap-4 sm:gap-5">
         <Companion state={defended ? "surprised" : p.outcome === "Not defended" ? "skeptical" : "listening"} size={72} />
         <div className="min-w-0">
@@ -62,17 +71,36 @@ export default function ReceiptPage() {
         </div>
       </div>
 
-      <div className="relative mt-10">
-        {defended && <span className="approved absolute -top-6 right-3 bg-[var(--card)] text-lg">APPROVED</span>}
-        <div className="titleblock">
-          <div><small>Outcome</small><b>{p.outcome}</b></div>
-          <div><small>Score</small><b>{p.score}/100</b></div>
-          <div><small>Level</small><b>{diff}</b></div>
-          <div><small>Date</small><b>{p.createdAt.slice(0, 10)}</b></div>
-          <div><small>Strong / partial / weak</small><b>{p.bands.strong} / {p.bands.partial} / {p.bands.weak}</b></div>
-          <div><small>Integrity (separate)</small><b>{p.integrity.status}</b></div>
+      <PlotterStamp payload={p} verifyUrl={data.receipt.verifyUrl} />
+
+      <section className="grid gap-4">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-2xl font-bold">How the claims held up</h2>
+          <span className="text-xs text-[var(--ink-2)]">
+            {labels
+              ? "Claim names are visible only to you."
+              : approximate
+                ? "Approximate: this receipt predates per-claim scores."
+                : "Claims are numbered; their content stays private."}
+          </span>
         </div>
-        <div className="titleblock titleblock-rows">
+        <div className="grid gap-5 md:grid-cols-2">
+          <div className="panel grid content-start gap-2 p-5">
+            <span className="mono text-xs uppercase tracking-[0.08em] text-[var(--blueprint)]">Load test</span>
+            <p className="text-sm text-[var(--ink-2)]">Each claim is a support under the deliverable. Weak supports crack.</p>
+            <LoadTest claims={claims} score={p.score} outcome={p.outcome} />
+          </div>
+          <div className="panel grid content-start gap-2 p-5">
+            <span className="mono text-xs uppercase tracking-[0.08em] text-[var(--blueprint)]">Tolerance chart</span>
+            <p className="text-sm text-[var(--ink-2)]">Each claim&apos;s score against the spec: 50 passes, 75 is strong.</p>
+            <ToleranceChart claims={claims} />
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-3">
+        <h2 className="text-2xl font-bold">Details</h2>
+        <div className="titleblock" style={{ gridTemplateColumns: "1fr" }}>
           <div><small>SHA-256 of the defended file</small><b>{p.deliverable.sha256}</b></div>
           <div>
             <small>Defended by</small>
@@ -82,28 +110,22 @@ export default function ReceiptPage() {
                 : "Not disclosed by the creator"}
             </b>
           </div>
+          <div><small>Integrity (reported separately from the score)</small><b>{p.integrity.status}</b></div>
           <div><small>Receipt</small><b>{p.id} &middot; rubric {p.rubricVersion}</b></div>
         </div>
-      </div>
+        <p className="text-xs text-[var(--ink-2)]">
+          This receipt holds no document content, answers, file name or email. The deliverable stays
+          with the people it was sent to; drop it on the verify page to check it matches.
+        </p>
+      </section>
 
-      <p className="mt-4 text-xs text-[var(--ink-2)]">
-        This receipt holds no document content, answers, file name or email. The deliverable stays
-        with the people it was sent to; drop it on the verify page to check it matches.
-      </p>
-
-      <div className="panel mt-8 p-5">
+      <div className="panel p-5">
         <h2 className="text-xl font-bold">Send it your way</h2>
         <p className="mt-2 text-sm text-[var(--ink-2)]">
           Attach the receipt PDF to the file you defended, or paste the stamp image into your email,
           Slack or Docs. The receiver scans the code or opens the link and drops their copy of the
           file to check it. No account needed.
         </p>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={`/api/stamp/${p.id}`}
-          alt={`Defend It stamp: ${p.outcome}, ${p.score} of 100, ${diff}`}
-          className="mt-4 h-auto w-full max-w-[460px]"
-        />
         <div className="mt-4 flex flex-wrap gap-3 text-sm">
           <a href={`/api/receipts/${p.id}/pdf`} className="btn btn-primary">
             Download receipt (PDF)
@@ -116,8 +138,8 @@ export default function ReceiptPage() {
           </Link>
         </div>
       </div>
-      <p className="mt-4 text-xs text-[var(--ink-2)]">
-        Graded with {p.modelVersions.join(", ")} · {p.rubricVersion}
+      <p className="text-xs text-[var(--ink-2)]">
+        Graded with {p.modelVersions.join(", ")} &middot; {p.rubricVersion}
       </p>
     </div>
   );

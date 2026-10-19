@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildSignedReceipt } from "../src/lib/receipt";
 import { renderReceiptPdf } from "../src/lib/receipt-pdf";
-import { generateStampSvg, renderStampPng } from "../src/lib/stamp";
+import { generateStampSvg } from "../src/lib/stamp";
+import { renderStampPng } from "../src/lib/stamp-png";
 
 process.env.DEFEND_IT_SIGNING_SEED = "33".repeat(32);
 
@@ -25,8 +26,8 @@ describe("receipt downloads", () => {
 
   it("renders the stamp as a PNG with embedded fonts", async () => {
     const svg = await generateStampSvg({ payload: receipt.payload, verifyUrl: receipt.verifyUrl });
-    const png = await renderStampPng(svg);
+    const png = renderStampPng(svg);
     expect(png.subarray(1, 4).toString()).toBe("PNG");
-    expect(png.readUInt32BE(16)).toBe(920); // width from fitTo
+    expect(png.readUInt32BE(16)).toBe(1120); // width from fitTo
   });
 });

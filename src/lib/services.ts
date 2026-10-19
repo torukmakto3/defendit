@@ -2,7 +2,7 @@ import type { User } from "./auth";
 import { extractClaims } from "./claims";
 import { getPublicKeyHex, sha256Hex } from "./crypto";
 import { getDb, type Db } from "./db";
-import { aggregateScore, gradeSession, shouldFlagForHuman } from "./grading";
+import { aggregateScore, claimScores, gradeSession, shouldFlagForHuman } from "./grading";
 import { HttpError } from "./http";
 import { newId, newToken } from "./ids";
 import { computeIntegrity } from "./integrity";
@@ -602,6 +602,7 @@ export async function completeDefendSession(opts: {
       grades,
       integrity,
       displayName: opts.showName ? opts.user.display_name : null,
+      claimScores: claimScores(grades, plan),
     });
 
     const nowIso = new Date().toISOString();
@@ -792,6 +793,25 @@ export async function saveHumanGrade(opts: {
        grader_name = excluded.grader_name, created_at = excluded.created_at`,
     [id, opts.sessionId, opts.overallScore, opts.notes || null, opts.graderName, nowIso],
   );
+}
+
+/**
+ * Section names for a receipt's claims, for its creator only and only while
+ * the defense data is within retention. The public receipt stays anonymous.
+ */
+export async function receiptClaimLabels(receiptId: string, user: User): Promise<string[] | null> {
+  const db = await getDb();
+  const row = await db.get<SessionRow & { deliverable_ref: string }>(
+    `SELECT s.*, s.deliverable_id AS deliverable_ref FROM receipts r JOIN sessions s ON s.id = r.session_id WHERE r.id = ?`,
+    [receiptId],
+  );
+  if (!row || row.user_id !== user.id || isPast(row.purge_after)) return null;
+  const plan = decryptJson<InterviewPlan>(row.plan_enc, ctx.plan(row.id));
+  const deliverable = await db.get<DeliverableRow>(`SELECT * FROM deliverables WHERE id = ?`, [row.deliverable_ref]);
+  const claims = deliverable ? liveClaims(deliverable) : null;
+  if (!plan || !claims) return null;
+  const order = [...new Set(plan.probes.map((p) => p.claimId))];
+  return order.map((id) => claims.find((c) => c.id === id)?.section ?? "Claim");
 }
 
 /** The signed-in creator's own deliverable behind a link, with live claims (for Learn tools). */

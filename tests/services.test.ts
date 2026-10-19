@@ -424,3 +424,23 @@ describe("receiver links", () => {
     ).rejects.toMatchObject({ status: 403 });
   });
 });
+
+describe("receipt claim metrics", () => {
+  it("signs anonymous per-claim scores and shows labels only to the creator", async () => {
+    const { receiptClaimLabels } = await import("../src/lib/services");
+    const { user } = await signIn("metrics@fund.example");
+    const { user: other } = await signIn("metrics-other@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "m.md", buffer: memo });
+    const s = await startSession({ token: ingest.token, user, mode: "defend" });
+    await answerAll(s, user);
+    const r = await completeDefendSession({ sessionId: s.sessionId, user });
+    const scores = r.receipt.payload.claimScores!;
+    expect(scores.length).toBe(new Set(s.plan.probes.map((p) => p.claimId)).size);
+    expect(scores.every((n) => Number.isInteger(n) && n >= 0 && n <= 100)).toBe(true);
+    expect(verifySignature(r.receipt.payload, r.receipt.signature, r.receipt.publicKey)).toBe(true);
+
+    const labels = await receiptClaimLabels(r.receipt.payload.id, user);
+    expect(labels).toHaveLength(scores.length);
+    expect(await receiptClaimLabels(r.receipt.payload.id, other)).toBeNull();
+  });
+});

@@ -59,6 +59,26 @@ export async function gradeSession(opts: {
   return grades;
 }
 
+/**
+ * Per-claim score (0-100), averaged across the council, in the order the
+ * claims were probed. Dimensions are 0-4 each.
+ */
+export function claimScores(grades: ModelGrade[], plan: InterviewPlan): number[] {
+  const order = [...new Set(plan.probes.map((p) => p.claimId))];
+  return order
+    .map((claimId) => {
+      const vals = grades
+        .map((g) => g.claimGrades.find((c) => c.claimId === claimId))
+        .filter((c): c is ClaimGrade => !!c)
+        .map((c) => {
+          const dims = Object.values(c.scores);
+          return dims.reduce((a, b) => a + b, 0) / (dims.length * 4);
+        });
+      return vals.length ? Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 100) : null;
+    })
+    .filter((v): v is number => v !== null);
+}
+
 export function aggregateScore(grades: ModelGrade[]): number {
   if (grades.length === 0) return 0;
   const avg =

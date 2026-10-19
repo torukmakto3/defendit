@@ -97,6 +97,11 @@ export interface ReceiptPayload {
   outcome: ReceiptOutcome;
   /** How many probed claims landed in each band. */
   bands: { strong: number; partial: number; weak: number };
+  /**
+   * Score 0-100 for each probed claim, in interview order. Anonymous on
+   * purpose: numbers only, no claim text (the receipt is public).
+   */
+  claimScores?: number[];
   deliverable: {
     sha256: string;
     byteLength: number;

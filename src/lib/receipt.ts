@@ -35,6 +35,7 @@ export function buildSignedReceipt(opts: {
   grades: ModelGrade[];
   integrity: IntegritySignals;
   displayName?: string | null;
+  claimScores?: number[];
   attempt?: number;
 }): SignedReceipt {
   const score = aggregateScore(opts.grades);
@@ -46,6 +47,7 @@ export function buildSignedReceipt(opts: {
     score,
     outcome: outcomeFor(score),
     bands: countBands(opts.grades),
+    ...(opts.claimScores?.length ? { claimScores: opts.claimScores } : {}),
     deliverable: { sha256: opts.sha256, byteLength: opts.byteLength },
     rubricVersion: RUBRIC_VERSION,
     modelVersions: opts.grades.map((g) => `${g.provider}:${g.modelId}`),

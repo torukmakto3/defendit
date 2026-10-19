@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { jsonError } from "@/lib/http";
 import { getReceipt } from "@/lib/services";
-import { generateStampSvg, renderStampPng } from "@/lib/stamp";
+import { generateStampSvg } from "@/lib/stamp";
+import { renderStampPng } from "@/lib/stamp-png";
 
 export const runtime = "nodejs";
 
@@ -20,7 +21,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   const name = `defend-it-stamp-${receipt.payload.id}`;
 
   if (url.searchParams.get("format") === "png") {
-    const png = await renderStampPng(svg);
+    const png = renderStampPng(svg);
     return new NextResponse(new Uint8Array(png), {
       headers: {
         "Content-Type": "image/png",
