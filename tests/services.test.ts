@@ -493,3 +493,22 @@ describe("voice interviews", () => {
     expect((await startSession({ token: std.token, user, mode: "defend" })).channel).toBe("text");
   });
 });
+
+describe("voice answer timing", () => {
+  it("accepts an answer that starts before the examiner finishes (barge-in)", async () => {
+    const { user } = await signIn("bargein@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "bi.md", buffer: memo, difficulty: "hard" });
+    const s = await startSession({ token: ingest.token, user, mode: "defend" });
+    const plan = await voicePlan(s.sessionId);
+    const t = Date.now();
+    const iso = (ms: number) => new Date(ms).toISOString();
+    // Started talking 3 s before the question audio ended; a stale start from a retry is also earlier.
+    await expect(
+      recordVoiceAnswer({ sessionId: s.sessionId, probeId: plan.probes[0].id, answer: "Ring-fencing in the SPV documents decides who is affected.", questionEndedAt: iso(t - 500), answerStartedAt: iso(t - 3500), answerEndedAt: iso(t - 10) }),
+    ).resolves.toMatchObject({ answered: 1 });
+    // Still refuses times outside the session.
+    await expect(
+      recordVoiceAnswer({ sessionId: s.sessionId, probeId: plan.probes[1].id, answer: "x", questionEndedAt: iso(t - 864e5), answerStartedAt: iso(t - 864e5), answerEndedAt: iso(t) }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+});

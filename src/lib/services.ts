@@ -549,15 +549,21 @@ export async function recordVoiceAnswer(opts: {
   if (!session || session.mode !== "defend" || session.channel !== "voice") {
     throw new HttpError(404, "Voice session not found");
   }
+  // Times must fall inside this session; order is not enforced because people
+  // often start answering before the examiner's audio has fully finished.
   const lo = new Date(session.started_at).getTime() - 5_000;
   const hi = Date.now() + 5_000;
-  const t = [opts.questionEndedAt, opts.answerStartedAt, opts.answerEndedAt].map((x) => new Date(x).getTime());
-  if (t.some((x) => !Number.isFinite(x) || x < lo || x > hi) || !(t[0] <= t[1] + 1_000 && t[1] <= t[2])) {
+  const [qEnd, aStart, aEnd] = [opts.questionEndedAt, opts.answerStartedAt, opts.answerEndedAt].map((x) =>
+    new Date(x).getTime(),
+  );
+  if ([qEnd, aStart, aEnd].some((x) => !Number.isFinite(x) || x < lo || x > hi)) {
     throw new HttpError(400, "Answer timing is out of range");
   }
+  const t = [qEnd, Math.min(aStart, aEnd), aEnd];
   return storeAnswer(session, opts.probeId, opts.answer, {
-    startedAt: new Date(t[0]).toISOString(),
+    startedAt: new Date(Math.min(t[0], t[1])).toISOString(),
     endedAt: new Date(t[2]).toISOString(),
+    // Answering before the question finished counts as zero latency.
     latencyMs: Math.max(0, t[1] - t[0]),
   });
 }

@@ -88,6 +88,9 @@ class Interview {
       this.ask("Of course. ");
       return;
     }
+    // The answer window for this attempt ends now; the next attempt starts fresh.
+    const answerStartedAt = this.answerStartedAt ?? this.questionEndedAt;
+    this.answerStartedAt = null;
     const answerEndedAt = new Date();
     let resynced = false;
     try {
@@ -96,7 +99,7 @@ class Interview {
         probeId: p.id,
         answer,
         questionEndedAt: this.questionEndedAt.toISOString(),
-        answerStartedAt: (this.answerStartedAt ?? this.questionEndedAt).toISOString(),
+        answerStartedAt: answerStartedAt.toISOString(),
         answerEndedAt: answerEndedAt.toISOString(),
       });
     } catch (e) {
@@ -106,6 +109,8 @@ class Interview {
         this.index = this.plan.answered;
         resynced = true;
       } else {
+        // Status only: never log what the creator said.
+        console.error(`[interviewer] saving an answer failed (${(e as { status?: number }).status ?? "network"})`);
         this.session.say("Sorry, I couldn't save that answer. Could you say it again?", { allowInterruptions: true });
         return;
       }
