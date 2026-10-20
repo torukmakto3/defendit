@@ -1,20 +1,21 @@
 # Roadmap
 
-Working list for the beta. The receipt has to be stable enough that two defenses of the same grasp land in the same band, and cheap enough to stay under $3.
+Status of Defend It on `main` as of 20 Oct 2026. #2, #3 (including #13 and #14), are merged. #1 is closed.
 
-## Now
+## Shipped
 
-- Interview reliability: schema-checked model output, one repair turn, a deadline on every model call, idempotent answer saves, and a phase machine on the Defend page so a dropped response can be retried.
-- Scoring: a per-document claim map, a fixed blueprint of question types and difficulties, questions that cite a source span and pass a grounded / unambiguous / answerable check, anchored 0–4 levels, median across the council, one follow-up when graders disagree by two levels, then a flagged receipt (not held for a person). Code forces a 0 only for a blank, a refusal, or a restatement of the question. Difficulty-weighted receipt score. Rubric `defend-it-rubric-v0.4`. Voice follow-up in beta is typed.
-- Calibration script (`npm run calibrate`) reports overall stability and per-dimension min/max/stdev. `npm run soak` runs Learn and Defend on three fixtures. "I don't know" scores 0.
+- **Secure foundation** ([#2](https://github.com/torukmakto3/defendit/pull/2)). Email-link accounts, encryption at rest, process-and-purge, minimal receipts, zero-retention model calls. Postgres when `DATABASE_URL` is set (raw SQL through postgres.js); SQLite locally.
+- **Titleblock redesign** ([#3](https://github.com/torukmakto3/defendit/pull/3)). Day and night themes, robot companion, PDF certificate and PNG stamp, Learn projects and flashcards, LiveKit voice for Hard and Expert (`agent/`). Tokens in `DESIGN.md`.
+- **Interview reliability and rubric v0.4** ([#13](https://github.com/torukmakto3/defendit/pull/13)). Schema-checked model output, one repair turn, deadlines, idempotent answer saves, a fixed question blueprint, median grading, one follow-up then a flagged receipt. Rubric `defend-it-rubric-v0.4`. `npm run calibrate` and `npm run soak`.
+- **CI** ([#14](https://github.com/torukmakto3/defendit/pull/14)). Every pull request runs install, typecheck, lint, tests, and mock-mode smoke on Node 22.
 
 ## Next
 
-- Run the calibration script against the live council (Liquid / open-weight) and tighten anchors where the good/bad gap is thin.
-- Voice: the follow-up after a disagreement is typed in beta, including for a voice defense. Fold that question into the LiveKit agent when the agent build is in the loop.
-- A review queue for flagged receipts is not part of beta. The receipt is issued and the flag is on it.
+- **Real email sign-in via Resend** (`RESEND_API_KEY`, `EMAIL_FROM`). Blocked on a sending domain. Until that ships, sign-in depends on the on-screen dev link.
+- **Pin a council of at least two models and record how each grade was produced** ([#7](https://github.com/torukmakto3/defendit/issues/7)). Store model id, temperature, and seed. A deploy must refuse to grade when the council has fewer than two pinned models. The council can still fall through to `liquid.auto`.
+- **Measured per-call token and cost tracking, with a $3 flag** ([#8](https://github.com/torukmakto3/defendit/issues/8)). Record usage and cost on each model call, show the session total, and flag a defense over $3.
+- **Live calibration with Liquid models.** The mock harness is in place (`npm run calibrate`). A live run is `CALIBRATE_LIVE=1` and needs provider keys. Tighten anchors where the good/bad gap is thin.
 
-## Later
+## Known risks
 
-- Open-weight voice (see `docs/model_strategy.md`) once text scoring is stable.
-- Assurance levels above L1. Do not add a second holistic score; extend the same levels.
+- **The dev magic link is shown on screen in production.** With Resend unset, `requestMagicLink` returns the sign-in URL in the response instead of emailing it. On a deploy that is allowed when `AUTH_DEV_LINKS=1`. Anyone who can see that screen can use the link. Turn the on-screen path off once Resend is sending.
