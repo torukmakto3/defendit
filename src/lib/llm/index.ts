@@ -9,6 +9,7 @@ import {
 } from "./openai-compat";
 import { createOpenAIProvider } from "./openai";
 import { isDeployed } from "../secrets";
+import type { ZodType } from "zod";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./types";
 
 export type {
@@ -169,18 +170,129 @@ export function getGradingCouncil(): LlmProvider[] {
   return council.slice(0, 3);
 }
 
+interface JsonSchema<T> {
+  safeParse(
+    data: unknown,
+  ):
+    | { success: true; data: T }
+    | { success: false; error: { issues: { path: PropertyKey[]; code: string }[] } };
+}
+
+/** `/api/sessions/defend/complete` is killed at this. Grading has to finish sooner. */
+export const DEFEND_ROUTE_BUDGET_MS = 120_000;
+
+function timeoutMs(): number {
+  const n = Number(process.env.LLM_TIMEOUT_MS || "45000");
+  return Number.isFinite(n) && n > 0 ? n : 45000;
+}
+
+/**
+ * Budget for one model call. The first call and the repair each take at most
+ * half the route limit, and the repair also gives back whatever the first
+ * call already used, so the worst case stays under 120s.
+ */
+export function graderCallBudgetMs(elapsedMs: number): number {
+  const remain = DEFEND_ROUTE_BUDGET_MS - elapsedMs;
+  const half = Math.floor((DEFEND_ROUTE_BUDGET_MS - 1) / 2);
+  return Math.max(0, Math.min(timeoutMs(), half, remain - 1));
+}
+
+/**
+ * JSON completion with a deadline, schema check, and one repair turn.
+ * Failures report length and schema codes only — model text can quote the document.
+ */
 export async function completeJson<T>(
   provider: LlmProvider,
   req: Omit<LlmRequest, "json">,
+  schema?: ZodType<T> | JsonSchema<T>,
 ): Promise<{ data: T; raw: LlmResponse }> {
-  const raw = await provider.complete({ ...req, json: true });
+  const started = Date.now();
+  const firstLimit = graderCallBudgetMs(0);
+  if (firstLimit <= 0) throw new Error(`LLM timed out after ${DEFEND_ROUTE_BUDGET_MS}ms`);
+  const first = await runOnce(provider, req, firstLimit);
+  const parsed = interpret(first.content, schema);
+  if (parsed.ok) return { data: parsed.data, raw: first };
+
+  const repairLimit = graderCallBudgetMs(Date.now() - started);
+  if (repairLimit <= 0) throw new Error(`LLM timed out after ${DEFEND_ROUTE_BUDGET_MS}ms`);
+  const repaired = await runOnce(
+    provider,
+    {
+      ...req,
+      temperature: 0,
+      messages: [
+        ...req.messages,
+        { role: "assistant", content: first.content.slice(0, 6000) },
+        {
+          role: "user",
+          content: `That response failed validation (${parsed.reason}). Return only the corrected JSON object. No markdown.`,
+        },
+      ],
+    },
+    repairLimit,
+  );
+  const again = interpret(repaired.content, schema);
+  if (again.ok) return { data: again.data, raw: repaired };
+  throw new Error(
+    `LLM ${provider.provider}:${provider.id} returned non-JSON after repair (${repaired.content.length} chars)`,
+  );
+}
+
+async function runOnce(
+  provider: LlmProvider,
+  req: Omit<LlmRequest, "json">,
+  ms: number,
+): Promise<LlmResponse> {
+  const signal = AbortSignal.timeout(ms);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return { data: JSON.parse(stripJsonFence(raw.content)) as T, raw };
+    return await Promise.race([
+      provider.complete({ ...req, json: true, signal }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`LLM timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } catch (e) {
+    if (signal.aborted) throw new Error(`LLM timed out after ${ms}ms`);
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function interpret<T>(
+  content: string,
+  schema?: JsonSchema<T>,
+): { ok: true; data: T } | { ok: false; reason: string } {
+  const value = parseJsonValue(content);
+  if (!value.ok) return value;
+  if (!schema) return { ok: true, data: value.data as T };
+  const result = schema.safeParse(value.data);
+  if (!result.success) {
+    const reason = result.error.issues
+      .slice(0, 4)
+      .map((issue) => `${issue.path.map(String).join(".") || "root"}:${issue.code}`)
+      .join("; ");
+    return { ok: false, reason: reason || "schema" };
+  }
+  return { ok: true, data: result.data };
+}
+
+function parseJsonValue(content: string): { ok: true; data: unknown } | { ok: false; reason: string } {
+  const stripped = stripJsonFence(content).trim();
+  try {
+    return { ok: true, data: JSON.parse(stripped) };
   } catch {
-    // Model output can quote the confidential document: report length only.
-    throw new Error(
-      `LLM ${provider.provider}:${provider.id} returned non-JSON (${raw.content.length} chars)`,
-    );
+    const start = stripped.indexOf("{");
+    const end = stripped.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        return { ok: true, data: JSON.parse(stripped.slice(start, end + 1)) };
+      } catch {
+        return { ok: false, reason: "not JSON" };
+      }
+    }
+    return { ok: false, reason: "not JSON" };
   }
 }
 

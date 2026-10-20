@@ -39,7 +39,7 @@ export function createOpenAICompatProvider(opts: {
         method: "POST",
         headers,
         // Below the 60s route budget, so a slow model fails cleanly instead of the function being killed.
-        signal: AbortSignal.timeout(Number(process.env.LLM_TIMEOUT_MS || "45000")),
+        signal: req.signal ?? AbortSignal.timeout(Number(process.env.LLM_TIMEOUT_MS || "45000")),
         body: JSON.stringify({
           model: opts.model,
           temperature: req.temperature ?? 0.3,

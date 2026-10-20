@@ -1,31 +1,58 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 export interface Me {
   email: string;
   displayName: string | null;
 }
 
+type Session = { me: Me | null | undefined; isAdmin: boolean };
+
+let session: Session = { me: undefined, isAdmin: false };
+const listeners = new Set<() => void>();
+let generation = 0;
+
+function emit() {
+  for (const listener of listeners) listener();
+}
+
+function subscribe(onStoreChange: () => void) {
+  listeners.add(onStoreChange);
+  return () => listeners.delete(onStoreChange);
+}
+
+async function readSession(): Promise<Session> {
+  const res = await fetch("/api/auth/me", { cache: "no-store" });
+  const data = await res.json();
+  return { me: data.user ?? null, isAdmin: Boolean(data.isAdmin) };
+}
+
+function refreshSession() {
+  const mine = ++generation;
+  return (async () => {
+    try {
+      const next = await readSession();
+      if (mine !== generation) return;
+      session = next;
+    } catch {
+      if (mine !== generation) return;
+      session = { me: null, isAdmin: false };
+    }
+    emit();
+  })();
+}
+
 /** Current signed-in user; `undefined` while loading, `null` when signed out. */
 export function useMe() {
-  const [me, setMe] = useState<Me | null | undefined>(undefined);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const refresh = useCallback(async () => {
-    try {
-      const res = await fetch("/api/auth/me", { cache: "no-store" });
-      const data = await res.json();
-      setMe(data.user ?? null);
-      setIsAdmin(Boolean(data.isAdmin));
-    } catch {
-      setMe(null);
-    }
-  }, []);
+  const current = useSyncExternalStore(subscribe, () => session, () => session);
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
-  return { me, isAdmin, refresh };
+    if (session.me !== undefined) return;
+    void refreshSession();
+  }, []);
+  return { me: current.me, isAdmin: current.isAdmin, refresh: refreshSession };
 }
 
 export async function saveDisplayName(displayName: string) {
@@ -107,7 +134,8 @@ export function SignInCard({ title = "Sign in to continue", next }: { title?: st
 }
 
 export function AccountMenu() {
-  const { me, isAdmin } = useMe();
+  const router = useRouter();
+  const { me, isAdmin, refresh } = useMe();
   if (me === undefined) return null;
   if (!me) return null;
   return (
@@ -122,7 +150,9 @@ export function AccountMenu() {
         className="hover:text-[var(--moss)]"
         onClick={async () => {
           await fetch("/api/auth/logout", { method: "POST" });
-          window.location.href = "/";
+          await refresh();
+          router.push("/");
+          router.refresh();
         }}
       >
         Sign out

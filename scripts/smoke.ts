@@ -91,7 +91,7 @@ async function main() {
   check(me.status === 200, "display name saved");
 
   const form = new FormData();
-  form.set("difficulty", "hard");
+  form.set("difficulty", "standard");
   form.set("file", new Blob([fixture], { type: "text/markdown" }), "Project-North-memo.md");
   const ingest = await call("/api/creator/ingest", { method: "POST", body: form, cookie: ana });
   check(ingest.status === 200, `upload parsed (${ingest.json?.claimCount} claims)${ingest.status !== 200 ? ` — ${ingest.text}` : ""}`);
@@ -144,8 +144,22 @@ async function main() {
   console.log(`  ✓ ${probes.length} answers recorded server-side`);
   const forged = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId, turns: [{ probeId: "x", answer: "forged", latencyMs: 9000 }] }, mallory);
   check(forged.status === 404, "another account cannot complete this defense");
-  const done = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId, showName: true }, ana);
-  check(done.status === 200, `defense graded: ${done.json?.receipt?.payload?.outcome} ${done.json?.score}/100${done.status !== 200 ? ` — ${done.text}` : ""}`);
+  let done = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId, showName: true }, ana);
+  if (done.status === 200 && done.json?.followUp?.probe) {
+    const extra = done.json.followUp.probe as { id: string };
+    const saved = await post(
+      "/api/sessions/defend/answer",
+      {
+        sessionId: defend.json.sessionId,
+        probeId: extra.id,
+        answer: "The memo states churn of 1.2% and a $12M round. The assumption that would change my answer is churn doubling to 2.4%.",
+      },
+      ana,
+    );
+    check(saved.status === 200, "disagreement follow-up accepted");
+    done = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId, showName: true }, ana);
+  }
+  check(done.status === 200 && done.json?.receipt?.payload?.id, `defense graded: ${done.json?.receipt?.payload?.outcome} ${done.json?.score}/100${done.status !== 200 ? ` — ${done.text}` : ""}`);
 
   const id = done.json.receipt.payload.id as string;
   const pub = await call(`/api/receipts/${id}`);
@@ -167,7 +181,26 @@ async function main() {
   const again = await post("/api/sessions/start", { token, mode: "learn" }, ana);
   check(again.status === 410, "document text purged once the defense completed");
   const twice = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId }, ana);
-  check(twice.status === 409, "a defense cannot be graded twice");
+  check(twice.status === 200 && twice.json?.receipt?.payload?.id === id, "retrying a finished defense returns the same receipt");
+
+  // Voice: Hard defenses are live voice; typed answers are refused unless the
+  // creator takes the accommodation path.
+  const hardForm = new FormData();
+  hardForm.set("difficulty", "hard");
+  hardForm.set("file", new Blob([fixture], { type: "text/markdown" }), "hard.md");
+  const hard = await call("/api/creator/ingest", { method: "POST", body: hardForm, cookie: ana });
+  const voice = await post("/api/sessions/start", { token: hard.json.token, mode: "defend" }, ana);
+  check(voice.status === 200 && voice.json.channel === "voice", "Hard defense starts as a live voice interview");
+  const typed = await post("/api/sessions/defend/answer", { sessionId: voice.json.sessionId, probeId: voice.json.probes[0].id, answer: "typed" }, ana);
+  check(typed.status === 409, "typed answers are refused in a voice defense");
+  const lk = await post("/api/voice/token", { sessionId: voice.json.sessionId }, ana);
+  check(lk.status === 200 ? typeof lk.json.token === "string" && lk.json.url.startsWith("wss://") : lk.status === 503, `voice token ${lk.status === 200 ? "issued for the owner" : "not configured here (503)"}`);
+  const lkOther = await post("/api/voice/token", { sessionId: voice.json.sessionId }, mallory);
+  check(lkOther.status === 404, "another account cannot join the voice room");
+  const agentForged = await post("/api/voice/agent/plan", { sessionId: voice.json.sessionId });
+  check(agentForged.status === 401 || agentForged.status === 503, "agent API refuses unsigned requests");
+  const acc = await post("/api/sessions/start", { token: hard.json.token, mode: "defend", accommodation: true }, ana);
+  check(acc.status === 200 && acc.json.channel === "text_accommodation", "accommodation path starts a typed defense");
 
   const dash = await call("/api/dashboard", { cookie: ana });
   check(dash.status === 200 && dash.json.rows.some((x: { receiptId: string }) => x.receiptId === id), "dashboard lists own receipt");

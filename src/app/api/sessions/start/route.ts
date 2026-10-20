@@ -10,6 +10,8 @@ export const runtime = "nodejs";
 const schema = z.object({
   token: z.string().min(1).max(64),
   mode: z.enum(["learn", "defend"]),
+  voice: z.boolean().optional(),
+  accommodation: z.boolean().optional(),
 });
 
 export async function POST(req: Request) {
@@ -32,6 +34,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       sessionId: session.sessionId,
       mode: body.mode,
+      channel: session.channel,
       plan: body.mode === "defend" ? { ...session.plan, probes } : { probeCount: session.plan.probes.length },
       firstQuestion: probes?.[0]?.question,
       probes,

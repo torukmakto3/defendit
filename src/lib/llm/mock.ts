@@ -38,9 +38,41 @@ function mockJson(purpose: string, user: string, modelId: string): unknown {
       };
     case "grade":
       return mockGrade(user, modelId);
+    case "write_questions":
+      return mockQuestions(user);
+    case "write_flashcards":
+      return mockFlashcards(user);
     default:
       return { ok: true, echo: user.slice(0, 200) };
   }
+}
+
+function mockFlashcards(user: string): unknown {
+  const match = user.match(/<claims>\n([\s\S]*?)\n<\/claims>/);
+  const claims = match ? (JSON.parse(match[1]) as { id: string; text: string; section: string }[]) : [];
+  return {
+    cards: claims.map((c) => ({
+      claimId: c.id,
+      front: `In "${c.section}", what does your deliverable claim, and why?`,
+      back: c.text.replace(/\s+/g, " ").slice(0, 300),
+    })),
+  };
+}
+
+/** Offline stand-in for the question writer: claim-specific, varied openings. */
+function mockQuestions(user: string): unknown {
+  const match = user.match(/<probes>\n([\s\S]*?)\n<\/probes>/);
+  const items = match ? (JSON.parse(match[1]) as { probeId: string; type: string; claim: string }[]) : [];
+  const openers = ["Talk me through", "Help me understand", "Defend", "Convince me of", "Unpack"];
+  return {
+    questions: items.map((it, i) => {
+      const claim = it.claim.replace(/\s+/g, " ").slice(0, 120);
+      if (it.type === "planted_error") return { probeId: it.probeId, question: "Read this line from your document carefully. Is it right?" };
+      if (it.type === "counterfactual") return { probeId: it.probeId, question: `Say the key number in "${claim}" came in 30% worse. What gives way first?` };
+      if (it.type === "confidence") return { probeId: it.probeId, question: `How confident are you, 0 to 100, that "${claim}" holds up?` };
+      return { probeId: it.probeId, question: `${openers[i % openers.length]} "${claim}". What backs it up?` };
+    }),
+  };
 }
 
 function mockClaims(user: string): { claims: unknown[] } {
@@ -56,13 +88,19 @@ function mockClaims(user: string): { claims: unknown[] } {
     .filter((s) => s.length > 30);
 
   const raw = (paragraphs.length >= 3 ? paragraphs : sentences).slice(0, 12);
-  const claims = raw.map((text, i) => ({
-    id: `claim_${i + 1}`,
-    text: text.slice(0, 280),
-    section: sectionName(i),
-    sourceSpan: text.slice(0, 80),
-    stakes: i % 3 === 0 ? "high" : i % 3 === 1 ? "medium" : "low",
-  }));
+  const claims = raw.map((text, i) => {
+    const figures = text.match(/\$?\d[\d,]*(?:\.\d+)?%?/g) ?? [];
+    const assumption = /\b(assum|risk|depend|contingent|fragile|if)\b/i.test(text);
+    return {
+      id: `claim_${i + 1}`,
+      text: text.slice(0, 280),
+      section: sectionName(i),
+      sourceSpan: text.slice(0, 80),
+      stakes: i % 3 === 0 ? "high" : i % 3 === 1 ? "medium" : "low",
+      kind: figures.length ? "number" : assumption ? "assumption" : "claim",
+      figures: figures.slice(0, 6),
+    };
+  });
 
   if (claims.length < 3) {
     return {
@@ -161,43 +199,77 @@ function followUpFromAnswer(user: string): string {
   return "What would have to be true for the opposite conclusion to hold?";
 }
 
+interface MockBlock {
+  probeId: string;
+  claimId: string;
+  section: string;
+  answer: string;
+}
+
+function parseGradeBlocks(user: string): MockBlock[] {
+  const chunks = user.split(/\n\n(?=Probe id:)/);
+  const blocks = chunks
+    .map((chunk) => {
+      const probeId = chunk.match(/Probe id:\s*(\S+)/)?.[1];
+      const claimId = chunk.match(/Claim id:\s*(\S+)/)?.[1];
+      const section = chunk.match(/Section:\s*([^\n]+)/)?.[1]?.trim();
+      const answer = chunk.match(/Answer:\s*([\s\S]*?)(?:\nLatency ms:|$)/)?.[1]?.trim();
+      if (!probeId || !claimId || answer === undefined) return null;
+      return { probeId, claimId, section: section || "General", answer };
+    })
+    .filter((b): b is MockBlock => !!b);
+  return blocks.length
+    ? blocks
+    : [{ probeId: "probe_1", claimId: "claim_1", section: "Overall", answer: user.slice(0, 180) }];
+}
+
 function mockGrade(user: string, modelId: string): unknown {
-  const answers = [...user.matchAll(/Answer:\s*([\s\S]*?)(?:\nQuestion:|\nClaim:|$)/gi)].map(
-    (m) => m[1].trim(),
-  );
-  const claimBlocks = [...user.matchAll(/Claim id:\s*(\S+)[\s\S]*?Section:\s*([^\n]+)/gi)];
+  const blocks = parseGradeBlocks(user);
+  if (user.includes("FORCE_DISAGREE")) {
+    const level = modelId.includes("strict") ? 0 : modelId.includes("lenient") ? 4 : 2;
+    return {
+      claimGrades: blocks.map((b) => ({
+        probeId: b.probeId,
+        claimId: b.claimId,
+        section: b.section,
+        scores: { accuracy: level, reasoning: level, transfer: level, errorDetection: level, ownership: level },
+        band: level >= 3 ? "Strong" : level >= 2 ? "Partial" : "Weak",
+        evidence: b.answer.slice(0, 180) || "no answer given",
+        reason: "Spread forced for the disagreement check.",
+      })),
+      overallScore: level * 25,
+    };
+  }
 
-  const bias =
-    modelId.includes("strict") ? -0.4 : modelId.includes("lenient") ? 0.5 : 0;
+  const bias = modelId.includes("strict") ? -0.4 : modelId.includes("lenient") ? 0.5 : 0;
 
-  const claimGrades = (claimBlocks.length ? claimBlocks : [[, "claim_1", "Overall"]]).map(
-    (m, i) => {
-      const answer = answers[i] || answers[0] || "";
+  const claimGrades = blocks.map((b) => {
+      const answer = b.answer;
       const words = answer.split(/\s+/).filter(Boolean).length;
       const hasBecause = /because|therefore|so that|which means/i.test(answer);
       const hasNumber = /\d/.test(answer);
       const unsure = /don't know|not sure|guess/i.test(answer);
-      const caughtError = /wrong|incorrect|error|typo|should be|doesn't match/i.test(
-        answer,
-      );
+      const caughtError = /wrong|incorrect|error|typo|should be|doesn't match|altered/i.test(answer);
 
       let accuracy = clamp(1.5 + words / 40 + (hasNumber ? 0.5 : 0) + bias);
       let reasoning = clamp(1.2 + (hasBecause ? 1.2 : 0.3) + words / 50 + bias);
       const transfer = clamp(1 + (/if |would |counter/i.test(answer) ? 1.5 : 0.4) + bias);
       const errorDetection = clamp(caughtError ? 3.5 : 1.5 + bias);
-      const ownership = clamp(unsure ? 2.5 : 1.5 + (hasBecause ? 1 : 0) + bias);
+      let ownership = clamp(unsure ? 1 : 1.5 + (hasBecause ? 1 : 0) + bias);
 
       if (unsure) {
-        accuracy = Math.min(accuracy, 2);
-        reasoning = Math.min(reasoning, 2);
+        accuracy = Math.min(accuracy, 1);
+        reasoning = Math.min(reasoning, 1);
+        ownership = Math.min(ownership, 1);
       }
 
       const avg = (accuracy + reasoning + transfer + errorDetection + ownership) / 5;
       const band = avg >= 3 ? "Strong" : avg >= 2 ? "Partial" : "Weak";
 
       return {
-        claimId: m[1] || `claim_${i + 1}`,
-        section: (m[2] || "Overall").trim(),
+        probeId: b.probeId,
+        claimId: b.claimId,
+        section: b.section,
         scores: {
           accuracy: round1(accuracy),
           reasoning: round1(reasoning),

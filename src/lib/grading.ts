@@ -1,20 +1,44 @@
+import { z } from "zod";
 import { completeJson, getGradingCouncil } from "./llm";
+import { detectNonAnswer } from "./non-answer";
 import { RUBRIC_VERSION, rubricPrompt } from "./rubric";
-import type {
-  Claim,
-  ClaimGrade,
-  Difficulty,
-  InterviewPlan,
-  ModelGrade,
-  TurnRecord,
-} from "./types";
+import {
+  graderScore,
+  groundEvidence,
+  legacyAggregateScore,
+  roundLevel,
+  scoreDefense,
+  type DefenseScore,
+} from "./score";
+import type { Claim, ClaimGrade, Difficulty, DimensionScores, InterviewPlan, ModelGrade, Probe, TurnRecord } from "./types";
 
 export { RUBRIC_VERSION };
+export { legacyAggregateScore, scoreDefense, type DefenseScore };
 
-interface GradeJson {
-  claimGrades: ClaimGrade[];
-  overallScore: number;
-}
+const level = z.coerce.number();
+
+const gradeResponseSchema = z.object({
+  claimGrades: z
+    .array(
+      z.object({
+        probeId: z.string().optional(),
+        claimId: z.string().optional(),
+        section: z.string().optional(),
+        scores: z.object({
+          accuracy: level,
+          reasoning: level,
+          transfer: level,
+          errorDetection: level,
+          ownership: level,
+        }),
+        band: z.enum(["Weak", "Partial", "Strong"]).optional(),
+        evidence: z.string().optional().default(""),
+        reason: z.string().optional().default(""),
+      }),
+    )
+    .min(1),
+  overallScore: z.coerce.number().optional(),
+});
 
 export async function gradeSession(opts: {
   difficulty: Difficulty;
@@ -25,29 +49,7 @@ export async function gradeSession(opts: {
   const council = getGradingCouncil();
   const transcript = buildTranscript(opts.claims, opts.plan, opts.turns);
 
-  // Members grade in parallel; a defense survives one member failing as long
-  // as a majority returns a grade.
-  const settled = await Promise.allSettled(
-    council.map(async (model): Promise<ModelGrade> => {
-      const { data, raw } = await completeJson<GradeJson>(model, {
-        purpose: "grade",
-        temperature: 0.1,
-        messages: [
-          { role: "system", content: rubricPrompt(opts.difficulty) },
-          {
-            role: "user",
-            content: `Grade this defense transcript.\n\n<transcript>\n${transcript}\n</transcript>`,
-          },
-        ],
-      });
-      return {
-        modelId: raw.modelId,
-        provider: raw.provider,
-        claimGrades: normalizeClaimGrades(data.claimGrades, opts.claims),
-        overallScore: clampScore(data.overallScore),
-      };
-    }),
-  );
+  const settled = await Promise.allSettled(council.map((model) => gradeOne(model, opts, transcript)));
   const grades = settled
     .filter((r): r is PromiseFulfilledResult<ModelGrade> => r.status === "fulfilled")
     .map((r) => r.value);
@@ -59,29 +61,32 @@ export async function gradeSession(opts: {
   return grades;
 }
 
-export function aggregateScore(grades: ModelGrade[]): number {
-  if (grades.length === 0) return 0;
-  const avg =
-    grades.reduce((s, g) => s + g.overallScore, 0) / grades.length;
-  return Math.round(avg);
+/** Per-claim score (0-100) from the median rubric, in interview order. */
+export function claimScores(grades: ModelGrade[], plan: InterviewPlan): number[] {
+  return scoreDefense(grades, plan).claimScores;
 }
 
-function buildTranscript(
-  claims: Claim[],
-  plan: InterviewPlan,
-  turns: TurnRecord[],
-): string {
+export function aggregateScore(grades: ModelGrade[], plan?: InterviewPlan): number {
+  if (plan && grades.some((g) => g.claimGrades.length > 0)) return scoreDefense(grades, plan).score;
+  return legacyAggregateScore(grades);
+}
+
+function buildTranscript(claims: Claim[], plan: InterviewPlan, turns: TurnRecord[]): string {
   return turns
-    .map((t) => {
-      const probe = plan.probes.find((p) => p.id === t.probeId);
+    .map((turn) => {
+      const probe = plan.probes.find((p) => p.id === turn.probeId);
       const claim = claims.find((c) => c.id === probe?.claimId);
       return [
+        `Probe id: ${probe?.id ?? turn.probeId}`,
         `Claim id: ${claim?.id ?? "unknown"}`,
-        `Section: ${claim?.section ?? "General"}`,
         `Probe type: ${probe?.type ?? "unknown"}`,
-        `Question: ${t.question}`,
-        `Answer: ${neutralizeTags(t.answer)}`,
-        `Latency ms: ${t.latencyMs}`,
+        `Difficulty: ${probe?.difficulty ?? 2}`,
+        `Section: ${claim?.section ?? "General"}`,
+        `Claim: ${neutralizeTags(claim?.text ?? "")}`,
+        `Source: ${neutralizeTags(claim?.sourceSpan ?? "")}`,
+        `Figures: ${(claim?.figures ?? []).join(", ") || "none"}`,
+        `Question: ${neutralizeTags(turn.question)}`,
+        `Answer: ${neutralizeTags(turn.answer)}`,
       ].join("\n");
     })
     .join("\n\n");
@@ -92,35 +97,133 @@ function neutralizeTags(text: string): string {
   return text.replace(/<\/?transcript>/gi, "[tag removed]");
 }
 
-function normalizeClaimGrades(
-  grades: ClaimGrade[] | undefined,
+const ZERO_SCORES: DimensionScores = {
+  accuracy: 0,
+  reasoning: 0,
+  transfer: 0,
+  errorDetection: 0,
+  ownership: 0,
+};
+
+function alignGrades(
+  grades: z.infer<typeof gradeResponseSchema>["claimGrades"],
+  plan: InterviewPlan,
+  turns: TurnRecord[],
   claims: Claim[],
 ): ClaimGrade[] {
-  if (!grades?.length) {
-    return claims.slice(0, 3).map((c) => ({
-      claimId: c.id,
-      section: c.section,
-      scores: {
-        accuracy: 2,
-        reasoning: 2,
-        transfer: 2,
-        errorDetection: 2,
-        ownership: 2,
+  const used = new Set<number>();
+  const aligned: ClaimGrade[] = [];
+  for (const [index, probe] of plan.probes.entries()) {
+    const turn = turns.find((t) => t.probeId === probe.id);
+    if (!turn) continue;
+    const claim = claims.find((c) => c.id === probe.claimId);
+    const match = matchGrade(grades, probe, index, used);
+    const nonAnswer = detectNonAnswer({
+      answer: turn.answer,
+      question: turn.question,
+      claimText: claim?.text ?? "",
+      sourceSpan: probe.sourceSpan || claim?.sourceSpan || "",
+      figures: claim?.figures ?? [],
+      probeType: probe.type,
+    });
+    if (nonAnswer) {
+      if (match !== undefined) used.add(match);
+      aligned.push({
+        probeId: probe.id,
+        claimId: probe.claimId,
+        section: claim?.section || "General",
+        scores: { ...ZERO_SCORES },
+        band: "Weak",
+        evidence: "",
+        reason: `Non-answer (${nonAnswer.kind}): no substantive engagement with the claim.`,
+      });
+      continue;
+    }
+    if (match === undefined) continue;
+    used.add(match);
+    const raw = grades[match];
+    const grounded = groundEvidence(
+      {
+        probeId: probe.id,
+        claimId: probe.claimId,
+        section: raw.section || claim?.section || "General",
+        scores: raw.scores as DimensionScores,
+        band: raw.band ?? "Partial",
+        evidence: raw.evidence,
+        reason: raw.reason,
       },
-      band: "Partial" as const,
-      evidence: "",
-      reason: "No grade returned; defaulted.",
-    }));
+      turn.answer,
+    );
+    const dims = grounded.scores;
+    const avg = (["accuracy", "reasoning", "transfer", "ownership"] as const).reduce((s, k) => s + dims[k], 0) / 4;
+    aligned.push({
+      ...grounded,
+      scores: {
+        accuracy: roundLevel(dims.accuracy),
+        reasoning: roundLevel(dims.reasoning),
+        transfer: roundLevel(dims.transfer),
+        errorDetection: roundLevel(dims.errorDetection),
+        ownership: roundLevel(dims.ownership),
+      },
+      band: avg >= 3 ? "Strong" : avg >= 2 ? "Partial" : "Weak",
+    });
   }
-  return grades;
+  return aligned;
 }
 
-function clampScore(n: number): number {
-  if (typeof n !== "number" || Number.isNaN(n)) return 50;
-  return Math.max(0, Math.min(100, Math.round(n)));
+/** One council member. A skipped question is asked again once, then the grader is dropped. */
+async function gradeOne(
+  model: ReturnType<typeof getGradingCouncil>[number],
+  opts: { difficulty: Difficulty; claims: Claim[]; plan: InterviewPlan; turns: TurnRecord[] },
+  transcript: string,
+): Promise<ModelGrade> {
+  let last = "Grader skipped a question";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { data, raw } = await completeJson(model, {
+      purpose: "grade",
+      temperature: 0,
+      messages: [
+        { role: "system", content: rubricPrompt(opts.difficulty) },
+        {
+          role: "user",
+          content: `Grade each answer against its claim. Quote the answer in evidence.\n\n<transcript>\n${transcript}\n</transcript>`,
+        },
+      ],
+    }, gradeResponseSchema);
+    const claimGrades = alignGrades(data.claimGrades, opts.plan, opts.turns, opts.claims);
+    const answered = opts.plan.probes.filter((probe) => opts.turns.some((turn) => turn.probeId === probe.id));
+    const covered = new Set(claimGrades.map((grade) => grade.probeId));
+    if (answered.every((probe) => covered.has(probe.id))) {
+      const grade: ModelGrade = {
+        modelId: raw.modelId,
+        provider: raw.provider,
+        claimGrades,
+        overallScore: 0,
+      };
+      grade.overallScore = graderScore(grade, opts.plan);
+      return grade;
+    }
+    last = `Grader ${raw.modelId} skipped a question`;
+  }
+  throw new Error(last);
 }
 
-export function shouldFlagForHuman(grades: ModelGrade[]): boolean {
+function matchGrade(
+  grades: { probeId?: string; claimId?: string }[],
+  probe: Probe,
+  index: number,
+  used: Set<number>,
+): number | undefined {
+  const byProbe = grades.findIndex((g, i) => !used.has(i) && g.probeId === probe.id);
+  if (byProbe >= 0) return byProbe;
+  const byClaim = grades.findIndex((g, i) => !used.has(i) && !g.probeId && g.claimId === probe.claimId);
+  if (byClaim >= 0) return byClaim;
+  if (!used.has(index) && grades[index]) return index;
+  return undefined;
+}
+
+export function shouldFlagForHuman(grades: ModelGrade[], plan?: InterviewPlan): boolean {
+  if (plan) return scoreDefense(grades, plan).disputedProbeIds.length > 0;
   if (grades.length < 2) return false;
   const sorted = [...grades].sort((a, b) => a.overallScore - b.overallScore);
   return sorted[sorted.length - 1].overallScore - sorted[0].overallScore > 20;

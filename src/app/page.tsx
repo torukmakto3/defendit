@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { saveDisplayName, SignInCard, useMe } from "@/components/auth";
+import { Companion, type CompanionState } from "@/components/companion/Companion";
 
 const ACCEPT =
   ".pdf,.docx,.txt,.md,.markdown,.xlsx,.xls,.csv,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/markdown,text/csv";
@@ -14,10 +15,8 @@ export default function HomePage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { me } = useMe();
-  const [displayName, setDisplayName] = useState("");
-  useEffect(() => {
-    if (me?.displayName) setDisplayName(me.displayName);
-  }, [me]);
+  const [displayName, setDisplayName] = useState<string | null>(null);
+  const nameValue = displayName ?? me?.displayName ?? "";
   const [difficulty, setDifficulty] = useState("hard");
   const [ready, setReady] = useState<{
     token: string;
@@ -67,39 +66,32 @@ export default function HomePage() {
     if (file) void ingestFile(file);
   }
 
+  const companionState: CompanionState = busy
+    ? "thinking"
+    : dragging || ready
+      ? "surprised"
+      : error
+        ? "skeptical"
+        : "listening";
+
   return (
-    <div className="shell">
-      <section className="relative overflow-hidden rounded-2xl panel px-6 py-12 sm:px-12">
-        <div
-          className="pointer-events-none absolute inset-0 opacity-40"
-          style={{
-            backgroundImage:
-              "url(\"data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%231f4d2e' fill-opacity='0.06'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E\")",
-          }}
-        />
-        <div className="relative">
-          <p className="brand animate-rise text-5xl leading-none text-[var(--moss)] sm:text-6xl">
-            Defend It
-          </p>
-          <div className="seal-line mt-5 h-px w-40 bg-[var(--moss)]" />
-          <h1 className="animate-rise-delay mt-8 max-w-2xl text-3xl leading-tight text-[var(--ink)] sm:text-4xl">
-            Drop the deliverable. Learn it. Defend it. Send a stamped copy.
-          </h1>
-          <p className="animate-rise-delay-2 mt-5 max-w-xl text-lg text-[color-mix(in_srgb,var(--ink)_72%,transparent)]">
-            PDF, Excel, Word, or Markdown. Private Learn coach, short Defend
-            interview, then a signed stamp + QR you attach and send however you
-            already work.
-          </p>
+    <div className="shell grid gap-10">
+      <section className="grid gap-4">
+        <span className="eyebrow">Sheet 01 &middot; Drop</span>
+        <h1 className="max-w-3xl text-3xl font-bold leading-tight sm:text-[44px]">
+          Prove you understand what AI helped you make.
+        </h1>
+        <p className="max-w-2xl text-[var(--ink-2)]">
+          Drop the memo, model or deck. Practise privately with the coach, take a short defense
+          grounded in your file, and send it with a signed receipt anyone can verify.
+        </p>
+      </section>
 
-          {me === null && (
-            <div className="animate-rise-delay-2 mt-8">
-              <SignInCard title="Sign in to drop a deliverable" />
-            </div>
-          )}
+      {me === null && <SignInCard title="Sign in to drop a deliverable" />}
 
-          {me && (
-          <>
-          <div className="animate-rise-delay-2 mt-8 grid gap-3 sm:grid-cols-2">
+      {me && (
+        <section className="panel grid gap-6 p-5 sm:p-8">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label className="label" htmlFor="displayName">
                 Name on receipts (optional)
@@ -108,9 +100,9 @@ export default function HomePage() {
                 id="displayName"
                 className="field"
                 placeholder="Shown only if you choose to"
-                value={displayName}
+                value={nameValue}
                 onChange={(e) => setDisplayName(e.target.value)}
-                onBlur={() => void saveDisplayName(displayName)}
+                onBlur={() => void saveDisplayName(nameValue)}
               />
             </div>
             <div>
@@ -123,18 +115,18 @@ export default function HomePage() {
                 value={difficulty}
                 onChange={(e) => setDifficulty(e.target.value)}
               >
-                <option value="standard">Standard</option>
-                <option value="hard">Hard</option>
-                <option value="expert">Expert</option>
+                <option value="standard">Standard: key claims and why they hold</option>
+                <option value="hard">Hard: what-ifs and a planted error</option>
+                <option value="expert">Expert: adversarial cross-examination</option>
               </select>
             </div>
           </div>
 
           <div
-            className={`mt-8 rounded-2xl border-2 border-dashed px-6 py-14 text-center transition ${
+            className={`grid items-center gap-5 border-2 border-dashed px-5 py-10 transition sm:grid-cols-[auto_1fr] sm:px-8 ${
               dragging
-                ? "border-[var(--moss)] bg-[color-mix(in_srgb,var(--mist)_80%,white)]"
-                : "border-[var(--line)] bg-[color-mix(in_srgb,var(--paper)_88%,white)]"
+                ? "border-[var(--blueprint)] bg-[var(--mist)]"
+                : "border-[var(--ink-2)] bg-[var(--card)]"
             }`}
             onDragEnter={(e) => {
               e.preventDefault();
@@ -144,114 +136,94 @@ export default function HomePage() {
             onDragLeave={() => setDragging(false)}
             onDrop={onDrop}
           >
-            {busy ? (
-              <p className="text-lg text-[var(--moss)]">
-                Parsing & extracting claims…
-              </p>
-            ) : (
-              <>
-                <p className="text-xl text-[var(--ink)]">
-                  Drag & drop your memo, model, or deck here
+            <Companion state={companionState} size={92} className="justify-self-center" />
+            <div className="grid justify-items-center gap-2 text-center sm:justify-items-start sm:text-left">
+              {busy ? (
+                <p className="text-lg font-semibold text-[var(--blueprint)]">
+                  Reading the file and extracting its claims&hellip;
                 </p>
-                <p className="mt-2 text-sm text-[color-mix(in_srgb,var(--ink)_55%,transparent)]">
-                  PDF · DOCX · XLSX · CSV · TXT · MD
-                </p>
-                <label className="btn btn-primary mt-6 cursor-pointer">
-                  Choose file
-                  <input
-                    type="file"
-                    className="hidden"
-                    accept={ACCEPT}
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) void ingestFile(file);
-                    }}
-                  />
-                </label>
-              </>
-            )}
+              ) : (
+                <>
+                  <p className="text-lg font-semibold">Drag your deliverable here</p>
+                  <p className="mono text-xs uppercase tracking-[0.08em] text-[var(--ink-2)]">
+                    PDF &middot; DOCX &middot; XLSX &middot; CSV &middot; TXT &middot; MD &middot; up to 4 MB
+                  </p>
+                  <label className="btn btn-primary mt-2 cursor-pointer">
+                    Choose file
+                    <input
+                      type="file"
+                      className="sr-only"
+                      accept={ACCEPT}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) void ingestFile(file);
+                      }}
+                    />
+                  </label>
+                </>
+              )}
+            </div>
           </div>
 
-          <p className="mt-3 text-xs text-[color-mix(in_srgb,var(--ink)_55%,transparent)]">
-            Your file is read in memory and never stored. We keep its SHA-256 fingerprint;
-            the extracted text is encrypted and deleted as soon as you finish defending
-            (or after 72 hours). Models run with zero data retention.
+          <p className="text-xs text-[var(--ink-2)]">
+            Your file is read in memory and never stored. We keep its SHA-256 fingerprint; the
+            extracted text is encrypted and deleted as soon as you finish defending (or after 72
+            hours). Models run with zero data retention.
           </p>
-          </>
-          )}
 
-          {error && <p className="mt-4 text-sm text-red-700">{error}</p>}
+          {error && <p className="text-sm text-danger">{error}</p>}
 
           {ready && (
-            <div className="mt-8 rounded-xl border border-[var(--line)] bg-white/70 p-6">
-              <p className="text-sm uppercase tracking-[0.12em] text-[var(--leaf)]">
-                Ready
-              </p>
-              <h2 className="mt-2 text-2xl text-[var(--moss)]">{ready.title}</h2>
-              <p className="mt-2 text-sm">
-                {ready.claimCount} claims extracted · sha256:
-                <span className="ml-1 font-mono text-xs">
-                  {ready.sha256.slice(0, 16)}…
-                </span>
-              </p>
-              <div className="mt-6 flex flex-wrap gap-3">
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => router.push(ready.learnUrl)}
-                >
+            <div className="grid gap-4 border-t-[1.5px] border-[var(--ink)] pt-5">
+              <div className="grid gap-1">
+                <span className="eyebrow">Ready</span>
+                <h2 className="text-2xl font-bold">{ready.title}</h2>
+              </div>
+              <div className="titleblock">
+                <div><small>Claims found</small><b>{ready.claimCount}</b></div>
+                <div><small>Difficulty</small><b>{difficulty}</b></div>
+                <div><small>SHA-256</small><b>{ready.sha256.slice(0, 16)}&hellip;</b></div>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <button type="button" className="btn btn-ghost" onClick={() => router.push(ready.learnUrl)}>
                   Learn (private)
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => router.push(ready.defendUrl)}
-                >
+                <button type="button" className="btn btn-primary" onClick={() => router.push(ready.defendUrl)}>
                   Defend now
                 </button>
               </div>
-              <p className="mt-4 text-xs text-[color-mix(in_srgb,var(--ink)_55%,transparent)]">
-                Learn never leaves this session. Defend issues the stamped
-                receipt you can email or Slack to anyone.
+              <p className="text-xs text-[var(--ink-2)]">
+                Learn stays private to you. Defend issues the signed receipt you can send to anyone.
               </p>
             </div>
           )}
-        </div>
-      </section>
+        </section>
+      )}
 
-      <section className="mt-12 grid gap-8 md:grid-cols-3">
+      <section className="grid gap-4 md:grid-cols-3">
         {[
-          {
-            title: "Learn",
-            body: "Private explain-back, what-ifs, planted errors. Gap map stays with you.",
-          },
-          {
-            title: "Defend",
-            body: "Short live interview grounded in your file. Randomness drawn in code, not by the LLM.",
-          },
-          {
-            title: "Stamp & send",
-            body: "Signed score + QR on a badge. Attach it to the same PDF/model and send via your usual channel.",
-          },
+          { step: "01", title: "Learn", body: "A private coach asks you to explain it back, poses what-ifs and plants errors. Your gap map stays with you." },
+          { step: "02", title: "Defend", body: "A short interview grounded in your file. The questions are drawn in code, not chosen by the model." },
+          { step: "03", title: "Send", body: "A signed score and QR bound to the file's hash. Attach the stamp and send it the way you already do." },
         ].map((item) => (
-          <div key={item.title} className="panel rounded-xl p-6">
-            <h2 className="text-2xl text-[var(--moss)]">{item.title}</h2>
-            <p className="mt-3 text-[color-mix(in_srgb,var(--ink)_70%,transparent)]">
-              {item.body}
-            </p>
+          <div key={item.title} className="panel grid content-start gap-2 p-5">
+            <span className="mono text-xs text-[var(--blueprint)]">STEP {item.step}</span>
+            <h2 className="text-xl font-bold">{item.title}</h2>
+            <p className="text-[var(--ink-2)]">{item.body}</p>
           </div>
         ))}
       </section>
 
-      <p className="mt-10 text-center text-sm text-[color-mix(in_srgb,var(--ink)_55%,transparent)]">
-        Receiver-initiated links still work for pilots that want them —{" "}
-        <Link href="/request" className="text-[var(--moss)] underline">
+      <p className="text-center text-sm text-[var(--ink-2)]">
+        Need someone else to defend a file?{" "}
+        <Link href="/request" className="text-[var(--blueprint)] underline">
           Request a defense
         </Link>
-        {" · "}
-        <Link href="/dashboard" className="text-[var(--moss)] underline">
-          Dashboard
+        {" or open your "}
+        <Link href="/dashboard" className="text-[var(--blueprint)] underline">
+          dashboard
         </Link>
+        .
       </p>
     </div>
   );

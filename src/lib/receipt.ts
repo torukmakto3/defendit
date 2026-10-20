@@ -1,10 +1,12 @@
 import { signPayload, verifySignature } from "./crypto";
 import { appUrl } from "./config";
-import { aggregateScore, RUBRIC_VERSION } from "./grading";
+import { aggregateScore, RUBRIC_VERSION, scoreDefense } from "./grading";
 import { newReceiptId } from "./ids";
 import type {
   Difficulty,
   IntegritySignals,
+  InterviewMode,
+  InterviewPlan,
   ModelGrade,
   ReceiptOutcome,
   ReceiptPayload,
@@ -17,7 +19,8 @@ export function outcomeFor(score: number): ReceiptOutcome {
   return "Not defended";
 }
 
-export function countBands(grades: ModelGrade[]): ReceiptPayload["bands"] {
+export function countBands(grades: ModelGrade[], plan?: InterviewPlan): ReceiptPayload["bands"] {
+  if (plan && grades.some((g) => g.claimGrades.length > 0)) return scoreDefense(grades, plan).bands;
   const primary = grades[0];
   const bands = { strong: 0, partial: 0, weak: 0 };
   for (const cg of primary?.claimGrades ?? []) {
@@ -35,9 +38,12 @@ export function buildSignedReceipt(opts: {
   grades: ModelGrade[];
   integrity: IntegritySignals;
   displayName?: string | null;
+  claimScores?: number[];
+  interviewMode?: InterviewMode;
   attempt?: number;
+  plan?: InterviewPlan;
 }): SignedReceipt {
-  const score = aggregateScore(opts.grades);
+  const score = aggregateScore(opts.grades, opts.plan);
   const payload: ReceiptPayload = {
     id: newReceiptId(),
     version: "defend-it-receipt-v2",
@@ -45,7 +51,9 @@ export function buildSignedReceipt(opts: {
     difficulty: opts.difficulty,
     score,
     outcome: outcomeFor(score),
-    bands: countBands(opts.grades),
+    bands: countBands(opts.grades, opts.plan),
+    ...(opts.claimScores?.length ? { claimScores: opts.claimScores } : {}),
+    ...(opts.interviewMode ? { interviewMode: opts.interviewMode } : {}),
     deliverable: { sha256: opts.sha256, byteLength: opts.byteLength },
     rubricVersion: RUBRIC_VERSION,
     modelVersions: opts.grades.map((g) => `${g.provider}:${g.modelId}`),

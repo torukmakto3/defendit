@@ -15,6 +15,7 @@ export function createOpenAIProvider(
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
+        signal: req.signal,
         body: JSON.stringify({
           model,
           temperature: req.temperature ?? 0.3,

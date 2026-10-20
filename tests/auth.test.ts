@@ -87,3 +87,26 @@ describe("requestMagicLink without email delivery", () => {
     await expect(requestMagicLink({ email: "qa@example.com" })).resolves.toHaveProperty("devLink");
   });
 });
+
+describe("agent request signing", () => {
+  it("accepts a fresh signed body and rejects tampering, staleness and missing secrets", async () => {
+    const { signAgentBody, verifyAgentRequest } = await import("../src/lib/agent-auth");
+    process.env.VOICE_AGENT_SECRET = "s".repeat(40);
+    const body = JSON.stringify({ sessionId: "ses_1" });
+    const mk = (b: string, ts: number, sig?: string) => {
+      const signed = signAgentBody(b, ts);
+      return new Request("http://x/api", {
+        method: "POST",
+        headers: { "x-defend-timestamp": signed.ts, "x-defend-signature": sig ?? signed.signature },
+        body: b,
+      });
+    };
+    await expect(verifyAgentRequest(mk(body, Date.now()))).resolves.toEqual({ sessionId: "ses_1" });
+    const good = signAgentBody(body, Date.now());
+    await expect(verifyAgentRequest(new Request("http://x", { method: "POST", headers: { "x-defend-timestamp": good.ts, "x-defend-signature": good.signature }, body: body.replace("1", "2") }))).rejects.toMatchObject({ status: 401 });
+    await expect(verifyAgentRequest(mk(body, Date.now() - 10 * 60_000))).rejects.toMatchObject({ status: 401 });
+    const signedBeforeRemoval = mk(body, Date.now());
+    delete process.env.VOICE_AGENT_SECRET;
+    await expect(verifyAgentRequest(signedBeforeRemoval)).rejects.toMatchObject({ status: 503 });
+  });
+});

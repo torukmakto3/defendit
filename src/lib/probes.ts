@@ -1,31 +1,56 @@
-import { mulberry32, pickN, seedFromString } from "./rng";
-import type { Claim, Difficulty, InterviewPlan, Probe, ProbeType } from "./types";
+import { mulberry32, seedFromString } from "./rng";
+import type { Claim, ClaimKind, Difficulty, InterviewPlan, Probe, ProbeType, QuestionDifficulty } from "./types";
 import { newId } from "./ids";
 
-const PROBE_WEIGHTS: Record<Difficulty, ProbeType[]> = {
-  standard: ["explain_back", "explain_back", "weakest_link", "confidence"],
+type Prefer = ClaimKind | "high";
+
+interface BlueprintSlot {
+  type: ProbeType;
+  difficulty: QuestionDifficulty;
+  prefer: Prefer[];
+}
+
+/**
+ * Fixed coverage per difficulty. The seed shuffles order and which claim fills
+ * a slot. It does not change how many of each type or difficulty are asked.
+ */
+const BLUEPRINT: Record<Difficulty, BlueprintSlot[]> = {
+  standard: [
+    { type: "explain_back", difficulty: 1, prefer: ["claim", "high"] },
+    { type: "explain_back", difficulty: 2, prefer: ["number", "high"] },
+    { type: "weakest_link", difficulty: 2, prefer: ["assumption"] },
+    { type: "confidence", difficulty: 1, prefer: ["claim"] },
+    { type: "counterfactual", difficulty: 2, prefer: ["number"] },
+  ],
   hard: [
-    "explain_back",
-    "counterfactual",
-    "planted_error",
-    "weakest_link",
-    "prediction",
+    { type: "explain_back", difficulty: 2, prefer: ["high", "claim"] },
+    { type: "counterfactual", difficulty: 3, prefer: ["number"] },
+    { type: "planted_error", difficulty: 2, prefer: ["number"] },
+    { type: "weakest_link", difficulty: 2, prefer: ["assumption"] },
+    { type: "prediction", difficulty: 3, prefer: ["assumption", "high"] },
+    { type: "confidence", difficulty: 1, prefer: ["claim"] },
   ],
   expert: [
-    "explain_back",
-    "counterfactual",
-    "counterfactual",
-    "planted_error",
-    "weakest_link",
-    "prediction",
+    { type: "explain_back", difficulty: 2, prefer: ["high", "claim"] },
+    { type: "counterfactual", difficulty: 3, prefer: ["number"] },
+    { type: "counterfactual", difficulty: 3, prefer: ["assumption", "number"] },
+    { type: "planted_error", difficulty: 3, prefer: ["number"] },
+    { type: "weakest_link", difficulty: 2, prefer: ["assumption"] },
+    { type: "prediction", difficulty: 3, prefer: ["high", "assumption"] },
+    { type: "confidence", difficulty: 2, prefer: ["claim"] },
   ],
 };
 
-const TARGET_COUNTS: Record<Difficulty, number> = {
-  standard: 5,
-  hard: 6,
-  expert: 7,
-};
+export function blueprintMix(difficulty: Difficulty): string[] {
+  return BLUEPRINT[difficulty].map((s) => `${s.type}:${s.difficulty}`).sort();
+}
+
+export function claimKind(claim: Claim): ClaimKind {
+  if (claim.kind === "claim" || claim.kind === "assumption" || claim.kind === "number") return claim.kind;
+  if (/\d/.test(claim.text) || (claim.figures?.length ?? 0) > 0) return "number";
+  if (/\b(assum|risk|depend|contingent|fragile)\b/i.test(claim.text)) return "assumption";
+  return "claim";
+}
 
 export function buildInterviewPlan(opts: {
   claims: Claim[];
@@ -34,137 +59,202 @@ export function buildInterviewPlan(opts: {
   pinnedClaimIds?: string[];
 }): InterviewPlan {
   const rand = mulberry32(seedFromString(opts.seed));
-  const types = PROBE_WEIGHTS[opts.difficulty];
-  const count = TARGET_COUNTS[opts.difficulty];
-
-  const high = opts.claims.filter((c) => c.stakes === "high");
-  const rest = opts.claims.filter((c) => c.stakes !== "high");
-  const pinned = opts.claims.filter((c) =>
-    opts.pinnedClaimIds?.includes(c.id),
-  );
-
-  const pool = [
-    ...pinned,
-    ...pickN(high, Math.max(3, Math.ceil(count * 0.6)), rand),
-    ...pickN(rest, count, rand),
-  ];
-  const unique = dedupeClaims(pool).slice(0, count);
-
-  let plantedErrorClaimId: string | undefined;
-  if (opts.difficulty !== "standard" && unique.length > 0) {
-    const idx = Math.floor(rand() * unique.length);
-    plantedErrorClaimId = unique[idx].id;
-  }
-
-  const probes: Probe[] = unique.map((claim, i) => {
-    let type = types[i % types.length];
-    if (plantedErrorClaimId && claim.id === plantedErrorClaimId) {
-      type = "planted_error";
-    } else if (type === "planted_error" && claim.id !== plantedErrorClaimId) {
-      type = "counterfactual";
-    }
-    return buildProbe(claim, type, rand);
+  const slots = shuffle([...BLUEPRINT[opts.difficulty]], rand);
+  const pinned = new Set(opts.pinnedClaimIds ?? []);
+  const used = new Set<string>();
+  const probes = slots.map((slot) => {
+    const claim = pickClaim(opts.claims, slot, used, pinned, rand);
+    return buildProbe(claim, slot.type, slot.difficulty, rand);
   });
-
   return {
     seed: opts.seed,
     difficulty: opts.difficulty,
     probes,
-    plantedErrorClaimId,
+    plantedErrorClaimId: probes.find((p) => p.type === "planted_error")?.claimId,
   };
 }
 
-function dedupeClaims(claims: Claim[]): Claim[] {
-  const seen = new Set<string>();
-  const out: Claim[] = [];
-  for (const c of claims) {
-    if (seen.has(c.id)) continue;
-    seen.add(c.id);
-    out.push(c);
-  }
-  return out;
+function preference(claim: Claim, slot: BlueprintSlot, pinned: Set<string>): number {
+  const kind = claimKind(claim);
+  let score = 0;
+  if (slot.prefer.includes(kind)) score += 2;
+  if (slot.prefer[0] === kind) score += 1;
+  if (slot.prefer.includes("high") && claim.stakes === "high") score += 2;
+  if (pinned.has(claim.id)) score += 3;
+  return score;
 }
 
-function buildProbe(claim: Claim, type: ProbeType, rand: () => number): Probe {
+function pickClaim(
+  claims: Claim[],
+  slot: BlueprintSlot,
+  used: Set<string>,
+  pinned: Set<string>,
+  rand: () => number,
+): Claim {
+  const pool = claims.length ? claims : [];
+  if (pool.length === 0) {
+    return { id: "claim_missing", text: "The deliverable's main claim.", section: "General", sourceSpan: "", stakes: "medium" };
+  }
+  const unused = pool.filter((c) => !used.has(c.id));
+  const candidates = unused.length ? unused : pool;
+  const best = Math.max(...candidates.map((c) => preference(c, slot, pinned)));
+  const top = candidates.filter((c) => preference(c, slot, pinned) === best);
+  const pick = top[Math.floor(rand() * top.length)];
+  used.add(pick.id);
+  return pick;
+}
+
+function shuffle<T>(items: T[], rand: () => number): T[] {
+  for (let i = items.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [items[i], items[j]] = [items[j], items[i]];
+  }
+  return items;
+}
+
+/**
+ * Fallback wording when the model can't phrase questions. Several variants per
+ * probe type, picked by the seeded RNG, so even offline interviews vary.
+ * {c} = claim text, {s} = section, {q} = the cited source span.
+ */
+const TEMPLATES: Record<Exclude<ProbeType, "planted_error">, string[]> = {
+  explain_back: [
+    'Walk me through why this holds: "{q}". What in the document supports "{c}"?',
+    'Explain "{q}" as if to a skeptical partner. Where does "{c}" come from?',
+    'Your deliverable says "{q}". How did you get to "{c}"?',
+    'Take "{q}". What is the reasoning behind "{c}", step by step?',
+  ],
+  counterfactual: [
+    'Suppose the main assumption behind "{q}" moved 30% against you. What breaks first in "{c}"?',
+    'If the inputs behind "{q}" turned out half as favourable, would "{c}" survive? Why?',
+    'What would have to change for "{c}" — specifically "{q}" — to stop being true?',
+  ],
+  weakest_link: [
+    'In "{c}", the passage "{q}" carries a fragile assumption. Which one, and why is it still acceptable?',
+    'If you had to bet against "{q}" inside "{c}", which part would it be?',
+    'Where is "{c}" most exposed if a reviewer pushes on "{q}"?',
+  ],
+  prediction: [
+    'If someone challenged "{q}" from "{c}" in a review meeting, what would they ask first?',
+    'Predict the toughest objection to "{q}" in "{c}". How would you answer it?',
+    'What number around "{q}" would you check first if "{c}" came in below plan?',
+  ],
+  confidence: [
+    'From 0 to 100, how confident are you that "{q}" in "{c}" is right? What would move that number?',
+    'How sure are you about "{c}", citing "{q}", from 0 to 100? Name one thing that would lower it.',
+  ],
+};
+
+const PLANTED_LEADS = [
+  "I'm looking at this excerpt from your deliverable. Is it accurate as written, or is something off?",
+  "Here is a line from your document. Does it match what you wrote?",
+  "Check this excerpt for me. Anything wrong with it?",
+];
+
+function fill(template: string, claim: Claim, max: number): string {
+  const quote = truncate((claim.sourceSpan || claim.text).trim() || claim.text, 80);
+  return template
+    .split("{c}")
+    .join(truncate(claim.text, max))
+    .split("{s}")
+    .join(claim.section)
+    .split("{q}")
+    .join(quote);
+}
+
+function pick<T>(items: T[], rand: () => number): T {
+  return items[Math.floor(rand() * items.length)];
+}
+
+export function plantedQuestion(lead: string, altered: string): string {
+  return `${lead}\n\n"${altered}"`;
+}
+
+function buildProbe(claim: Claim, type: ProbeType, difficulty: QuestionDifficulty, rand: () => number): Probe {
   const id = newId("probe");
-  switch (type) {
-    case "explain_back":
-      return {
-        id,
-        claimId: claim.id,
-        type,
-        question: `Walk me through why this holds: "${truncate(claim.text, 160)}". What evidence in the document supports it?`,
-        expectedFocus: claim.sourceSpan,
-      };
-    case "counterfactual":
-      return {
-        id,
-        claimId: claim.id,
-        type,
-        question: `What if a key assumption behind "${truncate(claim.text, 120)}" moved 30% against you? What breaks first, and does the recommendation change?`,
-        expectedFocus: "sensitivity / assumptions",
-      };
-    case "weakest_link":
-      return {
-        id,
-        claimId: claim.id,
-        type,
-        question: `Looking at the "${claim.section}" section: what is the most fragile assumption, and why is it still acceptable?`,
-        expectedFocus: claim.section,
-      };
-    case "planted_error": {
-      const altered = plantError(claim.text, rand);
-      return {
-        id,
-        claimId: claim.id,
-        type,
-        question: `I'm looking at this excerpt from your deliverable. Is it accurate as written, or is something off?\n\n"${altered}"`,
-        plantedContent: altered,
-        expectedFocus: "detect alteration",
-      };
-    }
-    case "prediction":
-      return {
-        id,
-        claimId: claim.id,
-        type,
-        question: `Before we look it up: if someone challenged the "${claim.section}" conclusion in a review meeting, what is the first follow-up question you would expect?`,
-        expectedFocus: claim.section,
-      };
-    case "confidence":
-      return {
-        id,
-        claimId: claim.id,
-        type,
-        question: `On a scale of 0–100, how confident are you that "${truncate(claim.text, 100)}" is correct? Briefly say what would raise or lower that confidence.`,
-        expectedFocus: "calibration",
-      };
-    default: {
-      const _exhaustive: never = type;
-      return _exhaustive;
-    }
+  if (type === "planted_error") {
+    const altered = plantError(claim.text, rand);
+    return {
+      id,
+      claimId: claim.id,
+      type,
+      difficulty,
+      question: plantedQuestion(pick(PLANTED_LEADS, rand), altered),
+      plantedContent: altered,
+      sourceSpan: claim.sourceSpan,
+      expectedFocus: "detect alteration",
+    };
   }
+  const expectedFocus: Record<Exclude<ProbeType, "planted_error">, string> = {
+    explain_back: claim.sourceSpan,
+    counterfactual: "sensitivity / assumptions",
+    weakest_link: claim.section,
+    prediction: claim.section,
+    confidence: "calibration",
+  };
+  return {
+    id,
+    claimId: claim.id,
+    type,
+    difficulty,
+    question: fill(pick(TEMPLATES[type], rand), claim, type === "confidence" ? 100 : 140),
+    sourceSpan: claim.sourceSpan,
+    expectedFocus: expectedFocus[type],
+  };
 }
 
-function plantError(text: string, rand: () => number): string {
-  const numberMatch = text.match(/\d+(\.\d+)?%?/);
-  if (numberMatch) {
-    const original = numberMatch[0];
-    const n = parseFloat(original);
-    if (!Number.isNaN(n)) {
-      const bumped = original.includes("%")
-        ? `${Math.round(n * (rand() > 0.5 ? 1.35 : 0.65))}%`
-        : String(Math.round(n * (rand() > 0.5 ? 1.4 : 0.6) * 10) / 10);
-      return text.replace(original, bumped);
+/** One extra question when graders disagree. Wording is fixed so it costs no model call. */
+export function makeFollowUpProbe(claim: Claim, source: Probe): Probe {
+  return {
+    id: newId("probe"),
+    claimId: claim.id,
+    type: "explain_back",
+    difficulty: source.difficulty ?? 2,
+    followUpOf: source.id,
+    question: `One more check, because that answer was read differently by different graders. What in the document supports "${truncate(claim.sourceSpan || claim.text, 80)}" in "${truncate(claim.text, 120)}", and which assumption would change your answer?`,
+    sourceSpan: claim.sourceSpan,
+    expectedFocus: claim.sourceSpan,
+  };
+}
+
+/** Word swaps that flip meaning but read naturally (both directions). */
+const SWAPS: [string, string][] = [
+  ["increase", "decrease"], ["increases", "decreases"], ["increased", "decreased"],
+  ["higher", "lower"], ["above", "below"], ["more", "less"], ["rose", "fell"],
+  ["before", "after"], ["daily", "weekly"], ["monthly", "quarterly"],
+  ["always", "never"], ["safe", "unsafe"], ["nullable", "non-nullable"],
+  ["expand", "contract"], ["faster", "slower"], ["cheaper", "more expensive"],
+  ["first", "last"], ["minimum", "maximum"], ["includes", "excludes"],
+];
+
+/**
+ * Alter one fact so a careful author would notice: numbers first, then a
+ * meaning-flipping word swap. Only as a last resort, an added claim.
+ */
+export function plantError(text: string, rand: () => number): string {
+  const numbers = [...text.matchAll(/\$?\d[\d,]*(\.\d+)?(\s?(?:%|x|ms|M|B|k)(?![A-Za-z]))?/g)];
+  if (numbers.length) {
+    const m = numbers[Math.floor(rand() * numbers.length)];
+    const original = m[0];
+    const n = parseFloat(original.replace(/[$,]/g, ""));
+    if (!Number.isNaN(n) && n !== 0) {
+      const factor = rand() > 0.5 ? 1.5 : 0.6;
+      const raw = n * factor;
+      const changed = Number.isInteger(n) ? String(Math.max(1, Math.round(raw))) : raw.toFixed(1);
+      const suffix = m[2] ?? "";
+      const prefix = original.startsWith("$") ? "$" : "";
+      return text.replace(original, `${prefix}${changed}${suffix}`);
     }
   }
-  if (/increase|grow|higher|up/i.test(text)) {
-    return text.replace(/increase|grow|higher|up/i, "decrease");
+  const candidates = SWAPS.flatMap(([a, b]) => [
+    [a, b],
+    [b, a],
+  ]).filter(([from]) => new RegExp(`\\b${from}\\b`, "i").test(text));
+  if (candidates.length) {
+    const [from, to] = candidates[Math.floor(rand() * candidates.length)];
+    return text.replace(new RegExp(`\\b${from}\\b`, "i"), (w) => (w[0] === w[0].toUpperCase() ? to[0].toUpperCase() + to.slice(1) : to));
   }
-  if (/decrease|lower|down|fall/i.test(text)) {
-    return text.replace(/decrease|lower|down|fall/i, "increase");
-  }
-  return `${text} [Note: figures were independently verified by third-party audit.]`;
+  return `${text.replace(/\.$/, "")}, as confirmed by an external audit.`;
 }
 
 function truncate(s: string, n: number): string {

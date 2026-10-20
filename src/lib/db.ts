@@ -90,7 +90,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   status TEXT NOT NULL DEFAULT 'in_progress',
   started_at TEXT NOT NULL,
   completed_at TEXT,
-  purge_after TEXT NOT NULL
+  purge_after TEXT NOT NULL,
+  channel TEXT NOT NULL DEFAULT 'text'
 );
 
 CREATE TABLE IF NOT EXISTS grades (
@@ -122,6 +123,20 @@ CREATE TABLE IF NOT EXISTS receipts (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS flashcards (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  request_id TEXT NOT NULL REFERENCES defense_requests(id),
+  deliverable_id TEXT NOT NULL REFERENCES deliverables(id),
+  claim_id TEXT,
+  front_enc TEXT NOT NULL,
+  back_enc TEXT NOT NULL,
+  card_json TEXT NOT NULL,
+  due TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  purge_after TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS rate_limits (
   bucket_key TEXT PRIMARY KEY,
   window_start TEXT NOT NULL,
@@ -133,9 +148,17 @@ CREATE INDEX IF NOT EXISTS idx_requests_creator ON defense_requests(creator_user
 CREATE INDEX IF NOT EXISTS idx_deliverables_request ON deliverables(request_id);
 CREATE INDEX IF NOT EXISTS idx_deliverables_purge ON deliverables(purge_after);
 CREATE INDEX IF NOT EXISTS idx_sessions_purge ON sessions(purge_after);
+CREATE INDEX IF NOT EXISTS idx_flashcards_user_due ON flashcards(user_id, due);
+CREATE INDEX IF NOT EXISTS idx_flashcards_deliverable ON flashcards(deliverable_id);
 -- One receipt per deliverable request, enforced by the database too.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_receipts_request ON receipts(request_id);
 `;
+
+/** Columns added after a table first shipped: [table, column, definition]. */
+const ADDED_COLUMNS: [string, string, string][] = [
+  ["sessions", "channel", "TEXT NOT NULL DEFAULT 'text'"],
+  ["sessions", "grading_claimed_at", "TEXT"],
+];
 
 let dbPromise: Promise<Db> | null = null;
 
@@ -155,12 +178,16 @@ async function openSqlite(): Promise<Db> {
   const { default: Database } = await import("better-sqlite3");
   // v2 schema lives in a new file so an old prototype DB is never misread.
   const path =
-    process.env.DATABASE_PATH || join(process.cwd(), "data", "defend-it-v2.db");
-  mkdirSync(dirname(path), { recursive: true });
+    process.env.DATABASE_PATH || join(/*turbopackIgnore: true*/ process.cwd(), "data", "defend-it-v2.db");
+  mkdirSync(/*turbopackIgnore: true*/ dirname(path), { recursive: true });
   const raw = new Database(path);
   raw.pragma("journal_mode = WAL");
   raw.pragma("foreign_keys = ON");
   raw.exec(SCHEMA.replaceAll("DOUBLE PRECISION", "REAL"));
+  for (const [table, column, def] of ADDED_COLUMNS) {
+    const cols = raw.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === column)) raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+  }
   return sqliteAdapter(raw);
 }
 
@@ -212,6 +239,9 @@ async function openPostgres(): Promise<Db> {
   await sql.begin(async (tx) => {
     await tx.unsafe("SELECT pg_advisory_xact_lock(726213)");
     await tx.unsafe(SCHEMA);
+    for (const [table, column, def] of ADDED_COLUMNS) {
+      await tx.unsafe(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${def}`);
+    }
   });
   return postgresAdapter(sql);
 }

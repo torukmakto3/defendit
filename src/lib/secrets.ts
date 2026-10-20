@@ -39,14 +39,16 @@ export function load32ByteSecret(envName: string, devFile: string): Buffer {
         "Unset DATABASE_URL for local dev, or set the deployment's keys.",
     );
   }
-  const path = join(process.cwd(), "data", devFile);
-  if (existsSync(path)) {
-    const hex = (JSON.parse(readFileSync(path, "utf8")) as { hex: string }).hex;
+  // turbopackIgnore: a traced read under ./data makes the dev bundler watch the
+  // folder, and SQLite writes there then trigger endless rebuilds and reloads.
+  const path = join(/*turbopackIgnore: true*/ process.cwd(), "data", devFile);
+  if (existsSync(/*turbopackIgnore: true*/ path)) {
+    const hex = (JSON.parse(readFileSync(/*turbopackIgnore: true*/ path, "utf8")) as { hex: string }).hex;
     return Buffer.from(hex, "hex");
   }
   const secret = randomBytes(32);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify({ hex: secret.toString("hex") }), {
+  mkdirSync(/*turbopackIgnore: true*/ dirname(path), { recursive: true });
+  writeFileSync(/*turbopackIgnore: true*/ path, JSON.stringify({ hex: secret.toString("hex") }), {
     mode: 0o600,
   });
   return secret;

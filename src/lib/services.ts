@@ -2,14 +2,15 @@ import type { User } from "./auth";
 import { extractClaims } from "./claims";
 import { getPublicKeyHex, sha256Hex } from "./crypto";
 import { getDb, type Db } from "./db";
-import { aggregateScore, gradeSession, shouldFlagForHuman } from "./grading";
+import { aggregateScore, claimScores, gradeSession, scoreDefense, shouldFlagForHuman } from "./grading";
 import { HttpError } from "./http";
 import { newId, newToken } from "./ids";
 import { computeIntegrity } from "./integrity";
 import { nextLearnTurn, type GapItem } from "./learn";
 import { llmModeLabel } from "./llm";
 import { extractText, guessMimeType } from "./parse";
-import { buildInterviewPlan, buildLearnPlan } from "./probes";
+import { buildInterviewPlan, buildLearnPlan, makeFollowUpProbe } from "./probes";
+import { phraseQuestions } from "./questions";
 import { buildSignedReceipt } from "./receipt";
 import type {
   Claim,
@@ -127,6 +128,19 @@ interface SessionRow {
   started_at: string;
   completed_at: string | null;
   purge_after: string;
+  channel: Channel;
+  grading_claimed_at?: string | null;
+}
+
+/** A grading claim older than the complete route's 120s limit is abandoned. */
+export const GRADING_CLAIM_TTL_MS = 120_000;
+
+/** How a Defend session takes answers. Hard and Expert require voice unless an accommodation is requested. */
+export type Channel = "text" | "voice" | "text_accommodation";
+
+export function channelFor(difficulty: Difficulty, opts: { voice?: boolean; accommodation?: boolean }): Channel {
+  if (difficulty === "standard") return opts.voice ? "voice" : "text";
+  return opts.accommodation ? "text_accommodation" : "voice";
 }
 
 interface NewRequest {
@@ -383,6 +397,8 @@ export async function startSession(opts: {
   token: string;
   user: User;
   mode: "learn" | "defend";
+  voice?: boolean;
+  accommodation?: boolean;
 }) {
   maybePurge();
   const request = await requireRequest(opts.token);
@@ -399,7 +415,7 @@ export async function startSession(opts: {
   }
 
   const seed = newId("seed");
-  const plan =
+  const drafted =
     opts.mode === "learn"
       ? buildLearnPlan(claims, seed)
       : buildInterviewPlan({
@@ -410,13 +426,16 @@ export async function startSession(opts: {
             ? request.pinned_claims.split(",").map((s) => s.trim())
             : undefined,
         });
+  // Defend questions are written for this specific file (code still picks what to probe).
+  const plan = opts.mode === "defend" ? await phraseQuestions(drafted, claims) : drafted;
+  const channel: Channel = opts.mode === "defend" ? channelFor(request.difficulty, opts) : "text";
 
   const sessionId = newId("ses");
   const db = await getDb();
   await db.run(
     `INSERT INTO sessions
-      (id, request_id, deliverable_id, user_id, mode, seed, plan_enc, transcript_enc, gap_map_enc, status, started_at, purge_after)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?)`,
+      (id, request_id, deliverable_id, user_id, mode, seed, plan_enc, transcript_enc, gap_map_enc, status, started_at, purge_after, channel)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?)`,
     [
       sessionId,
       request.id,
@@ -429,9 +448,10 @@ export async function startSession(opts: {
       encryptJson([], ctx.gapMap(sessionId)),
       new Date().toISOString(),
       hoursFromNow(retentionDays() * 24),
+      channel,
     ],
   );
-  return { sessionId, plan };
+  return { sessionId, plan, channel };
 }
 
 /** Strip what the creator must not see before answering (expected answers). */
@@ -509,28 +529,117 @@ export async function recordDefendAnswer(opts: {
   answer: string;
 }) {
   const session = await requireOwnSession(opts.sessionId, opts.user, "defend");
+  if (session.channel === "voice") {
+    const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
+    const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
+    const next = plan?.probes[turns.length];
+    const already = turns.some((t) => t.probeId === opts.probeId);
+    // A disagreement follow-up is typed even when the rest of the defense was spoken.
+    if (!next?.followUpOf && !already) {
+      throw new HttpError(409, "This defense is taken by voice; answers are recorded from the call.");
+    }
+  }
+  return storeAnswer(session, opts.probeId, opts.answer);
+}
+
+/**
+ * A spoken answer reported by the interviewer agent (authenticated by the
+ * agent API). The agent measured when the question finished and when the
+ * creator started and stopped speaking; the server bounds-checks the times.
+ */
+export async function recordVoiceAnswer(opts: {
+  sessionId: string;
+  probeId: string;
+  answer: string;
+  questionEndedAt: string;
+  answerStartedAt: string;
+  answerEndedAt: string;
+}) {
+  const db = await getDb();
+  const session = await db.get<SessionRow>(`SELECT * FROM sessions WHERE id = ?`, [opts.sessionId]);
+  if (!session || session.mode !== "defend" || session.channel !== "voice") {
+    throw new HttpError(404, "Voice session not found");
+  }
+  // Times must fall inside this session; order is not enforced because people
+  // often start answering before the examiner's audio has fully finished.
+  const lo = new Date(session.started_at).getTime() - 5_000;
+  const hi = Date.now() + 5_000;
+  const [qEnd, aStart, aEnd] = [opts.questionEndedAt, opts.answerStartedAt, opts.answerEndedAt].map((x) =>
+    new Date(x).getTime(),
+  );
+  if ([qEnd, aStart, aEnd].some((x) => !Number.isFinite(x) || x < lo || x > hi)) {
+    throw new HttpError(400, "Answer timing is out of range");
+  }
+  const t = [qEnd, Math.min(aStart, aEnd), aEnd];
+  return storeAnswer(session, opts.probeId, opts.answer, {
+    startedAt: new Date(Math.min(t[0], t[1])).toISOString(),
+    endedAt: new Date(t[2]).toISOString(),
+    // Answering before the question finished counts as zero latency.
+    latencyMs: Math.max(0, t[1] - t[0]),
+  });
+}
+
+/** Questions for the voice interviewer: what it may say, in order, and progress. */
+export async function voicePlan(sessionId: string) {
+  const db = await getDb();
+  const session = await db.get<SessionRow>(`SELECT * FROM sessions WHERE id = ?`, [sessionId]);
+  if (!session || session.mode !== "defend" || session.channel !== "voice" || session.status !== "in_progress") {
+    throw new HttpError(404, "Voice session not found");
+  }
+  const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
+  const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
+  if (!plan) throw new HttpError(410, "This session has expired.");
+  return {
+    difficulty: plan.difficulty,
+    probes: publicProbes(plan).map((p) => ({ id: p.id, type: p.type, question: p.question })),
+    answered: turns.length,
+  };
+}
+
+async function storeAnswer(
+  session: SessionRow,
+  probeId: string,
+  rawAnswer: string,
+  timing?: { startedAt: string; endedAt: string; latencyMs: number },
+) {
   if (session.status !== "in_progress") throw new HttpError(409, "This defense is already complete.");
   const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
   if (!plan) throw new HttpError(410, "This session has expired. Start a new defense.");
   const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
+  const answer = rawAnswer.trim().slice(0, 4000);
+  if (!answer) throw new HttpError(400, "Answer is empty.");
+
+  const progress = (rows: TurnRecord[], idempotent = false) => ({
+    answered: rows.length,
+    total: plan.probes.length,
+    done: rows.length >= plan.probes.length,
+    ...(idempotent ? { idempotent: true } : {}),
+  });
+
+  // Same answer saved twice (a retry after a dropped response) is success.
+  // A different answer for a question already stored is refused.
+  const prior = turns.find((t) => t.probeId === probeId);
+  if (prior) {
+    if (prior.answer === answer) return progress(turns, true);
+    throw new HttpError(409, "That question is already answered.");
+  }
 
   const probe = plan.probes[turns.length];
   if (!probe) throw new HttpError(409, "All questions are already answered.");
-  if (probe.id !== opts.probeId) throw new HttpError(409, "Answer the current question first.");
-  const answer = opts.answer.trim().slice(0, 4000);
-  if (!answer) throw new HttpError(400, "Answer is empty.");
+  if (probe.id !== probeId) throw new HttpError(409, "Answer the current question first.");
 
   const now = new Date();
-  const startedAt = turns.length ? turns[turns.length - 1].endedAt : session.started_at;
+  const startedAt = timing?.startedAt ?? (turns.length ? turns[turns.length - 1].endedAt : session.started_at);
+  const endedAt = timing?.endedAt ?? now.toISOString();
   turns.push({
     id: `turn_${turns.length + 1}`,
     probeId: probe.id,
     question: probe.question,
     answer,
     startedAt,
-    endedAt: now.toISOString(),
-    latencyMs: Math.max(0, now.getTime() - new Date(startedAt).getTime()),
-    followUpIndex: 0,
+    endedAt,
+    latencyMs: timing?.latencyMs ?? Math.max(0, now.getTime() - new Date(startedAt).getTime()),
+    followUpIndex: probe.followUpOf ? 1 : 0,
   });
 
   // Optimistic concurrency: the stored ciphertext doubles as a version, so a
@@ -540,8 +649,14 @@ export async function recordDefendAnswer(opts: {
     `UPDATE sessions SET transcript_enc = ? WHERE id = ? AND transcript_enc = ? AND status = 'in_progress'`,
     [encryptJson(turns, ctx.transcript(session.id)), session.id, session.transcript_enc],
   );
-  if (saved.changes !== 1) throw new HttpError(409, "That answer was already recorded.");
-  return { answered: turns.length, total: plan.probes.length, done: turns.length >= plan.probes.length };
+  if (saved.changes !== 1) {
+    const fresh = await db.get<SessionRow>(`SELECT * FROM sessions WHERE id = ?`, [session.id]);
+    const freshTurns = decryptJson<TurnRecord[]>(fresh?.transcript_enc, ctx.transcript(session.id)) ?? [];
+    const raced = freshTurns.find((t) => t.probeId === probe.id);
+    if (raced?.answer === answer) return progress(freshTurns, true);
+    throw new HttpError(409, "That answer was already recorded.");
+  }
+  return progress(turns);
 }
 
 export async function completeDefendSession(opts: {
@@ -566,6 +681,29 @@ export async function completeDefendSession(opts: {
   if (!request || !deliverable || !plan || !claims) {
     throw new HttpError(410, "This session has expired. Start a new defense.");
   }
+  // A retry after a dropped response returns the receipt this session already minted.
+  if (session.status === "completed") {
+    const existing = await receiptForSession(db, session.id);
+    if (existing) {
+      return {
+        receipt: existing,
+        score: existing.payload.score,
+        flagged: await sessionFlagged(db, session, plan),
+        stampPath: `/api/stamp/${existing.payload.id}`,
+        idempotent: true,
+      };
+    }
+  }
+  if (session.status === "grading") {
+    if (!gradingClaimIsStale(session.grading_claimed_at)) {
+      throw new HttpError(409, "Grading is still running. Retry in a moment.");
+    }
+    const released = await db.run(
+      `UPDATE sessions SET status = 'in_progress', grading_claimed_at = NULL WHERE id = ? AND status = 'grading'`,
+      [session.id],
+    );
+    if (released.changes !== 1) throw new HttpError(409, "Grading is still running. Retry in a moment.");
+  }
   if (request.status === "defended") {
     throw new HttpError(409, "This deliverable has already been defended.");
   }
@@ -573,11 +711,14 @@ export async function completeDefendSession(opts: {
   // Grade only what the server recorded, never a client-supplied transcript.
   const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
   if (turns.length === 0) throw new HttpError(400, "No answers to grade.");
+  if (turns.length < plan.probes.length) {
+    throw new HttpError(409, "Answer every question before grading.");
+  }
 
   // Claim the session before paying for grading, so a double submit can't grade twice.
   const claimed = await db.run(
-    `UPDATE sessions SET status = 'grading' WHERE id = ? AND status = 'in_progress'`,
-    [session.id],
+    `UPDATE sessions SET status = 'grading', grading_claimed_at = ? WHERE id = ? AND status = 'in_progress'`,
+    [new Date().toISOString(), session.id],
   );
   if (claimed.changes !== 1) throw new HttpError(409, "This defense is already complete.");
 
@@ -585,8 +726,33 @@ export async function completeDefendSession(opts: {
   let grades: ModelGrade[];
   let integrity: ReturnType<typeof computeIntegrity>;
   try {
-    // Grading sees probe metadata and answers only, never the document text.
+    // Graders see each claim and the answer, not the raw file.
     grades = await gradeSession({ difficulty: request.difficulty, claims, plan, turns });
+    const disputed = scoreDefense(grades, plan).disputedProbeIds;
+    if (disputed.length > 0 && !plan.probes.some((p) => p.followUpOf)) {
+      const source = plan.probes.find((p) => p.id === disputed[0]) ?? plan.probes[0];
+      const claim = claims.find((c) => c.id === source.claimId) ?? claims[0];
+      const extra = makeFollowUpProbe(claim, source);
+      const nextPlan: InterviewPlan = { ...plan, probes: [...plan.probes, extra] };
+      const released = await db.run(
+        `UPDATE sessions SET plan_enc = ?, status = 'in_progress', grading_claimed_at = NULL WHERE id = ? AND status = 'grading'`,
+        [encryptJson(nextPlan, ctx.plan(session.id)), session.id],
+      );
+      if (released.changes !== 1) throw new HttpError(409, "This defense is already complete.");
+      return {
+        followUp: {
+          probe: {
+            id: extra.id,
+            claimId: extra.claimId,
+            type: extra.type,
+            question: extra.question,
+            sourceSpan: extra.sourceSpan,
+          },
+          answered: turns.length,
+          total: nextPlan.probes.length,
+        },
+      };
+    }
     integrity = computeIntegrity({
       turns,
       pasteEvents: opts.pasteEvents,
@@ -599,6 +765,9 @@ export async function completeDefendSession(opts: {
       grades,
       integrity,
       displayName: opts.showName ? opts.user.display_name : null,
+      claimScores: claimScores(grades, plan),
+      interviewMode: session.channel === "voice" ? "voice" : session.channel === "text_accommodation" ? "text-accommodation" : "text",
+      plan,
     });
 
     const nowIso = new Date().toISOString();
@@ -631,16 +800,46 @@ export async function completeDefendSession(opts: {
     });
   } catch (e) {
     // Release the claim so the creator can retry after a grading or storage failure.
-    await db.run(`UPDATE sessions SET status = 'in_progress' WHERE id = ? AND status = 'grading'`, [session.id]);
+    await db.run(
+      `UPDATE sessions SET status = 'in_progress', grading_claimed_at = NULL WHERE id = ? AND status = 'grading'`,
+      [session.id],
+    );
     throw e;
   }
 
   return {
     receipt: signed,
-    score: aggregateScore(grades),
-    flagged: shouldFlagForHuman(grades) || integrity.status !== "Clear",
+    score: aggregateScore(grades, plan),
+    flagged: shouldFlagForHuman(grades, plan) || integrity.status !== "Clear",
     stampPath: `/api/stamp/${signed.payload.id}`,
   };
+}
+
+function gradingClaimIsStale(claimedAt: string | null | undefined): boolean {
+  if (!claimedAt) return true;
+  const taken = Date.parse(claimedAt);
+  if (Number.isNaN(taken)) return true;
+  return Date.now() - taken >= GRADING_CLAIM_TTL_MS;
+}
+
+/** The flag from the stored grades and integrity, so a retry reports the same one. */
+async function sessionFlagged(db: Db, session: SessionRow, plan: InterviewPlan): Promise<boolean> {
+  const rows = await db.all<{ id: string; scores_enc: string | null }>(
+    `SELECT id, scores_enc FROM grades WHERE session_id = ?`,
+    [session.id],
+  );
+  const grades = rows
+    .map((row) => decryptJson<ModelGrade>(row.scores_enc, ctx.scores(row.id)))
+    .filter((grade): grade is ModelGrade => !!grade);
+  const integrity = session.integrity_json
+    ? (JSON.parse(session.integrity_json) as { status?: string })
+    : null;
+  return shouldFlagForHuman(grades, plan) || (!!integrity?.status && integrity.status !== "Clear");
+}
+
+async function receiptForSession(db: Db, sessionId: string): Promise<SignedReceipt | null> {
+  const row = await db.get<{ payload_json: string }>(`SELECT payload_json FROM receipts WHERE session_id = ?`, [sessionId]);
+  return row ? (JSON.parse(row.payload_json) as SignedReceipt) : null;
 }
 
 export async function getReceipt(receiptId: string): Promise<SignedReceipt | null> {
@@ -791,6 +990,77 @@ export async function saveHumanGrade(opts: {
   );
 }
 
+/**
+ * Section plus the cited source span, for the creator only and only while the
+ * defense data is within retention. The public receipt stays anonymous.
+ */
+export async function receiptClaimLabels(receiptId: string, user: User): Promise<string[] | null> {
+  const db = await getDb();
+  const row = await db.get<SessionRow & { deliverable_ref: string }>(
+    `SELECT s.*, s.deliverable_id AS deliverable_ref FROM receipts r JOIN sessions s ON s.id = r.session_id WHERE r.id = ?`,
+    [receiptId],
+  );
+  if (!row || row.user_id !== user.id || isPast(row.purge_after)) return null;
+  const plan = decryptJson<InterviewPlan>(row.plan_enc, ctx.plan(row.id));
+  const deliverable = await db.get<DeliverableRow>(`SELECT * FROM deliverables WHERE id = ?`, [row.deliverable_ref]);
+  const claims = deliverable ? liveClaims(deliverable) : null;
+  if (!plan || !claims) return null;
+  const order = [...new Set(plan.probes.map((p) => p.claimId))];
+  return order.map((id) => {
+    const claim = claims.find((c) => c.id === id);
+    const probe = plan.probes.find((p) => p.claimId === id);
+    if (!claim) return "Claim";
+    const span = (probe?.sourceSpan || claim.sourceSpan || "").replace(/\s+/g, " ").trim();
+    const short = span.length > 60 ? `${span.slice(0, 59)}…` : span;
+    return short ? `${claim.section}: ${short}` : claim.section;
+  });
+}
+
+/** The signed-in creator's own deliverable behind a link, with live claims (for Learn tools). */
+export async function loadOwnDeliverable(token: string, user: User) {
+  const request = await requireRequest(token);
+  if (request.creator_user_id !== user.id) {
+    throw new HttpError(403, "This defense belongs to another account");
+  }
+  const deliverable = await getLatestDeliverable(request.id);
+  if (!deliverable) throw new HttpError(400, "Upload a deliverable first");
+  const claims = liveClaims(deliverable);
+  if (!claims) throw new HttpError(410, "This upload has been purged. Upload the file again.");
+  return { request, deliverable, claims };
+}
+
+/** Learn hub: the creator's deliverables with what they can still do with each. */
+export async function listProjects(user: User) {
+  const db = await getDb();
+  const rows = await db.all<DeliverableRow & { token: string; status: string; difficulty: string; cards: number; due: number }>(
+    `SELECT d.*, r.token, r.status, r.difficulty,
+            (SELECT COUNT(*) FROM flashcards f WHERE f.deliverable_id = d.id) AS cards,
+            (SELECT COUNT(*) FROM flashcards f WHERE f.deliverable_id = d.id AND f.due <= ?) AS due
+     FROM defense_requests r
+     JOIN deliverables d ON d.id =
+       (SELECT id FROM deliverables WHERE request_id = r.id ORDER BY created_at DESC LIMIT 1)
+     WHERE r.creator_user_id = ?
+     ORDER BY d.created_at DESC
+     LIMIT 100`,
+    [new Date().toISOString(), user.id],
+  );
+  return rows.map((d) => {
+    const purged = !!d.purged_at || isPast(d.purge_after);
+    return {
+      token: d.token,
+      title: displayTitle(purged ? null : liveFileName(d)),
+      status: d.status,
+      difficulty: d.difficulty,
+      claimCount: d.claim_count,
+      createdAt: d.created_at,
+      documentAvailable: !purged && !!d.text_enc && !isPast(d.text_purge_after),
+      purged,
+      cards: Number(d.cards),
+      due: Number(d.due),
+    };
+  });
+}
+
 /** Delete expired content. Safe to run often: daily cron plus an hourly in-process backstop. */
 export async function purgeExpired() {
   const db = await getDb();
@@ -819,6 +1089,7 @@ export async function purgeExpired() {
        (SELECT id FROM sessions WHERE purge_after < ?)`,
     [nowIso],
   );
+  await db.run(`DELETE FROM flashcards WHERE purge_after < ?`, [nowIso]);
   await db.run(`DELETE FROM login_tokens WHERE expires_at < ?`, [nowIso]);
   await db.run(`DELETE FROM auth_sessions WHERE expires_at < ?`, [nowIso]);
   await db.run(`DELETE FROM rate_limits WHERE window_start < ?`, [
