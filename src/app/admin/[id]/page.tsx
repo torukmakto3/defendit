@@ -25,6 +25,30 @@ interface Detail {
   receipt: {
     payload: { id: string; score: number };
   } | null;
+  usage: {
+    promptTokens: number;
+    completionTokens: number;
+    costUsd: number;
+    overBudget: boolean;
+    budgetUsd: number;
+    calls: {
+      id: string;
+      purpose: string | null;
+      provider: string;
+      modelId: string;
+      promptTokens: number;
+      completionTokens: number;
+      costUsd: number;
+      costSource: "provider" | "estimated";
+    }[];
+  };
+}
+
+function formatUsd(amount: number): string {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return "$0.00";
+  const digits = n !== 0 && Math.abs(n) < 0.01 ? 4 : 2;
+  return `$${n.toFixed(digits)}`;
 }
 
 export default function AdminDetailPage() {
@@ -97,6 +121,55 @@ export default function AdminDetailPage() {
       <p className="mt-2 text-sm">
         {detail.session.creator_name ?? "—"} · {detail.session.creator_email}
       </p>
+
+      <div className="mt-8 panel p-5">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-xl">Model usage</h2>
+          {detail.usage.overBudget && (
+            <span className="text-sm text-danger">Over {formatUsd(detail.usage.budgetUsd)} budget</span>
+          )}
+        </div>
+        <p className="mt-2 text-sm">
+          <strong>{formatUsd(detail.usage.costUsd)}</strong>
+          {" · "}
+          {detail.usage.promptTokens.toLocaleString()} prompt tokens
+          {" · "}
+          {detail.usage.completionTokens.toLocaleString()} completion tokens
+          {" · "}
+          budget {formatUsd(detail.usage.budgetUsd)}
+        </p>
+        {detail.usage.calls.length > 0 && (
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="mono text-[11px] uppercase tracking-[0.08em] text-[var(--ink-2)]">
+                <tr>
+                  <th className="py-2 pr-3">Call</th>
+                  <th className="py-2 pr-3">Model</th>
+                  <th className="py-2 pr-3">Tokens</th>
+                  <th className="py-2">Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detail.usage.calls.map((call) => (
+                  <tr key={call.id} className="border-t border-[var(--line)]">
+                    <td className="py-2 pr-3">{call.purpose ?? "model call"}</td>
+                    <td className="py-2 pr-3">
+                      {call.provider}:{call.modelId}
+                    </td>
+                    <td className="py-2 pr-3">
+                      {call.promptTokens.toLocaleString()} / {call.completionTokens.toLocaleString()}
+                    </td>
+                    <td className="py-2">
+                      {formatUsd(call.costUsd)}
+                      <span className="ml-2 text-xs text-[var(--ink-2)]">{call.costSource}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
         <div className="panel p-5">

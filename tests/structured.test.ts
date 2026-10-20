@@ -4,6 +4,12 @@ import { completeJson, graderCallBudgetMs } from "../src/lib/llm";
 import type { LlmProvider, LlmRequest, LlmResponse } from "../src/lib/llm";
 
 const schema = z.object({ ok: z.literal(true), n: z.number() });
+const usage: LlmResponse["usage"] = {
+  promptTokens: 1,
+  completionTokens: 1,
+  costUsd: 0,
+  costSource: "estimated",
+};
 
 function provider(complete: LlmProvider["complete"]): LlmProvider {
   return { id: "t", provider: "test", retention: "mock", complete };
@@ -20,7 +26,7 @@ describe("structured model output", () => {
       provider(async () => {
         calls += 1;
         const content = calls === 1 ? "sure thing" : JSON.stringify({ ok: true, n: 2 });
-        return { content, modelId: "t", provider: "test" };
+        return { content, modelId: "t", provider: "test", usage };
       }),
       { purpose: "test", messages: [{ role: "user", content: "go" }] },
       schema,
@@ -35,7 +41,7 @@ describe("structured model output", () => {
       provider(async () => {
         calls += 1;
         const content = calls === 1 ? JSON.stringify({ ok: false }) : JSON.stringify({ ok: true, n: 1 });
-        return { content, modelId: "t", provider: "test" };
+        return { content, modelId: "t", provider: "test", usage };
       }),
       { purpose: "test", temperature: 0.4, messages: [{ role: "user", content: "go" }] },
       schema,
@@ -47,7 +53,7 @@ describe("structured model output", () => {
   it("rejects when the repair is still invalid", async () => {
     await expect(
       completeJson(
-        provider(async () => ({ content: "nope", modelId: "t", provider: "test" })),
+        provider(async () => ({ content: "nope", modelId: "t", provider: "test", usage })),
         { purpose: "test", messages: [{ role: "user", content: "go" }] },
         schema,
       ),

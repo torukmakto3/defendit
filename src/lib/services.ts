@@ -7,7 +7,7 @@ import { HttpError } from "./http";
 import { newId, newToken } from "./ids";
 import { computeIntegrity } from "./integrity";
 import { nextLearnTurn, type GapItem } from "./learn";
-import { describeGradingCouncil, llmModeLabel } from "./llm";
+import { describeGradingCouncil, flushLlmScope, llmModeLabel, refreshRequestUsage, sessionBudgetUsd, withLlmScope } from "./llm";
 import { extractText, guessMimeType } from "./parse";
 import { buildInterviewPlan, buildLearnPlan, makeFollowUpProbe } from "./probes";
 import { phraseQuestions } from "./questions";
@@ -242,26 +242,31 @@ export async function creatorIngest(opts: {
   mimeType?: string;
 }) {
   maybePurge();
-  const upload = await prepareUpload(opts.fileName, opts.buffer, opts.mimeType);
-  const db = await getDb();
-  const result = await db.transaction(async (tx) => {
-    const created = await insertRequest(tx, {
-      owner: opts.user,
-      kind: "creator",
-      difficulty: opts.difficulty || "hard",
-      title: PRIVATE_TITLE,
+  // Claim extraction runs before the request row exists. Hold those calls,
+  // then attach them once the id is known.
+  return withLlmScope({}, async () => {
+    const upload = await prepareUpload(opts.fileName, opts.buffer, opts.mimeType);
+    const db = await getDb();
+    const result = await db.transaction(async (tx) => {
+      const created = await insertRequest(tx, {
+        owner: opts.user,
+        kind: "creator",
+        difficulty: opts.difficulty || "hard",
+        title: PRIVATE_TITLE,
+      });
+      const deliverableId = await insertDeliverable(tx, created.requestId, opts.user, upload);
+      await tx.run(`UPDATE defense_requests SET status = 'uploaded' WHERE id = ?`, [created.requestId]);
+      return { ...created, deliverableId };
     });
-    const deliverableId = await insertDeliverable(tx, created.requestId, opts.user, upload);
-    await tx.run(`UPDATE defense_requests SET status = 'uploaded' WHERE id = ?`, [created.requestId]);
-    return { ...created, deliverableId };
+    await flushLlmScope({ requestId: result.requestId });
+    return {
+      ...result,
+      sha256: upload.sha256,
+      claimCount: upload.claims.length,
+      textLength: upload.text.length,
+      title: displayTitle(opts.fileName),
+    };
   });
-  return {
-    ...result,
-    sha256: upload.sha256,
-    claimCount: upload.claims.length,
-    textLength: upload.text.length,
-    title: displayTitle(opts.fileName),
-  };
 }
 
 function displayTitle(fileName: string | null): string {
@@ -358,7 +363,9 @@ export async function ingestDeliverable(opts: {
     throw new HttpError(409, "This deliverable has already been defended.");
   }
 
-  const upload = await prepareUpload(opts.fileName, opts.buffer, opts.mimeType);
+  const upload = await withLlmScope({ requestId: request.id }, () =>
+    prepareUpload(opts.fileName, opts.buffer, opts.mimeType),
+  );
   const db = await getDb();
   const deliverableId = await db.transaction(async (tx) => {
     if (claiming) {
@@ -426,11 +433,14 @@ export async function startSession(opts: {
             ? request.pinned_claims.split(",").map((s) => s.trim())
             : undefined,
         });
-  // Defend questions are written for this specific file (code still picks what to probe).
-  const plan = opts.mode === "defend" ? await phraseQuestions(drafted, claims) : drafted;
   const channel: Channel = opts.mode === "defend" ? channelFor(request.difficulty, opts) : "text";
 
   const sessionId = newId("ses");
+  // Question wording is a model call on this session. The row is inserted
+  // just after, and the totals are refreshed from the stored calls.
+  const plan = await withLlmScope({ sessionId, requestId: request.id }, async () =>
+    opts.mode === "defend" ? phraseQuestions(drafted, claims) : drafted,
+  );
   const db = await getDb();
   await db.run(
     `INSERT INTO sessions
@@ -451,6 +461,7 @@ export async function startSession(opts: {
       channel,
     ],
   );
+  await refreshRequestUsage(request.id);
   return { sessionId, plan, channel };
 }
 
@@ -494,12 +505,14 @@ export async function learnCoachTurn(opts: { sessionId: string; user: User; answ
 
   if (opts.answer) history.push({ role: "creator", content: opts.answer.slice(0, 4000) });
 
-  const result = await nextLearnTurn({
-    documentExcerpt: text,
-    claims,
-    history,
-    turnIndex: history.filter((h) => h.role === "creator").length + 1,
-  });
+  const result = await withLlmScope({ sessionId: session.id, requestId: session.request_id }, () =>
+    nextLearnTurn({
+      documentExcerpt: text,
+      claims,
+      history,
+      turnIndex: history.filter((h) => h.role === "creator").length + 1,
+    }),
+  );
 
   history.push({ role: "coach", content: result.coachMessage });
   if (result.gapHint) gaps.push(result.gapHint);
@@ -727,7 +740,9 @@ export async function completeDefendSession(opts: {
   let integrity: ReturnType<typeof computeIntegrity>;
   try {
     // Graders see each claim and the answer, not the raw file.
-    grades = await gradeSession({ difficulty: request.difficulty, claims, plan, turns });
+    grades = await withLlmScope({ sessionId: session.id, requestId: session.request_id }, () =>
+      gradeSession({ difficulty: request.difficulty, claims, plan, turns }),
+    );
     const disputed = scoreDefense(grades, plan).disputedProbeIds;
     if (disputed.length > 0 && !plan.probes.some((p) => p.followUpOf)) {
       const source = plan.probes.find((p) => p.id === disputed[0]) ?? plan.probes[0];
@@ -918,7 +933,8 @@ export async function listDashboard(user: User) {
 
 export async function listAdminSessions() {
   const db = await getDb();
-  return db.all<{
+  const budgetUsd = sessionBudgetUsd();
+  const rows = await db.all<{
     id: string;
     mode: string;
     creator_email: string;
@@ -928,9 +944,14 @@ export async function listAdminSessions() {
     difficulty: string;
     receipt_id: string | null;
     human_score: number | null;
+    prompt_tokens: number | null;
+    completion_tokens: number | null;
+    cost_usd: number | null;
+    over_budget: number | null;
   }>(
     `SELECT s.id, s.mode, u.email AS creator_email, s.status, s.completed_at,
-            r.title, r.difficulty, rc.id AS receipt_id, hg.overall_score AS human_score
+            r.title, r.difficulty, rc.id AS receipt_id, hg.overall_score AS human_score,
+            s.prompt_tokens, s.completion_tokens, s.cost_usd, s.over_budget
      FROM sessions s
      JOIN defense_requests r ON r.id = s.request_id
      JOIN users u ON u.id = s.user_id
@@ -940,16 +961,53 @@ export async function listAdminSessions() {
      ORDER BY s.started_at DESC
      LIMIT 200`,
   );
+  return rows.map((row) => {
+    const costUsd = Number(row.cost_usd ?? 0);
+    return {
+      ...row,
+      prompt_tokens: Number(row.prompt_tokens ?? 0),
+      completion_tokens: Number(row.completion_tokens ?? 0),
+      cost_usd: costUsd,
+      over_budget: costUsd > budgetUsd ? 1 : 0,
+      budget_usd: budgetUsd,
+    };
+  });
 }
 
 export async function getAdminSessionDetail(sessionId: string) {
   const db = await getDb();
-  const session = await db.get<SessionRow & { creator_email: string; display_name: string | null }>(
+  const session = await db.get<
+    SessionRow & {
+      creator_email: string;
+      display_name: string | null;
+      prompt_tokens: number | null;
+      completion_tokens: number | null;
+      cost_usd: number | null;
+    }
+  >(
     `SELECT s.*, u.email AS creator_email, u.display_name FROM sessions s
      JOIN users u ON u.id = s.user_id WHERE s.id = ?`,
     [sessionId],
   );
   if (!session) return null;
+  const budgetUsd = sessionBudgetUsd();
+  const costUsd = Number(session.cost_usd ?? 0);
+  const calls = await db.all<{
+    id: string;
+    purpose: string | null;
+    provider: string;
+    model_id: string;
+    prompt_tokens: number;
+    completion_tokens: number;
+    cost_usd: number;
+    cost_source: "provider" | "estimated";
+  }>(
+    `SELECT id, purpose, provider, model_id, prompt_tokens, completion_tokens, cost_usd, cost_source
+     FROM llm_calls
+     WHERE ${session.mode === "defend" ? "request_id = ?" : "session_id = ?"}
+     ORDER BY created_at, id`,
+    [session.mode === "defend" ? session.request_id : session.id],
+  );
   const grades = await db.all<{ id: string; scores_enc: string | null }>(
     `SELECT id, scores_enc FROM grades WHERE session_id = ?`,
     [sessionId],
@@ -978,6 +1036,23 @@ export async function getAdminSessionDetail(sessionId: string) {
       .filter((g): g is ModelGrade => !!g),
     human,
     receipt: receipt ? (JSON.parse(receipt.payload_json) as SignedReceipt) : null,
+    usage: {
+      promptTokens: Number(session.prompt_tokens ?? 0),
+      completionTokens: Number(session.completion_tokens ?? 0),
+      costUsd,
+      overBudget: costUsd > budgetUsd,
+      budgetUsd,
+      calls: calls.map((call) => ({
+        id: call.id,
+        purpose: call.purpose,
+        provider: call.provider,
+        modelId: call.model_id,
+        promptTokens: Number(call.prompt_tokens),
+        completionTokens: Number(call.completion_tokens),
+        costUsd: Number(call.cost_usd),
+        costSource: call.cost_source,
+      })),
+    },
   };
 }
 

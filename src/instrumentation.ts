@@ -1,14 +1,11 @@
-import { describeGradingCouncil } from "./lib/llm";
-
 /**
- * A deployment with a router or a one-model council must not become ready to
- * grade. `next build` skips this; the server checks again before it listens.
+ * Loaded in both the Node and Edge runtimes. The council check imports the
+ * database (token and cost rows), which the Edge bundle cannot load, so it
+ * stays behind the Node-only import.
  */
-export function register() {
-  if (process.env.NEXT_RUNTIME === "edge") return;
-  if (process.env.NEXT_PHASE === "phase-production-build") return;
-  const label = describeGradingCouncil();
-  if (label.startsWith("Grading is refused")) {
-    throw new Error(label);
+export async function register(): Promise<void> {
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { registerNode } = await import("./instrumentation-node");
+    registerNode();
   }
 }

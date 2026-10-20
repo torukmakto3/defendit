@@ -11,6 +11,18 @@ interface SessionRow {
   difficulty: string;
   receipt_id: string | null;
   human_score: number | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+  over_budget: number;
+  budget_usd: number;
+}
+
+function formatUsd(amount: number): string {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return "$0.00";
+  const digits = n !== 0 && Math.abs(n) < 0.01 ? 4 : 2;
+  return `$${n.toFixed(digits)}`;
 }
 
 export default function AdminPage() {
@@ -42,6 +54,7 @@ export default function AdminPage() {
               <th className="px-4 py-3">Title</th>
               <th className="px-4 py-3">Creator</th>
               <th className="px-4 py-3">Difficulty</th>
+              <th className="px-4 py-3">Cost</th>
               <th className="px-4 py-3">Human</th>
               <th className="px-4 py-3" />
             </tr>
@@ -49,7 +62,7 @@ export default function AdminPage() {
           <tbody>
             {sessions.length === 0 ? (
               <tr>
-                <td className="px-4 py-6" colSpan={5}>
+                <td className="px-4 py-6" colSpan={6}>
                   No defend sessions yet.
                 </td>
               </tr>
@@ -61,6 +74,15 @@ export default function AdminPage() {
                     <div className="text-xs opacity-70">{s.creator_email}</div>
                   </td>
                   <td className="px-4 py-3">{s.difficulty}</td>
+                  <td className="px-4 py-3">
+                    <div>{formatUsd(s.cost_usd)}</div>
+                    <div className="text-xs text-[var(--ink-2)]">
+                      {s.prompt_tokens.toLocaleString()} in · {s.completion_tokens.toLocaleString()} out
+                    </div>
+                    {s.over_budget === 1 && (
+                      <div className="text-xs text-danger">Over {formatUsd(s.budget_usd)}</div>
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     {s.human_score != null ? s.human_score : "—"}
                   </td>

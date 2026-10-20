@@ -4,6 +4,7 @@ import type {
   LlmResponse,
   RetentionClass,
 } from "./types";
+import { usageFromProviderBody } from "./usage";
 
 /**
  * OpenAI-compatible Chat Completions client.
@@ -56,12 +57,21 @@ export function createOpenAICompatProvider(opts: {
       }
       const data = (await res.json()) as {
         model?: string;
-        choices: { message: { content: string } }[];
+        choices?: { message?: { content?: string } }[];
+        usage?: unknown;
+        exchange?: unknown;
+        cost?: unknown;
+        cost_usd?: unknown;
       };
+      const content = data.choices?.[0]?.message?.content ?? "";
       return {
-        content: data.choices[0]?.message?.content ?? "",
+        content,
         modelId: data.model || opts.model,
         provider: opts.provider,
+        usage: usageFromProviderBody(data, {
+          promptText: req.messages.map((message) => message.content).join("\n"),
+          completionText: content,
+        }),
       };
     },
   };

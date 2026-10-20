@@ -1,4 +1,5 @@
 import type { LlmProvider, LlmRequest, LlmResponse } from "./types";
+import { usageFromProviderBody } from "./usage";
 
 export function createAnthropicProvider(
   apiKey: string,
@@ -40,13 +41,22 @@ export function createAnthropicProvider(
         throw new Error(`Anthropic error ${res.status}`);
       }
       const data = (await res.json()) as {
-        content: { type: string; text?: string }[];
+        content?: { type: string; text?: string }[];
+        usage?: unknown;
       };
-      const content = data.content
+      const content = (data.content ?? [])
         .filter((c) => c.type === "text")
         .map((c) => c.text || "")
         .join("\n");
-      return { content, modelId: model, provider: "anthropic" };
+      return {
+        content,
+        modelId: model,
+        provider: "anthropic",
+        usage: usageFromProviderBody(data, {
+          promptText: req.messages.map((message) => message.content).join("\n"),
+          completionText: content,
+        }),
+      };
     },
   };
 }

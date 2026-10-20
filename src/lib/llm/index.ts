@@ -13,6 +13,7 @@ import { HttpError } from "../errors";
 import { isDeployed } from "../secrets";
 import type { ZodType } from "zod";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./types";
+import { recordLlmCall } from "./usage";
 
 export { DEFAULT_LIQUID_COUNCIL_MODELS };
 
@@ -21,8 +22,17 @@ export type {
   LlmProvider,
   LlmRequest,
   LlmResponse,
+  LlmUsage,
   RetentionClass,
 } from "./types";
+export {
+  estimateCostUsd,
+  flushLlmScope,
+  refreshRequestUsage,
+  sessionBudgetUsd,
+  usageFromProviderBody,
+  withLlmScope,
+} from "./usage";
 export { jevConfigured, jevDecide, mockStakesDecision } from "./jev";
 
 function hasAnyLiveKey(): boolean {
@@ -115,9 +125,26 @@ function selectPrimary(): LlmProvider {
   return createMockProvider("mock-defend-v1");
 }
 
+/** Record token usage when the call runs inside a defense scope. */
+function trackLlm(provider: LlmProvider): LlmProvider {
+  return {
+    ...provider,
+    async complete(req: LlmRequest): Promise<LlmResponse> {
+      const res = await provider.complete(req);
+      await recordLlmCall({
+        purpose: req.purpose,
+        provider: res.provider,
+        modelId: res.modelId,
+        usage: res.usage,
+      });
+      return res;
+    },
+  };
+}
+
 /** Primary model for claim extraction, coaching, and follow-ups. */
 export function getPrimaryLlm(): LlmProvider {
-  return guardRetention(selectPrimary());
+  return trackLlm(guardRetention(selectPrimary()));
 }
 
 /** Temperature sent on every grading call. Stored with the grade. */
@@ -188,7 +215,7 @@ export function getGradingCouncil(): LlmProvider[] {
       createMockProvider("mock-council-balanced"),
       createMockProvider("mock-council-strict"),
       createMockProvider("mock-council-lenient"),
-    ];
+    ].map(trackLlm);
   }
 
   const env = process.env;
@@ -201,7 +228,7 @@ export function getGradingCouncil(): LlmProvider[] {
     // A leftover key for a retaining provider must not join (and break) the council.
     if (p.retention === "unverified" && !allowUnverified) return;
     seen.add(key);
-    council.push(guardRetention(p));
+    council.push(trackLlm(guardRetention(p)));
   };
 
   if (env.LIQUID_API_KEY) {
