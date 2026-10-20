@@ -87,7 +87,7 @@ export async function generateFlashcards(opts: { token: string; user: User }) {
   ]);
   if (Number(existing?.n) > 0) return { created: 0, total: Number(existing?.n) };
 
-  const cards = await writeCards(claims.slice(0, 15));
+  const cards = await llm.withLlmScope({ requestId: request.id }, () => writeCards(claims.slice(0, 15)));
   const now = new Date();
   await db.transaction(async (tx) => {
     for (const c of cards) {

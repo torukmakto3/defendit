@@ -1,4 +1,5 @@
 import type { LlmProvider, LlmRequest, LlmResponse } from "./types";
+import { usageFromProviderBody } from "./usage";
 
 /**
  * Offline mock provider: deterministic, no network.
@@ -20,7 +21,15 @@ export function createMockProvider(modelId = "mock-defend-v1"): LlmProvider {
         content = mockText(purpose, user);
       }
 
-      return { content, modelId, provider: "mock" };
+      return {
+        content,
+        modelId,
+        provider: "mock",
+        usage: usageFromProviderBody(null, {
+          promptText: req.messages.map((message) => message.content).join("\n"),
+          completionText: content,
+        }),
+      };
     },
   };
 }

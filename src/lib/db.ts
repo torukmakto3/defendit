@@ -145,6 +145,22 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   count INTEGER NOT NULL
 );
 
+-- One row per model call. No foreign keys: a call can be recorded before its
+-- session row is inserted (question wording runs first). Totals live on sessions.
+CREATE TABLE IF NOT EXISTS llm_calls (
+  id TEXT PRIMARY KEY,
+  session_id TEXT,
+  request_id TEXT,
+  purpose TEXT,
+  provider TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  prompt_tokens INTEGER NOT NULL,
+  completion_tokens INTEGER NOT NULL,
+  cost_usd DOUBLE PRECISION NOT NULL,
+  cost_source TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_requests_owner ON defense_requests(owner_user_id);
 CREATE INDEX IF NOT EXISTS idx_requests_creator ON defense_requests(creator_user_id);
 CREATE INDEX IF NOT EXISTS idx_deliverables_request ON deliverables(request_id);
@@ -152,6 +168,8 @@ CREATE INDEX IF NOT EXISTS idx_deliverables_purge ON deliverables(purge_after);
 CREATE INDEX IF NOT EXISTS idx_sessions_purge ON sessions(purge_after);
 CREATE INDEX IF NOT EXISTS idx_flashcards_user_due ON flashcards(user_id, due);
 CREATE INDEX IF NOT EXISTS idx_flashcards_deliverable ON flashcards(deliverable_id);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls(session_id);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_request ON llm_calls(request_id);
 -- One receipt per deliverable request, enforced by the database too.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_receipts_request ON receipts(request_id);
 `;
@@ -162,6 +180,12 @@ const ADDED_COLUMNS: [string, string, string][] = [
   ["sessions", "grading_claimed_at", "TEXT"],
   ["grades", "temperature", "REAL"],
   ["grades", "seed", "INTEGER"],
+  // Running total of model calls for this session. A defend session rolls up
+  // every call on its defense (claims, Learn, flashcards, questions, graders).
+  ["sessions", "prompt_tokens", "INTEGER NOT NULL DEFAULT 0"],
+  ["sessions", "completion_tokens", "INTEGER NOT NULL DEFAULT 0"],
+  ["sessions", "cost_usd", "DOUBLE PRECISION NOT NULL DEFAULT 0"],
+  ["sessions", "over_budget", "INTEGER NOT NULL DEFAULT 0"],
 ];
 
 let dbPromise: Promise<Db> | null = null;

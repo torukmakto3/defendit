@@ -15,10 +15,19 @@ export interface LlmRequest {
   signal?: AbortSignal;
 }
 
+export interface LlmUsage {
+  promptTokens: number;
+  completionTokens: number;
+  /** USD. The provider's charge when it sent one, otherwise an estimate from token counts. */
+  costUsd: number;
+  costSource: "provider" | "estimated";
+}
+
 export interface LlmResponse {
   content: string;
   modelId: string;
   provider: string;
+  usage: LlmUsage;
 }
 
 /**

@@ -85,29 +85,32 @@ describe("deployed grading council", () => {
     );
   });
 
-  it("still grades in mock mode", () => {
+  it("still grades in mock mode", async () => {
     process.env.MOCK_LLM = "1";
     const council = getGradingCouncil();
     expect(council).toHaveLength(3);
     expect(council.every((member) => member.provider === "mock")).toBe(true);
-    expect(() => register()).not.toThrow();
+    process.env.NEXT_RUNTIME = "nodejs";
+    await expect(register()).resolves.toBeUndefined();
   });
 
-  it("fails the startup check when the deployed council cannot grade", () => {
+  it("fails the startup check when the deployed council cannot grade", async () => {
     expect(describeGradingCouncil()).toMatch(/Grading is refused/);
-    expect(() => register()).toThrow(/Grading is refused/);
+    process.env.NEXT_RUNTIME = "nodejs";
+    await expect(register()).rejects.toThrow(/Grading is refused/);
     process.env.NEXT_PHASE = "phase-production-build";
-    expect(() => register()).not.toThrow();
+    await expect(register()).resolves.toBeUndefined();
   });
 });
 
 describe("local grading council", () => {
-  it("still grades with liquid.auto when it is not a deployment", () => {
+  it("still grades with liquid.auto when it is not a deployment", async () => {
     process.env.LIQUID_API_KEY = "liq_test";
     process.env.LIQUID_MODEL = "liquid.auto";
     const council = getGradingCouncil();
     expect(council.map((member) => member.id)).toEqual(["liquid.auto"]);
-    expect(() => register()).not.toThrow();
+    process.env.NEXT_RUNTIME = "nodejs";
+    await expect(register()).resolves.toBeUndefined();
   });
 });
 

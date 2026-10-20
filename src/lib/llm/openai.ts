@@ -1,4 +1,5 @@
 import type { LlmProvider, LlmRequest, LlmResponse } from "./types";
+import { usageFromProviderBody } from "./usage";
 
 export function createOpenAIProvider(
   apiKey: string,
@@ -28,12 +29,18 @@ export function createOpenAIProvider(
         throw new Error(`OpenAI error ${res.status}`);
       }
       const data = (await res.json()) as {
-        choices: { message: { content: string } }[];
+        choices?: { message?: { content?: string } }[];
+        usage?: unknown;
       };
+      const content = data.choices?.[0]?.message?.content ?? "";
       return {
-        content: data.choices[0]?.message?.content ?? "",
+        content,
         modelId: model,
         provider: "openai",
+        usage: usageFromProviderBody(data, {
+          promptText: req.messages.map((message) => message.content).join("\n"),
+          completionText: content,
+        }),
       };
     },
   };
