@@ -6,6 +6,8 @@ export interface LlmMessage {
 export interface LlmRequest {
   messages: LlmMessage[];
   temperature?: number;
+  /** Integer seed sent with the call so a stored grade can be reproduced. */
+  seed?: number;
   json?: boolean;
   /** Label used in receipts / grading council */
   purpose?: string;

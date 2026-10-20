@@ -7,7 +7,7 @@ import { HttpError } from "./http";
 import { newId, newToken } from "./ids";
 import { computeIntegrity } from "./integrity";
 import { nextLearnTurn, type GapItem } from "./learn";
-import { llmModeLabel } from "./llm";
+import { describeGradingCouncil, llmModeLabel } from "./llm";
 import { extractText, guessMimeType } from "./parse";
 import { buildInterviewPlan, buildLearnPlan, makeFollowUpProbe } from "./probes";
 import { phraseQuestions } from "./questions";
@@ -785,9 +785,19 @@ export async function completeDefendSession(opts: {
       for (const g of grades) {
         const gradeId = newId("grd");
         await tx.run(
-          `INSERT INTO grades (id, session_id, model_id, provider, scores_enc, overall_score, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [gradeId, session.id, g.modelId, g.provider, encryptJson(g, ctx.scores(gradeId)), g.overallScore, nowIso],
+          `INSERT INTO grades (id, session_id, model_id, provider, scores_enc, overall_score, temperature, seed, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            gradeId,
+            session.id,
+            g.modelId,
+            g.provider,
+            encryptJson(g, ctx.scores(gradeId)),
+            g.overallScore,
+            g.temperature ?? null,
+            g.seed ?? null,
+            nowIso,
+          ],
         );
       }
       await tx.run(
@@ -1107,5 +1117,6 @@ export function publicKeyInfo() {
     publicKeyHex: getPublicKeyHex(),
     algorithm: "Ed25519",
     llmMode: llmModeLabel(),
+    gradingCouncil: describeGradingCouncil(),
   };
 }

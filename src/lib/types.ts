@@ -89,6 +89,10 @@ export interface ModelGrade {
   provider: string;
   claimGrades: ClaimGrade[];
   overallScore: number;
+  /** Temperature sent with this grader's call. */
+  temperature?: number;
+  /** Seed sent with this grader's call. */
+  seed?: number;
 }
 
 export interface IntegritySignals {
