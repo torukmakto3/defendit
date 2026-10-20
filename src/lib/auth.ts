@@ -1,13 +1,14 @@
 import { randomBytes } from "crypto";
 import { appUrl } from "./config";
 import { sha256Hex } from "./crypto";
-import { getDb } from "./db";
+import { getDb, type Db } from "./db";
 import { newId } from "./ids";
 import { HttpError } from "./errors";
 import { isDeployed } from "./secrets";
 
 /**
- * Passwordless email sign-in.
+ * Sign-in. Google and email links both open a row in `users` keyed by
+ * normalized email, then a row in `auth_sessions`.
  * - Link tokens are 256-bit, single use, 15 minutes, stored only as SHA-256.
  * - The token travels in the URL fragment (#token=), so it never reaches
  *   server logs or Referer headers; the verify page POSTs it after a click,
@@ -50,19 +51,59 @@ function matchesPattern(email: string, pattern: string): boolean {
   return p.startsWith("*@") ? email.endsWith(p.slice(1)) : email === p;
 }
 
+/** True when Resend can deliver a magic link. */
+export function canSendSignInEmail(): boolean {
+  return Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM);
+}
+
 /**
- * Showing the sign-in link on screen means anyone can sign in as any email,
- * so it is only for local dev or a throwaway test deploy:
- * - never for admin accounts;
- * - on a deployment only with AUTH_DEV_LINKS=1, and only for addresses
- *   matching AUTH_DEV_LINK_ALLOW (e.g. "*@example.com") when that is set.
+ * True when Google's client id and secret are both set. The sign-in page
+ * hides the Google button when this is false.
+ */
+export function googleAuthConfigured(): boolean {
+  return Boolean(process.env.GOOGLE_CLIENT_ID?.trim() && process.env.GOOGLE_CLIENT_SECRET?.trim());
+}
+
+/**
+ * On-screen links let anyone who can see the page sign in as that email.
+ * Local dev shows them. A non-production deployment (preview) shows them
+ * only when AUTH_DEV_LINKS=1. Vercel production (VERCEL_ENV=production)
+ * never shows them, even if AUTH_DEV_LINKS=1 and NODE_ENV=production.
+ */
+export function devLinksOffered(): boolean {
+  if (process.env.VERCEL_ENV === "production") return false;
+  if (!isDeployed()) return true;
+  return process.env.AUTH_DEV_LINKS === "1";
+}
+
+/** The email form is shown when a link can be emailed or shown on screen. */
+export function emailLinkOffered(): boolean {
+  return canSendSignInEmail() || devLinksOffered();
+}
+
+/**
+ * Whether this address may receive an on-screen link:
+ * - never for admin accounts (they sign in with Google);
+ * - never on Vercel production;
+ * - on any other deployment, only with AUTH_DEV_LINKS=1, and only for
+ *   addresses matching AUTH_DEV_LINK_ALLOW when that is set.
  */
 export function devLinksAllowed(email: string): boolean {
   if (isAdminEmail(email)) return false;
+  if (!devLinksOffered()) return false;
   if (!isDeployed()) return true;
-  if (process.env.AUTH_DEV_LINKS !== "1") return false;
   const allow = (process.env.AUTH_DEV_LINK_ALLOW || "").split(",").filter((p) => p.trim());
   return allow.length === 0 || allow.some((p) => matchesPattern(email, p));
+}
+
+function signInUnavailableMessage(email: string): string {
+  if (isAdminEmail(email)) {
+    return "Admin accounts can't use an on-screen sign-in link. Sign in with Google using this verified email.";
+  }
+  if (process.env.VERCEL_ENV === "production") {
+    return "Email sign-in isn't set up on this server. Use Sign in with Google.";
+  }
+  return "Email sign-in isn't set up on this server yet. On a test deployment, use an allowed test address.";
 }
 
 export async function requestMagicLink(opts: {
@@ -70,12 +111,9 @@ export async function requestMagicLink(opts: {
   nextPath?: string;
 }): Promise<{ devLink?: string }> {
   const email = normalizeEmail(opts.email);
-  const canEmail = Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM);
+  const canEmail = canSendSignInEmail();
   if (!canEmail && !devLinksAllowed(email)) {
-    throw new HttpError(
-      503,
-      "Email sign-in isn't set up on this server yet. On a test deployment, use an allowed test address.",
-    );
+    throw new HttpError(503, signInUnavailableMessage(email));
   }
   const token = randomBytes(32).toString("base64url");
   const now = new Date();
@@ -141,34 +179,65 @@ export async function consumeMagicLink(token: string): Promise<{
       [hash],
     );
     if (!row) return null;
-
-    // Two first-time sign-ins for one email can race; the unique email wins either way.
-    await tx.run(
-      `INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, NULL, ?)
-       ON CONFLICT (email) DO NOTHING`,
-      [newId("usr"), row.email, nowIso],
-    );
-    const user = await tx.get<User>(
-      `SELECT id, email, display_name FROM users WHERE email = ?`,
-      [row.email],
-    );
-    if (!user) return null;
-
-    const sessionToken = randomBytes(32).toString("base64url");
-    await tx.run(
-      `INSERT INTO auth_sessions (id_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`,
-      [
-        sha256Hex(sessionToken),
-        user.id,
-        new Date(Date.now() + SESSION_TTL_SEC * 1000).toISOString(),
-        nowIso,
-      ],
-    );
-    return { user, sessionToken, nextPath: safeNextPath(row.next_path) };
+    const session = await insertUserSession(tx, row.email, null, nowIso);
+    return { ...session, nextPath: safeNextPath(row.next_path) };
   });
 }
 
-function readCookie(req: Request, name: string): string | null {
+/**
+ * Open a session for an email that has already been verified (Google ID
+ * token, or a consumed magic link). Email is stored lowercase so Google and
+ * ADMIN_EMAILS match case-insensitively. The first sign-in may set a display
+ * name; a later one does not overwrite it.
+ */
+export async function createSessionForEmail(
+  email: string,
+  displayName: string | null = null,
+): Promise<{ user: User; sessionToken: string }> {
+  const db = await getDb();
+  const nowIso = new Date().toISOString();
+  return db.transaction((tx) => insertUserSession(tx, normalizeEmail(email), displayName, nowIso));
+}
+
+async function insertUserSession(
+  tx: Db,
+  email: string,
+  displayName: string | null,
+  nowIso: string,
+): Promise<{ user: User; sessionToken: string }> {
+  const name = displayName?.trim().slice(0, 80) || null;
+  // Two first-time sign-ins for one email can race; the unique email wins either way.
+  await tx.run(
+    `INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT (email) DO NOTHING`,
+    [newId("usr"), email, name, nowIso],
+  );
+  const user = await tx.get<User>(
+    `SELECT id, email, display_name FROM users WHERE email = ?`,
+    [email],
+  );
+  if (!user) throw new HttpError(500, "Could not open a session");
+  if (!user.display_name && name) {
+    await tx.run(`UPDATE users SET display_name = ? WHERE id = ? AND display_name IS NULL`, [
+      name,
+      user.id,
+    ]);
+    user.display_name = name;
+  }
+  const sessionToken = randomBytes(32).toString("base64url");
+  await tx.run(
+    `INSERT INTO auth_sessions (id_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`,
+    [
+      sha256Hex(sessionToken),
+      user.id,
+      new Date(Date.now() + SESSION_TTL_SEC * 1000).toISOString(),
+      nowIso,
+    ],
+  );
+  return { user, sessionToken };
+}
+
+export function readRequestCookie(req: Request, name: string): string | null {
   const header = req.headers.get("cookie");
   if (!header) return null;
   for (const part of header.split(";")) {
@@ -184,7 +253,7 @@ function readCookie(req: Request, name: string): string | null {
 }
 
 export async function getUserFromRequest(req: Request): Promise<User | null> {
-  const token = readCookie(req, SESSION_COOKIE);
+  const token = readRequestCookie(req, SESSION_COOKIE);
   if (!token) return null;
   const db = await getDb();
   const row = await db.get<User>(
@@ -197,7 +266,7 @@ export async function getUserFromRequest(req: Request): Promise<User | null> {
 }
 
 export async function endSession(req: Request): Promise<void> {
-  const token = readCookie(req, SESSION_COOKIE);
+  const token = readRequestCookie(req, SESSION_COOKIE);
   if (!token) return;
   const db = await getDb();
   await db.run(`DELETE FROM auth_sessions WHERE id_hash = ?`, [sha256Hex(token)]);
@@ -211,6 +280,12 @@ export async function setDisplayName(userId: string, name: string | null) {
   ]);
 }
 
+/**
+ * Admin is the verified email, compared case-insensitively to ADMIN_EMAILS.
+ * A Hotmail or Outlook address matches only when that same address is the
+ * verified email on the Google account (Google allows non-Gmail addresses).
+ * Signing in with a different Gmail does not grant admin.
+ */
 function isAdminEmail(email: string): boolean {
   const admins = (process.env.ADMIN_EMAILS || "")
     .split(",")

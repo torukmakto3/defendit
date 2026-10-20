@@ -5,9 +5,18 @@ import { join } from "path";
 import { devLinksAllowed, requestMagicLink, safeNextPath } from "../src/lib/auth";
 import { sameOrigin } from "../src/lib/http";
 
-const ENV = ["VERCEL", "AUTH_DEV_LINKS", "AUTH_DEV_LINK_ALLOW", "ADMIN_EMAILS"];
+const ENV = ["VERCEL", "VERCEL_ENV", "NODE_ENV", "AUTH_DEV_LINKS", "AUTH_DEV_LINK_ALLOW", "ADMIN_EMAILS"];
+const ORIGINAL = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
+
+function setEnv(name: string, value: string) {
+  (process.env as Record<string, string | undefined>)[name] = value;
+}
+
 afterEach(() => {
-  for (const k of ENV) delete process.env[k];
+  for (const k of ENV) {
+    if (ORIGINAL[k] === undefined) delete process.env[k];
+    else process.env[k] = ORIGINAL[k];
+  }
 });
 
 describe("safeNextPath", () => {
@@ -51,11 +60,34 @@ describe("devLinksAllowed", () => {
 
   it("honours the address allowlist on a deployment", () => {
     process.env.VERCEL = "1";
+    process.env.VERCEL_ENV = "preview";
     process.env.AUTH_DEV_LINKS = "1";
     process.env.AUTH_DEV_LINK_ALLOW = "*@example.com, qa@fund.example";
     expect(devLinksAllowed("anyone@example.com")).toBe(true);
     expect(devLinksAllowed("qa@fund.example")).toBe(true);
     expect(devLinksAllowed("real.person@gmail.com")).toBe(false);
+  });
+
+  it("never shows a link on Vercel production, even with AUTH_DEV_LINKS=1", () => {
+    setEnv("NODE_ENV", "production");
+    process.env.VERCEL = "1";
+    process.env.VERCEL_ENV = "production";
+    process.env.AUTH_DEV_LINKS = "1";
+    process.env.AUTH_DEV_LINK_ALLOW = "*@example.com";
+    expect(devLinksAllowed("anyone@example.com")).toBe(false);
+  });
+
+  it("still allows an opted-in preview deploy and a local production process", () => {
+    setEnv("NODE_ENV", "production");
+    process.env.VERCEL = "1";
+    process.env.VERCEL_ENV = "preview";
+    process.env.AUTH_DEV_LINKS = "1";
+    expect(devLinksAllowed("ana@fund.example")).toBe(true);
+
+    delete process.env.VERCEL;
+    delete process.env.VERCEL_ENV;
+    process.env.AUTH_DEV_LINKS = "1";
+    expect(devLinksAllowed("ana@fund.example")).toBe(true);
   });
 });
 
@@ -85,6 +117,15 @@ describe("requestMagicLink without email delivery", () => {
     process.env.AUTH_DEV_LINK_ALLOW = "*@example.com";
     await expect(requestMagicLink({ email: "real@gmail.com" })).rejects.toMatchObject({ status: 503 });
     await expect(requestMagicLink({ email: "qa@example.com" })).resolves.toHaveProperty("devLink");
+  });
+
+  it("refuses the on-screen link on Vercel production even for an allowed address", async () => {
+    setEnv("NODE_ENV", "production");
+    process.env.VERCEL = "1";
+    process.env.VERCEL_ENV = "production";
+    process.env.AUTH_DEV_LINKS = "1";
+    process.env.AUTH_DEV_LINK_ALLOW = "*@example.com";
+    await expect(requestMagicLink({ email: "qa@example.com" })).rejects.toMatchObject({ status: 503 });
   });
 });
 
