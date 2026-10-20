@@ -36,12 +36,22 @@ export default function CreatorEntryPage() {
     const r = await fetch(`/api/requests/${token}`, { cache: "no-store" });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || "Not found");
-    setData(j);
+    return j as RequestView;
   }, [token]);
 
   useEffect(() => {
     if (me === undefined) return;
-    load().catch((e) => setError(e.message));
+    let cancelled = false;
+    load()
+      .then((j) => {
+        if (!cancelled) setData(j);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Not found");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [load, me]);
 
   async function onUpload(e: React.FormEvent<HTMLFormElement>) {
@@ -57,7 +67,7 @@ export default function CreatorEntryPage() {
       const res = await fetch("/api/upload", { method: "POST", body });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || "Upload failed");
-      await load();
+      setData(await load());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {

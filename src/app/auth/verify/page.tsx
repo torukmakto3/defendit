@@ -16,9 +16,9 @@ export default function VerifyPage() {
     const t = new URLSearchParams(window.location.hash.slice(1)).get("token");
     // Effects can run twice in development; the second run sees an empty hash.
     if (!t) return;
-    setToken(t);
-    // Drop the token from the address bar and history.
+    // Drop the token from the address bar and history before the second run.
     window.history.replaceState(null, "", window.location.pathname);
+    queueMicrotask(() => setToken(t));
   }, []);
 
   async function signIn() {

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 interface Detail {
   session: {
@@ -34,19 +34,27 @@ export default function AdminDetailPage() {
   const [notes, setNotes] = useState("");
   const [saved, setSaved] = useState(false);
 
-  async function load() {
+  const load = useCallback(async () => {
     const res = await fetch(`/api/admin/sessions/${id}`);
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || "Failed");
-    setDetail(d);
-    if (d.human?.overall_score != null) setScore(d.human.overall_score);
-    if (d.human?.notes) setNotes(d.human.notes);
-  }
+    return d as Detail;
+  }, [id]);
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+    let cancelled = false;
+    load()
+      .then((d) => {
+        if (cancelled) return;
+        setDetail(d);
+        if (d.human?.overall_score != null) setScore(d.human.overall_score);
+        if (d.human?.notes) setNotes(d.human.notes);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [load]);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -56,7 +64,10 @@ export default function AdminDetailPage() {
       body: JSON.stringify({ overallScore: score, notes }),
     });
     setSaved(true);
-    await load();
+    const d = await load();
+    setDetail(d);
+    if (d.human?.overall_score != null) setScore(d.human.overall_score);
+    if (d.human?.notes) setNotes(d.human.notes);
   }
 
   if (!detail) {
