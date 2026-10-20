@@ -1,38 +1,32 @@
 import { NextResponse } from "next/server";
-import { ingestDeliverable } from "@/lib/services";
+import { handleError, jsonError, limitOr429, requireUser } from "@/lib/http";
+import { LIMITS } from "@/lib/ratelimit";
+import { ingestDeliverable, MAX_UPLOAD_BYTES } from "@/lib/services";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 export async function POST(req: Request) {
+  const guard = await requireUser(req);
+  if (guard.response) return guard.response;
   try {
+    const limited = await limitOr429(`ingest:${guard.user.id}`, LIMITS.ingestPerUser);
+    if (limited) return limited;
     const form = await req.formData();
     const token = String(form.get("token") || "");
-    const creatorName = String(form.get("creatorName") || "");
-    const creatorEmail = String(form.get("creatorEmail") || "");
     const file = form.get("file");
+    if (!token || !(file instanceof File)) return jsonError(400, "token and file are required");
+    if (file.size > MAX_UPLOAD_BYTES) return jsonError(413, "File is too large");
 
-    if (!token || !creatorName || !creatorEmail || !(file instanceof File)) {
-      return NextResponse.json(
-        { error: "token, creatorName, creatorEmail, and file are required" },
-        { status: 400 },
-      );
-    }
-
-    const buffer = Buffer.from(await file.arrayBuffer());
     const result = await ingestDeliverable({
       token,
+      user: guard.user,
       fileName: file.name,
-      buffer,
-      creatorName,
-      creatorEmail,
+      buffer: Buffer.from(await file.arrayBuffer()),
       mimeType: file.type || undefined,
     });
-
     return NextResponse.json(result);
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Upload failed" },
-      { status: 400 },
-    );
+    return handleError(e, "Upload failed");
   }
 }

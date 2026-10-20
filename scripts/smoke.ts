@@ -1,113 +1,182 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- loose JSON in a test script */
 /**
- * End-to-end smoke in mock mode (no HTTP server required).
- * Covers: request → upload → learn → defend → grade → signed receipt → hash check.
+ * End-to-end smoke over HTTP against a running app (local or deployed).
+ *
+ *   npm run dev            # in another shell
+ *   npm run smoke          # BASE_URL defaults to http://localhost:3000
+ *   BASE_URL=https://<preview>.vercel.app npm run smoke
+ *
+ * Needs dev sign-in links (local default, or AUTH_DEV_LINKS=1 on a test deploy).
+ * Covers: sign-in → upload → learn → defend → signed receipt → stamp, plus the
+ * access-control and privacy checks that must hold on every deploy.
  */
 import { readFileSync } from "fs";
 import { join } from "path";
 import { sha256Hex, verifySignature } from "../src/lib/crypto";
-import {
-  completeDefendSession,
-  createDefenseRequest,
-  ingestDeliverable,
-  learnCoachTurn,
-  startSession,
-} from "../src/lib/services";
 
-process.env.MOCK_LLM = "1";
-process.env.DATABASE_PATH = join(process.cwd(), "data", "smoke.db");
+const BASE = (process.env.BASE_URL || "http://localhost:3000").replace(/\/$/, "");
+const ORIGIN = new URL(BASE).origin;
+const fixture = readFileSync(join(process.cwd(), "fixtures", "sample-memo.md"));
+const run = Math.random().toString(36).slice(2, 8);
+
+function check(cond: unknown, msg: string): asserts cond {
+  if (!cond) throw new Error(`FAILED: ${msg}`);
+  console.log(`  ✓ ${msg}`);
+}
+
+async function call(
+  path: string,
+  init: RequestInit & { cookie?: string } = {},
+): Promise<{ status: number; json: any; text: string; headers: Headers }> {
+  const headers = new Headers(init.headers);
+  if (!headers.has("Origin")) headers.set("Origin", ORIGIN);
+  if (init.cookie) headers.set("Cookie", init.cookie);
+  const res = await fetch(`${BASE}${path}`, { ...init, headers, redirect: "manual" });
+  const text = await res.text();
+  let json: any = null;
+  try {
+    json = JSON.parse(text);
+  } catch {}
+  return { status: res.status, json, text, headers: res.headers };
+}
+
+const post = (path: string, body: unknown, cookie?: string) =>
+  call(path, {
+    method: "POST",
+    cookie,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+async function signIn(email: string): Promise<string> {
+  const req = await post("/api/auth/request", { email });
+  check(req.status === 200 && req.json.devLink, `sign-in link issued for ${email}`);
+  const token = String(req.json.devLink).split("#token=")[1];
+  const verify = await post("/api/auth/verify", { token });
+  const setCookie = verify.headers.get("set-cookie") || "";
+  const cookie = setCookie.split(";")[0];
+  check(verify.status === 200 && cookie.startsWith("di_session="), "magic link exchanged for a session cookie");
+  check(/httponly/i.test(setCookie), "session cookie is HttpOnly");
+  const reuse = await post("/api/auth/verify", { token });
+  check(reuse.status === 400, "magic link cannot be reused");
+  return cookie;
+}
 
 async function main() {
-  const { token, requestId } = createDefenseRequest({
-    receiverName: "Alex Partner",
-    receiverEmail: "alex@fund.example",
-    difficulty: "hard",
-    title: "Smoke — Project North",
-  });
-  console.log("request", requestId, token);
+  console.log(`Smoke against ${BASE}`);
 
-  const fixture = join(process.cwd(), "fixtures", "sample-memo.md");
-  const buffer = readFileSync(fixture);
-  const expectedHash = sha256Hex(buffer);
+  const keys = await call("/api/keys");
+  check(keys.status === 200, `public key endpoint (LLM mode: ${keys.json?.llmMode})`);
 
-  const uploaded = await ingestDeliverable({
-    token,
-    fileName: "sample-memo.md",
-    buffer,
-    creatorName: "Ana Analyst",
-    creatorEmail: "ana@fund.example",
+  const anonIngest = await call("/api/creator/ingest", { method: "POST", body: new FormData() });
+  check(anonIngest.status === 401, "upload requires sign-in");
+  const anonAdmin = await call("/api/admin/sessions");
+  check(anonAdmin.status === 401, "admin requires sign-in");
+  const anonDash = await call("/api/dashboard?email=ana@fund.example");
+  check(anonDash.status === 401, "dashboard no longer readable by ?email=");
+  const crossSite = await call("/api/auth/request", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: "https://evil.example" },
+    body: JSON.stringify({ email: "x@evil.example" }),
   });
-  console.log("upload", uploaded.sha256.slice(0, 12), "claims", uploaded.claims.length);
-  if (uploaded.sha256 !== expectedHash) {
-    throw new Error("Upload hash mismatch");
+  check(crossSite.status === 403, "cross-site POST blocked");
+
+  const ana = await signIn(`ana+${run}@fund.example`);
+  const me = await call("/api/auth/me", {
+    method: "PATCH",
+    cookie: ana,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ displayName: "Ana Analyst" }),
+  });
+  check(me.status === 200, "display name saved");
+
+  const form = new FormData();
+  form.set("difficulty", "hard");
+  form.set("file", new Blob([fixture], { type: "text/markdown" }), "Project-North-memo.md");
+  const ingest = await call("/api/creator/ingest", { method: "POST", body: form, cookie: ana });
+  check(ingest.status === 200, `upload parsed (${ingest.json?.claimCount} claims)${ingest.status !== 200 ? ` — ${ingest.text}` : ""}`);
+  check(ingest.json.sha256 === sha256Hex(fixture), "server hash matches local SHA-256");
+  const token = ingest.json.token as string;
+  check(token.length >= 22, "defense link token is long and random");
+
+  if (process.env.SMOKE_PDF) {
+    const pdfForm = new FormData();
+    pdfForm.set("file", new Blob([readFileSync(process.env.SMOKE_PDF)], { type: "application/pdf" }), "memo.pdf");
+    const pdf = await call("/api/creator/ingest", { method: "POST", body: pdfForm, cookie: ana });
+    check(pdf.status === 200, `PDF upload parsed (${pdf.json?.claimCount} claims)${pdf.status !== 200 ? ` — ${pdf.text}` : ""}`);
   }
 
-  const learn = startSession({
-    token,
-    mode: "learn",
-    creatorName: "Ana Analyst",
-    creatorEmail: "ana@fund.example",
-  });
-  const coach = await learnCoachTurn({ sessionId: learn.sessionId });
-  await learnCoachTurn({
-    sessionId: learn.sessionId,
-    answer:
-      "The core claim is a $12M Series B at $90M post because North can become the default workflow layer; unit economics hinge on churn staying near 1.2%.",
-  });
-  console.log("learn", coach.coachMessage.slice(0, 60) + "…");
+  const mallory = await signIn(`mallory+${run}@evil.example`);
+  const steal = await post("/api/sessions/start", { token, mode: "learn" }, mallory);
+  check(steal.status === 403, "another account cannot open this defense");
+  const peek = await call(`/api/requests/${token}`, { cookie: mallory });
+  check(peek.status === 200 && peek.json.deliverable === null, "another account sees no file details");
+  const malAdmin = await call("/api/admin/sessions", { cookie: mallory });
+  check(malAdmin.status === 403, "non-admin cannot list sessions");
 
-  const defend = startSession({
-    token,
-    mode: "defend",
-    creatorName: "Ana Analyst",
-    creatorEmail: "ana@fund.example",
-  });
+  const learn = await post("/api/sessions/start", { token, mode: "learn" }, ana);
+  check(learn.status === 200, "learn session started");
+  const turn = await post("/api/sessions/learn", { sessionId: learn.json.sessionId }, ana);
+  check(turn.status === 200 && turn.json.coachMessage, "coach replied");
 
-  const turns = defend.plan.probes.map((probe, i) => {
-    const started = new Date(Date.now() - (8_000 + i * 1_500)).toISOString();
-    const ended = new Date().toISOString();
-    const answer =
-      probe.type === "planted_error"
-        ? "That excerpt looks wrong — a number or claim was altered versus the memo. The original figures should match the unit economics section."
-        : `Because the memo shows ${probe.expectedFocus}. If assumptions move 30% against us, the recommendation weakens first via LTV and IRR. Sources are the market and unit economics sections.`;
-    return {
-      id: `turn_${i + 1}`,
-      probeId: probe.id,
-      question: probe.question,
-      answer,
-      startedAt: started,
-      endedAt: ended,
-      latencyMs: 8000 + i * 1500,
-      followUpIndex: 0,
-    };
-  });
+  const defend = await post("/api/sessions/start", { token, mode: "defend" }, ana);
+  check(defend.status === 200 && defend.json.probes?.length > 0, `defend started (${defend.json.probes?.length} probes)`);
+  check(!JSON.stringify(defend.json).includes("expectedFocus"), "expected answers are not sent to the browser");
 
-  const result = await completeDefendSession({
-    sessionId: defend.sessionId,
-    turns,
-    pasteEvents: 0,
-    focusBlurEvents: 1,
-  });
-
-  const ok = verifySignature(
-    result.receipt.payload,
-    result.receipt.signature,
-    result.receipt.publicKey,
-  );
-  if (!ok) throw new Error("Receipt signature invalid");
-  if (result.receipt.payload.deliverable.sha256 !== expectedHash) {
-    throw new Error("Receipt hash mismatch");
+  const probes = defend.json.probes as { id: string; type: string; question: string }[];
+  const skip = await post("/api/sessions/defend/answer", { sessionId: defend.json.sessionId, probeId: probes[1].id, answer: "skipping ahead" }, ana);
+  check(skip.status === 409, "answers must follow the server's question order");
+  for (const p of probes) {
+    const saved = await post(
+      "/api/sessions/defend/answer",
+      {
+        sessionId: defend.json.sessionId,
+        probeId: p.id,
+        answer:
+          p.type === "planted_error"
+            ? "That excerpt was altered — the figure does not match the unit economics section of the memo."
+            : "The recommendation rests on churn near 1.2% and LTV/CAC above 3. If churn doubled, IRR falls first and the round size should shrink.",
+      },
+      ana,
+    );
+    if (saved.status !== 200) throw new Error(`FAILED: answer not saved — ${saved.text}`);
   }
+  console.log(`  ✓ ${probes.length} answers recorded server-side`);
+  const forged = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId, turns: [{ probeId: "x", answer: "forged", latencyMs: 9000 }] }, mallory);
+  check(forged.status === 404, "another account cannot complete this defense");
+  const done = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId, showName: true }, ana);
+  check(done.status === 200, `defense graded: ${done.json?.receipt?.payload?.outcome} ${done.json?.score}/100${done.status !== 200 ? ` — ${done.text}` : ""}`);
 
-  const tampered = sha256Hex(Buffer.concat([buffer, Buffer.from("\n")]));
-  if (tampered === expectedHash) throw new Error("Tamper hash should differ");
+  const id = done.json.receipt.payload.id as string;
+  const pub = await call(`/api/receipts/${id}`);
+  check(pub.status === 200 && pub.json.signatureValid, "public receipt signature valid (server)");
+  const r = pub.json.receipt;
+  check(verifySignature(r.payload, r.signature, r.publicKey), "receipt signature valid (independent check)");
+  check(r.payload.deliverable.sha256 === sha256Hex(fixture), "receipt bound to the exact file hash");
+  const receiptText = JSON.stringify(r);
+  check(!receiptText.includes("fund.example"), "receipt carries no email");
+  check(!receiptText.includes("Project-North"), "receipt carries no file name");
+  check(!/churn|Series B/i.test(receiptText), "receipt carries no transcript or document text");
+  check(r.payload.creator?.displayName === "Ana Analyst", "creator name shown because they opted in");
 
-  console.log("receipt", result.receipt.payload.id, "score", result.score);
-  console.log("stamp", result.stampPath);
-  console.log("tamper check: doesn't match ✓");
+  const stamp = await call(`/api/stamp/${id}`);
+  check(stamp.status === 200 && stamp.text.includes("<svg"), "stamp renders");
+  const bogus = await call(`/api/receipts/rcpt_doesnotexist000000000`);
+  check(bogus.status === 404, "unknown receipt is 404");
+
+  const again = await post("/api/sessions/start", { token, mode: "learn" }, ana);
+  check(again.status === 410, "document text purged once the defense completed");
+  const twice = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId }, ana);
+  check(twice.status === 409, "a defense cannot be graded twice");
+
+  const dash = await call("/api/dashboard", { cookie: ana });
+  check(dash.status === 200 && dash.json.rows.some((x: { receiptId: string }) => x.receiptId === id), "dashboard lists own receipt");
+
+  console.log(`\nreceipt ${BASE}/r/${id}`);
   console.log("SMOKE OK");
 }
 
 main().catch((e) => {
-  console.error(e);
+  console.error(e instanceof Error ? e.message : e);
   process.exit(1);
 });

@@ -1,36 +1,28 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { handleError, limitOr429, requireUser } from "@/lib/http";
+import { LIMITS } from "@/lib/ratelimit";
 import { completeDefendSession } from "@/lib/services";
 
 export const runtime = "nodejs";
-
-const turnSchema = z.object({
-  id: z.string(),
-  probeId: z.string(),
-  question: z.string(),
-  answer: z.string(),
-  startedAt: z.string(),
-  endedAt: z.string(),
-  latencyMs: z.number(),
-  followUpIndex: z.number(),
-});
+export const maxDuration = 120;
 
 const schema = z.object({
-  sessionId: z.string().min(1),
-  turns: z.array(turnSchema).min(1),
-  pasteEvents: z.number().optional(),
-  focusBlurEvents: z.number().optional(),
+  sessionId: z.string().min(1).max(64),
+  pasteEvents: z.number().int().min(0).max(10_000).optional(),
+  focusBlurEvents: z.number().int().min(0).max(10_000).optional(),
+  showName: z.boolean().optional(),
 });
 
 export async function POST(req: Request) {
+  const guard = await requireUser(req);
+  if (guard.response) return guard.response;
   try {
+    const limited = await limitOr429(`defend:${guard.user.id}`, LIMITS.defendCompletePerUser);
+    if (limited) return limited;
     const body = schema.parse(await req.json());
-    const result = await completeDefendSession(body);
-    return NextResponse.json(result);
+    return NextResponse.json(await completeDefendSession({ ...body, user: guard.user }));
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Grading failed" },
-      { status: 400 },
-    );
+    return handleError(e, "Grading failed");
   }
 }

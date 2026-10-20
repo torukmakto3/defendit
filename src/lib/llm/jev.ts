@@ -83,8 +83,7 @@ export async function jevDecide(opts: {
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Jev error ${res.status}: ${text.slice(0, 400)}`);
+    throw new Error(`Jev error ${res.status}`);
   }
 
   const data = (await res.json()) as {

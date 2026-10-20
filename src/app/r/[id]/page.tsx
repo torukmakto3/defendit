@@ -3,32 +3,10 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import type { SignedReceipt } from "@/lib/types";
 
 interface ReceiptView {
-  receipt: {
-    payload: {
-      id: string;
-      score: number;
-      difficulty: string;
-      createdAt: string;
-      creatorName: string;
-      creatorEmail: string;
-      deliverable: { fileName: string; sha256: string; byteLength: number };
-      bandSummary: { section: string; band: string }[];
-      integrity: { status: string; observations: string[] };
-      evidence: {
-        question: string;
-        excerpt: string;
-        band: string;
-        reason: string;
-      }[];
-      rubricVersion: string;
-      modelVersions: string[];
-    };
-    signature: string;
-    publicKey: string;
-    verifyUrl: string;
-  };
+  receipt: SignedReceipt;
   signatureValid: boolean;
 }
 
@@ -90,59 +68,44 @@ export default function ReceiptPage() {
 
       <div className="panel mt-8 space-y-4 rounded-xl p-6">
         <div>
-          <div className="label">Deliverable</div>
-          <div>{p.deliverable.fileName}</div>
+          <div className="label">Outcome</div>
+          <div className="text-xl">{p.outcome}</div>
+        </div>
+        <div>
+          <div className="label">Deliverable fingerprint</div>
           <div className="mt-1 break-all font-mono text-xs">
             sha256:{p.deliverable.sha256}
           </div>
+          <div className="text-xs opacity-70">{p.deliverable.byteLength.toLocaleString()} bytes</div>
         </div>
         <div>
           <div className="label">Defended by</div>
           <div>
-            {p.creatorName} · {p.creatorEmail}
+            {p.creator
+              ? `${p.creator.displayName} (name given by the creator, who signed in with a verified email)`
+              : "Not disclosed by the creator"}
           </div>
         </div>
         <div className="grid gap-6 sm:grid-cols-2">
           <div>
-            <div className="label">Understanding</div>
+            <div className="label">Claims probed</div>
             <ul className="mt-2 space-y-1 text-sm">
-              {p.bandSummary.map((b) => (
-                <li key={b.section} className="flex justify-between gap-3">
-                  <span>{b.section}</span>
-                  <strong>{b.band}</strong>
-                </li>
-              ))}
+              <li className="flex justify-between gap-3"><span>Strong</span><strong>{p.bands.strong}</strong></li>
+              <li className="flex justify-between gap-3"><span>Partial</span><strong>{p.bands.partial}</strong></li>
+              <li className="flex justify-between gap-3"><span>Weak</span><strong>{p.bands.weak}</strong></li>
             </ul>
           </div>
           <div>
-            <div className="label">Integrity (separate)</div>
+            <div className="label">Integrity (separate from score)</div>
             <p className="mt-2 text-sm">
               Status: <strong>{p.integrity.status}</strong>
             </p>
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
-              {p.integrity.observations.map((o) => (
-                <li key={o}>{o}</li>
-              ))}
-            </ul>
           </div>
         </div>
-      </div>
-
-      <div className="mt-8">
-        <h2 className="text-2xl text-[var(--moss)]">Evidence</h2>
-        <div className="mt-4 space-y-4">
-          {p.evidence.map((e, i) => (
-            <div key={i} className="panel rounded-lg p-4">
-              <p className="text-sm font-medium">Q{i + 1}. {e.question}</p>
-              <p className="mt-2 text-sm italic text-[color-mix(in_srgb,var(--ink)_75%,transparent)]">
-                “{e.excerpt}”
-              </p>
-              <p className="mt-2 text-xs">
-                {e.band} — {e.reason}
-              </p>
-            </div>
-          ))}
-        </div>
+        <p className="text-xs opacity-70">
+          This receipt holds no document content, answers, file name or email. The deliverable
+          stays with the people it was sent to; drop it on the verify page to check it matches.
+        </p>
       </div>
 
       <div className="panel mt-8 rounded-xl p-5">

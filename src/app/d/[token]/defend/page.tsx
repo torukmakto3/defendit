@@ -2,6 +2,7 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useMe } from "@/components/auth";
 
 interface Probe {
   id: string;
@@ -11,17 +12,6 @@ interface Probe {
   plantedContent?: string;
 }
 
-interface Turn {
-  id: string;
-  probeId: string;
-  question: string;
-  answer: string;
-  startedAt: string;
-  endedAt: string;
-  latencyMs: number;
-  followUpIndex: number;
-}
-
 export default function DefendPage() {
   const { token } = useParams<{ token: string }>();
   const router = useRouter();
@@ -29,8 +19,6 @@ export default function DefendPage() {
   const [probes, setProbes] = useState<Probe[]>([]);
   const [index, setIndex] = useState(0);
   const [answer, setAnswer] = useState("");
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const [questionStartedAt, setQuestionStartedAt] = useState<string | null>(null);
   const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +26,12 @@ export default function DefendPage() {
   const [focusBlurEvents, setFocusBlurEvents] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const tickRef = useRef<number | null>(null);
+  const startedRef = useRef(false);
+  const { me } = useMe();
+  const [showName, setShowName] = useState(false);
+  useEffect(() => {
+    if (me?.displayName) setShowName(true);
+  }, [me]);
 
   useEffect(() => {
     const onBlur = () => setFocusBlurEvents((n) => n + 1);
@@ -46,25 +40,22 @@ export default function DefendPage() {
   }, []);
 
   useEffect(() => {
-    const raw = sessionStorage.getItem(`defend-it:${token}:creator`);
-    const creator = raw
-      ? (JSON.parse(raw) as { creatorName: string; creatorEmail: string })
-      : { creatorName: "Ana Analyst", creatorEmail: "ana@fund.example" };
-
+    // One plan per visit, even when React re-runs effects in development.
+    if (startedRef.current) return;
+    startedRef.current = true;
     (async () => {
       setBusy(true);
       try {
         const start = await fetch("/api/sessions/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token, mode: "defend", ...creator }),
+          body: JSON.stringify({ token, mode: "defend" }),
         }).then((r) => r.json());
         if (start.error) throw new Error(start.error);
         setSessionId(start.sessionId);
         setProbes(start.probes || []);
         const now = new Date().toISOString();
         setSessionStartedAt(now);
-        setQuestionStartedAt(now);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to start");
       } finally {
@@ -91,45 +82,34 @@ export default function DefendPage() {
 
   async function submitTurn(e: React.FormEvent) {
     e.preventDefault();
-    if (!current || !questionStartedAt || !sessionId) return;
-    const endedAt = new Date().toISOString();
-    const latencyMs = Date.now() - new Date(questionStartedAt).getTime();
-    const turn: Turn = {
-      id: `turn_${index + 1}`,
-      probeId: current.id,
-      question: current.question,
-      answer,
-      startedAt: questionStartedAt,
-      endedAt,
-      latencyMs,
-      followUpIndex: 0,
-    };
-    const nextTurns = [...turns, turn];
-    setTurns(nextTurns);
-    setAnswer("");
-
-    if (index + 1 < probes.length) {
-      setIndex(index + 1);
-      setQuestionStartedAt(new Date().toISOString());
-      return;
-    }
-
+    if (!current || !sessionId || !answer.trim()) return;
     setBusy(true);
+    setError(null);
     try {
+      // The server records the answer and its timing; the browser only shows progress.
+      const saved = await fetch("/api/sessions/defend/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, probeId: current.id, answer }),
+      }).then((r) => r.json());
+      if (saved.error) throw new Error(saved.error);
+      setAnswer("");
+
+      if (!saved.done) {
+        setIndex(index + 1);
+        setBusy(false);
+        return;
+      }
+
       const result = await fetch("/api/sessions/defend/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId,
-          turns: nextTurns,
-          pasteEvents,
-          focusBlurEvents,
-        }),
+        body: JSON.stringify({ sessionId, pasteEvents, focusBlurEvents, showName }),
       }).then((r) => r.json());
       if (result.error) throw new Error(result.error);
       router.push(`/r/${result.receipt.payload.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Grading failed");
+      setError(err instanceof Error ? err.message : "Something went wrong");
       setBusy(false);
     }
   }
@@ -184,10 +164,22 @@ export default function DefendPage() {
             required
             disabled={busy}
           />
+          {index + 1 === probes.length && me?.displayName && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={showName}
+                onChange={(e) => setShowName(e.target.checked)}
+              />
+              Show my name ({me.displayName}) on the receipt
+            </label>
+          )}
           {error && <p className="text-sm text-red-700">{error}</p>}
           <button type="submit" className="btn btn-primary" disabled={busy}>
             {busy
-              ? "Grading council scoring…"
+              ? index + 1 < probes.length
+                ? "Saving…"
+                : "Grading council scoring…"
               : index + 1 < probes.length
                 ? "Submit & next"
                 : "Submit & finish"}

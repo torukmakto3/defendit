@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { saveDisplayName, SignInCard, useMe } from "@/components/auth";
 
 const ACCEPT =
   ".pdf,.docx,.txt,.md,.markdown,.xlsx,.xls,.csv,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/markdown,text/csv";
@@ -12,8 +13,11 @@ export default function HomePage() {
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [creatorName, setCreatorName] = useState("Ana Analyst");
-  const [creatorEmail, setCreatorEmail] = useState("ana@fund.example");
+  const { me } = useMe();
+  const [displayName, setDisplayName] = useState("");
+  useEffect(() => {
+    if (me?.displayName) setDisplayName(me.displayName);
+  }, [me]);
   const [difficulty, setDifficulty] = useState("hard");
   const [ready, setReady] = useState<{
     token: string;
@@ -32,8 +36,6 @@ export default function HomePage() {
       try {
         const body = new FormData();
         body.set("file", file);
-        body.set("creatorName", creatorName);
-        body.set("creatorEmail", creatorEmail);
         body.set("difficulty", difficulty);
         const res = await fetch("/api/creator/ingest", {
           method: "POST",
@@ -41,10 +43,6 @@ export default function HomePage() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Upload failed");
-        sessionStorage.setItem(
-          `defend-it:${data.token}:creator`,
-          JSON.stringify({ creatorName, creatorEmail }),
-        );
         setReady({
           token: data.token,
           title: data.title,
@@ -59,7 +57,7 @@ export default function HomePage() {
         setBusy(false);
       }
     },
-    [creatorName, creatorEmail, difficulty],
+    [difficulty],
   );
 
   function onDrop(e: React.DragEvent) {
@@ -93,28 +91,26 @@ export default function HomePage() {
             already work.
           </p>
 
-          <div className="animate-rise-delay-2 mt-8 grid gap-3 sm:grid-cols-3">
-            <div>
-              <label className="label" htmlFor="creatorName">
-                Your name
-              </label>
-              <input
-                id="creatorName"
-                className="field"
-                value={creatorName}
-                onChange={(e) => setCreatorName(e.target.value)}
-              />
+          {me === null && (
+            <div className="animate-rise-delay-2 mt-8">
+              <SignInCard title="Sign in to drop a deliverable" />
             </div>
+          )}
+
+          {me && (
+          <>
+          <div className="animate-rise-delay-2 mt-8 grid gap-3 sm:grid-cols-2">
             <div>
-              <label className="label" htmlFor="creatorEmail">
-                Your email
+              <label className="label" htmlFor="displayName">
+                Name on receipts (optional)
               </label>
               <input
-                id="creatorEmail"
-                type="email"
+                id="displayName"
                 className="field"
-                value={creatorEmail}
-                onChange={(e) => setCreatorEmail(e.target.value)}
+                placeholder="Shown only if you choose to"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                onBlur={() => void saveDisplayName(displayName)}
               />
             </div>
             <div>
@@ -175,6 +171,14 @@ export default function HomePage() {
               </>
             )}
           </div>
+
+          <p className="mt-3 text-xs text-[color-mix(in_srgb,var(--ink)_55%,transparent)]">
+            Your file is read in memory and never stored. We keep its SHA-256 fingerprint;
+            the extracted text is encrypted and deleted as soon as you finish defending
+            (or after 72 hours). Models run with zero data retention.
+          </p>
+          </>
+          )}
 
           {error && <p className="mt-4 text-sm text-red-700">{error}</p>}
 

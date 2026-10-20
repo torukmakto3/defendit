@@ -1,40 +1,37 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { handleError, jsonError, requireAdmin } from "@/lib/http";
 import { getAdminSessionDetail, saveHumanGrade } from "@/lib/services";
 
 export const runtime = "nodejs";
 
-export async function GET(
-  _req: Request,
-  ctx: { params: Promise<{ id: string }> },
-) {
-  const { id } = await ctx.params;
-  const detail = getAdminSessionDetail(id);
-  if (!detail) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
+export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const guard = await requireAdmin(req);
+  if (guard.response) return guard.response;
+  try {
+    const { id } = await ctx.params;
+    const detail = await getAdminSessionDetail(id);
+    if (!detail) return jsonError(404, "Not found");
+    return NextResponse.json(detail);
+  } catch (e) {
+    return handleError(e);
   }
-  return NextResponse.json(detail);
 }
 
 const gradeSchema = z.object({
   overallScore: z.number().min(0).max(100),
-  notes: z.string().optional(),
-  graderName: z.string().min(1),
+  notes: z.string().max(4000).optional(),
 });
 
-export async function POST(
-  req: Request,
-  ctx: { params: Promise<{ id: string }> },
-) {
-  const { id } = await ctx.params;
+export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const guard = await requireAdmin(req);
+  if (guard.response) return guard.response;
   try {
+    const { id } = await ctx.params;
     const body = gradeSchema.parse(await req.json());
-    const humanId = saveHumanGrade({ sessionId: id, ...body });
-    return NextResponse.json({ ok: true, humanId });
+    await saveHumanGrade({ sessionId: id, ...body, graderName: guard.user.email });
+    return NextResponse.json({ ok: true });
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Invalid" },
-      { status: 400 },
-    );
+    return handleError(e, "Invalid");
   }
 }

@@ -8,6 +8,7 @@ export function createMockProvider(modelId = "mock-defend-v1"): LlmProvider {
   return {
     id: modelId,
     provider: "mock",
+    retention: "mock",
     async complete(req: LlmRequest): Promise<LlmResponse> {
       const user = req.messages.filter((m) => m.role === "user").pop()?.content ?? "";
       const purpose = req.purpose ?? "generic";
@@ -182,9 +183,9 @@ function mockGrade(user: string, modelId: string): unknown {
 
       let accuracy = clamp(1.5 + words / 40 + (hasNumber ? 0.5 : 0) + bias);
       let reasoning = clamp(1.2 + (hasBecause ? 1.2 : 0.3) + words / 50 + bias);
-      let transfer = clamp(1 + (/if |would |counter/i.test(answer) ? 1.5 : 0.4) + bias);
-      let errorDetection = clamp(caughtError ? 3.5 : 1.5 + bias);
-      let ownership = clamp(unsure ? 2.5 : 1.5 + (hasBecause ? 1 : 0) + bias);
+      const transfer = clamp(1 + (/if |would |counter/i.test(answer) ? 1.5 : 0.4) + bias);
+      const errorDetection = clamp(caughtError ? 3.5 : 1.5 + bias);
+      const ownership = clamp(unsure ? 2.5 : 1.5 + (hasBecause ? 1 : 0) + bias);
 
       if (unsure) {
         accuracy = Math.min(accuracy, 2);

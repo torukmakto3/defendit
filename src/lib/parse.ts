@@ -1,18 +1,19 @@
-import { readFile } from "fs/promises";
-import mammoth from "mammoth";
-import { PDFParse } from "pdf-parse";
-import * as XLSX from "xlsx";
+// Parsers load on demand: a parser that fails to initialise in one runtime
+// must not take down routes that never parse files.
 
-export async function extractTextFromFile(
-  filePath: string,
+/** Parse in memory: uploads are never written to disk. */
+export async function extractText(
+  buffer: Buffer,
   mimeType: string,
   fileName: string,
 ): Promise<string> {
   const lower = fileName.toLowerCase();
-  const buffer = await readFile(filePath);
 
   if (mimeType === "application/pdf" || lower.endsWith(".pdf")) {
-    const parser = new PDFParse({ data: buffer });
+    // pdf-parse/worker sets up the canvas polyfill pdfjs needs in serverless Node.
+    const { CanvasFactory } = await import("pdf-parse/worker");
+    const { PDFParse } = await import("pdf-parse");
+    const parser = new PDFParse({ data: buffer, CanvasFactory });
     try {
       const result = await parser.getText();
       return (result.text || "").trim();
@@ -26,6 +27,7 @@ export async function extractTextFromFile(
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
     lower.endsWith(".docx")
   ) {
+    const mammoth = (await import("mammoth")).default;
     const result = await mammoth.extractRawText({ buffer });
     return (result.value || "").trim();
   }
@@ -38,7 +40,7 @@ export async function extractTextFromFile(
     lower.endsWith(".xls") ||
     lower.endsWith(".csv")
   ) {
-    return extractSpreadsheetText(buffer);
+    return extractSpreadsheetText(buffer, await import("xlsx"));
   }
 
   if (
@@ -53,7 +55,7 @@ export async function extractTextFromFile(
   return buffer.toString("utf8").trim();
 }
 
-function extractSpreadsheetText(buffer: Buffer): string {
+function extractSpreadsheetText(buffer: Buffer, XLSX: typeof import("xlsx")): string {
   const workbook = XLSX.read(buffer, { type: "buffer", cellFormula: true });
   const parts: string[] = [];
 
@@ -70,7 +72,8 @@ function extractSpreadsheetText(buffer: Buffer): string {
 
     const rows = XLSX.utils.sheet_to_json<(string | number | boolean | null)[]>(
       sheet,
-      { header: 1, defval: "" },
+      // Formatted text ("1.2%", "$12M"), not raw numbers, so questions match what the creator sees.
+      { header: 1, defval: "", raw: false },
     ) as unknown[][];
 
     for (const row of rows.slice(0, 200)) {

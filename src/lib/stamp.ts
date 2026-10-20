@@ -1,40 +1,37 @@
-import { mkdirSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
 import QRCode from "qrcode";
-import type { Difficulty } from "./types";
+import { escapeHtml } from "./escape";
+import type { ReceiptPayload } from "./types";
 
+
+/** Rendered on demand from the signed payload; nothing is written to disk. */
 export async function generateStampSvg(opts: {
-  receiptId: string;
-  score: number;
-  difficulty: Difficulty;
+  payload: Pick<ReceiptPayload, "score" | "difficulty" | "outcome">;
   verifyUrl: string;
-}): Promise<{ svg: string; path: string }> {
+}): Promise<string> {
   const qrDataUrl = await QRCode.toDataURL(opts.verifyUrl, {
     margin: 1,
     width: 120,
     color: { dark: "#0f1c14", light: "#00000000" },
   });
+  const p = opts.payload;
+  const diffLabel = p.difficulty.charAt(0).toUpperCase() + p.difficulty.slice(1);
+  const mark = p.outcome === "Defended" ? "✓" : "";
+  const verifyText = opts.verifyUrl.replace(/^https?:\/\//, "");
 
-  const diffLabel =
-    opts.difficulty.charAt(0).toUpperCase() + opts.difficulty.slice(1);
-
-  const svg = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="420" height="120" viewBox="0 0 420 120">
+  // Text column ends at x=330; the QR sits to its right so long outcomes never overlap it.
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="460" height="132" viewBox="0 0 460 132">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#e8f2ea"/>
       <stop offset="100%" stop-color="#d5e6d9"/>
     </linearGradient>
   </defs>
-  <rect width="420" height="120" rx="10" fill="url(#bg)" stroke="#1f4d2e" stroke-width="2"/>
-  <text x="20" y="36" font-family="Georgia, serif" font-size="18" fill="#1f4d2e" font-weight="700">Defend It</text>
-  <text x="20" y="68" font-family="Georgia, serif" font-size="22" fill="#0f1c14">Defended ✓ ${opts.score}/100 · ${diffLabel}</text>
-  <text x="20" y="96" font-family="ui-monospace, monospace" font-size="11" fill="#3d5c45">${opts.verifyUrl.replace(/^https?:\/\//, "")}</text>
-  <image x="290" y="12" width="96" height="96" href="${qrDataUrl}"/>
+  <rect width="460" height="132" rx="10" fill="url(#bg)" stroke="#1f4d2e" stroke-width="2"/>
+  <text x="20" y="32" font-family="Georgia, serif" font-size="16" fill="#1f4d2e" font-weight="700">Defend It</text>
+  <text x="20" y="60" font-family="Georgia, serif" font-size="20" fill="#0f1c14">${escapeHtml(p.outcome)} ${mark}</text>
+  <text x="20" y="86" font-family="Georgia, serif" font-size="16" fill="#0f1c14">${p.score}/100 · ${escapeHtml(diffLabel)}</text>
+  <text x="20" y="112" font-family="ui-monospace, monospace" font-size="9" fill="#3d5c45" textLength="${verifyText.length > 52 ? 310 : verifyText.length * 5.6}" lengthAdjust="spacingAndGlyphs">${escapeHtml(verifyText)}</text>
+  <image x="344" y="14" width="104" height="104" href="${qrDataUrl}"/>
 </svg>`;
-
-  const path = join(process.cwd(), "data", "stamps", `${opts.receiptId}.svg`);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, svg, "utf8");
-  return { svg, path };
 }
