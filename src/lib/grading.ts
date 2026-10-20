@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { completeJson, getGradingCouncil } from "./llm";
+import { completeJson, getGradingCouncil, GRADING_TEMPERATURE, gradingSeed } from "./llm";
 import { detectNonAnswer } from "./non-answer";
 import { RUBRIC_VERSION, rubricPrompt } from "./rubric";
 import {
@@ -177,11 +177,14 @@ async function gradeOne(
   opts: { difficulty: Difficulty; claims: Claim[]; plan: InterviewPlan; turns: TurnRecord[] },
   transcript: string,
 ): Promise<ModelGrade> {
+  const temperature = GRADING_TEMPERATURE;
+  const seed = gradingSeed();
   let last = "Grader skipped a question";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { data, raw } = await completeJson(model, {
+    const { data } = await completeJson(model, {
       purpose: "grade",
-      temperature: 0,
+      temperature,
+      seed,
       messages: [
         { role: "system", content: rubricPrompt(opts.difficulty) },
         {
@@ -195,15 +198,17 @@ async function gradeOne(
     const covered = new Set(claimGrades.map((grade) => grade.probeId));
     if (answered.every((probe) => covered.has(probe.id))) {
       const grade: ModelGrade = {
-        modelId: raw.modelId,
-        provider: raw.provider,
+        modelId: model.id,
+        provider: model.provider,
+        temperature,
+        seed,
         claimGrades,
         overallScore: 0,
       };
       grade.overallScore = graderScore(grade, opts.plan);
       return grade;
     }
-    last = `Grader ${raw.modelId} skipped a question`;
+    last = `Grader ${model.id} skipped a question`;
   }
   throw new Error(last);
 }

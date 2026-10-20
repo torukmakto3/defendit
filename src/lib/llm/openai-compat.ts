@@ -43,6 +43,7 @@ export function createOpenAICompatProvider(opts: {
         body: JSON.stringify({
           model: opts.model,
           temperature: req.temperature ?? 0.3,
+          seed: req.seed,
           response_format: req.json ? { type: "json_object" } : undefined,
           messages: req.messages,
           ...opts.extraBody,
@@ -105,6 +106,18 @@ function isLocalUrl(url: string): boolean {
     return false;
   }
 }
+
+/**
+ * Pinned Liquid models for a grading council. These are served model names
+ * from the exchange catalog (Oct 2026), not routers: each accepts JSON mode
+ * and a seed, and each is a different family so a median and a disagreement
+ * can exist. `liquid.auto` and any `*.auto` name pick a model per request.
+ */
+export const DEFAULT_LIQUID_COUNCIL_MODELS = [
+  "gpt-oss-120b",
+  "deepseek-v3.2",
+  "llama-3.3-70b-instruct",
+] as const;
 
 /**
  * Liquid Inference exchange. Every call is restricted to providers that agree

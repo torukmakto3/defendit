@@ -114,6 +114,8 @@ describe("analytic score", () => {
       calls.push(modelId);
       const user = req.messages.map((message) => message.content).join("\n");
       expect(user).not.toMatch(/latency|latencyMs|startedAt|endedAt|Latency ms/);
+      expect(req.temperature).toBe(0);
+      expect(req.seed).toBe(0);
       const found = [...user.matchAll(/Probe id:\s*(\S+)[\s\S]*?Claim id:\s*(\S+)/g)].map((match) => ({
         probeId: match[1],
         claimId: match[2],
@@ -136,6 +138,7 @@ describe("analytic score", () => {
     });
     const grades = await gradeSession({ difficulty: "standard", claims, plan: local, turns });
     expect(grades).toHaveLength(2);
+    expect(grades.every((grade) => grade.temperature === 0 && grade.seed === 0)).toBe(true);
     expect(grades.every((grade) => grade.claimGrades.length === local.probes.length)).toBe(true);
     expect(calls.filter((id) => id.includes("lenient"))).toHaveLength(2);
     const honest = scoreDefense(grades, local).score;

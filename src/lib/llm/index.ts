@@ -6,11 +6,15 @@ import {
   createLiquidProvider,
   createOllamaProvider,
   createOpenRouterProvider,
+  DEFAULT_LIQUID_COUNCIL_MODELS,
 } from "./openai-compat";
 import { createOpenAIProvider } from "./openai";
+import { HttpError } from "../errors";
 import { isDeployed } from "../secrets";
 import type { ZodType } from "zod";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./types";
+
+export { DEFAULT_LIQUID_COUNCIL_MODELS };
 
 export type {
   LlmMessage,
@@ -116,9 +120,67 @@ export function getPrimaryLlm(): LlmProvider {
   return guardRetention(selectPrimary());
 }
 
+/** Temperature sent on every grading call. Stored with the grade. */
+export const GRADING_TEMPERATURE = 0;
+
+/** Seed sent on every grading call. `GRADING_SEED` overrides the default of 0. */
+export function gradingSeed(): number {
+  const raw = process.env.GRADING_SEED;
+  if (raw === undefined || raw.trim() === "") return 0;
+  if (!/^-?\d+$/.test(raw.trim())) {
+    throw new Error("GRADING_SEED must be an integer.");
+  }
+  return Number(raw.trim());
+}
+
+/** A router such as `liquid.auto` or `liquid.auto:balanced`. A pinned model does not match. */
+export function isAutoRoutedModel(modelId: string): boolean {
+  return /(?:^|\.)auto(?:$|:)/i.test(modelId.trim());
+}
+
+function splitModelList(raw: string | undefined): string[] {
+  return (raw || "")
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Liquid members of the council. `LIQUID_COUNCIL_MODELS` is the list.
+ * A deployment with that var unset adds none, so it cannot inherit `liquid.auto`.
+ * Locally, an unset list follows `LIQUID_MODEL` (default `liquid.auto`).
+ */
+export function liquidCouncilModelIds(): string[] {
+  const explicit = splitModelList(process.env.LIQUID_COUNCIL_MODELS);
+  if (explicit.length > 0) return explicit;
+  if (isDeployed()) return [];
+  return splitModelList(process.env.LIQUID_MODEL || "liquid.auto");
+}
+
+export function gradingCouncilProblem(members: { id: string }[]): string | null {
+  const example = DEFAULT_LIQUID_COUNCIL_MODELS.join(",");
+  const autos = members.map((member) => member.id).filter(isAutoRoutedModel);
+  if (autos.length > 0) {
+    const listed = autos.join(", ");
+    const verb = autos.length === 1 ? "is a router" : "are routers";
+    return (
+      `Grading is refused: ${listed} ${verb} (*.auto), so the same transcript can be scored by a different model each time. ` +
+      `Set LIQUID_COUNCIL_MODELS to at least two pinned models, for example ${example}.`
+    );
+  }
+  if (members.length < 2) {
+    return (
+      `Grading is refused: the council has ${members.length} pinned model${members.length === 1 ? "" : "s"} and needs at least 2. ` +
+      `Set LIQUID_COUNCIL_MODELS to a comma-separated list, for example ${example}.`
+    );
+  }
+  return null;
+}
+
 /**
  * Grading council: several models when configured. A live council is never
  * padded with mock models, because their scores would land in real receipts.
+ * A deployment refuses a router (`*.auto`) or a council of fewer than 2.
  */
 export function getGradingCouncil(): LlmProvider[] {
   if (isMockLlm()) {
@@ -143,11 +205,7 @@ export function getGradingCouncil(): LlmProvider[] {
   };
 
   if (env.LIQUID_API_KEY) {
-    const models = (env.LIQUID_COUNCIL_MODELS || env.LIQUID_MODEL || "liquid.auto")
-      .split(",")
-      .map((m) => m.trim())
-      .filter(Boolean);
-    for (const m of models) add(createLiquidProvider(env.LIQUID_API_KEY, m));
+    for (const model of liquidCouncilModelIds()) add(createLiquidProvider(env.LIQUID_API_KEY, model));
   }
   if (env.OPENROUTER_API_KEY) {
     add(createOpenRouterProvider(env.OPENROUTER_API_KEY));
@@ -167,7 +225,23 @@ export function getGradingCouncil(): LlmProvider[] {
   if (env.ANTHROPIC_API_KEY) add(createAnthropicProvider(env.ANTHROPIC_API_KEY));
 
   if (council.length === 0) council.push(getPrimaryLlm());
-  return council.slice(0, 3);
+  const grading = council.slice(0, 3);
+  if (isDeployed()) {
+    const problem = gradingCouncilProblem(grading);
+    if (problem) throw new HttpError(503, problem);
+  }
+  return grading;
+}
+
+/** Council label for the public key endpoint. A bad deployment reports the refusal and still serves the key. */
+export function describeGradingCouncil(): string {
+  try {
+    return getGradingCouncil()
+      .map((member) => `${member.provider}:${member.id}`)
+      .join(", ");
+  } catch (e) {
+    return e instanceof Error ? e.message : "Grading council is not configured.";
+  }
 }
 
 interface JsonSchema<T> {

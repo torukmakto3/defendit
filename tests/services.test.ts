@@ -66,6 +66,28 @@ async function answerAll(session: { sessionId: string; plan: { probes: { id: str
   }
 }
 
+describe("stored grader provenance", () => {
+  it("records model id, temperature, and seed on each grade", async () => {
+    const { user } = await signIn("provenance@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "m.md", buffer: memo, difficulty: "standard" });
+    const s = await startSession({ token: ingest.token, user, mode: "defend" });
+    await answerAll(s, user);
+    await completeDefendSession({ sessionId: s.sessionId, user });
+    const db = await getDb();
+    const rows = await db.all<{ model_id: string; provider: string; temperature: number; seed: number }>(
+      `SELECT model_id, provider, temperature, seed FROM grades WHERE session_id = ?`,
+      [s.sessionId],
+    );
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    for (const row of rows) {
+      expect(row.model_id).toMatch(/^mock-council-/);
+      expect(row.provider).toBe("mock");
+      expect(row.temperature).toBe(0);
+      expect(row.seed).toBe(0);
+    }
+  });
+});
+
 describe("magic-link auth", () => {
   it("creates a session from a one-time link", async () => {
     const { user, cookie } = await signIn("Ana@Fund.Example");

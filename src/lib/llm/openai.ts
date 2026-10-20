@@ -19,6 +19,7 @@ export function createOpenAIProvider(
         body: JSON.stringify({
           model,
           temperature: req.temperature ?? 0.3,
+          seed: req.seed,
           response_format: req.json ? { type: "json_object" } : undefined,
           messages: req.messages,
         }),

@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS grades (
   provider TEXT NOT NULL,
   scores_enc TEXT,
   overall_score DOUBLE PRECISION NOT NULL,
+  temperature REAL,
+  seed INTEGER,
   created_at TEXT NOT NULL
 );
 
@@ -158,6 +160,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_receipts_request ON receipts(request_id);
 const ADDED_COLUMNS: [string, string, string][] = [
   ["sessions", "channel", "TEXT NOT NULL DEFAULT 'text'"],
   ["sessions", "grading_claimed_at", "TEXT"],
+  ["grades", "temperature", "REAL"],
+  ["grades", "seed", "INTEGER"],
 ];
 
 let dbPromise: Promise<Db> | null = null;

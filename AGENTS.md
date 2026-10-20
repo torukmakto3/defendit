@@ -79,6 +79,7 @@ data/  uploads/          local runtime (contents gitignored)
 
 - Put domain logic in `src/lib`. Keep pages and route handlers thin, and validate request bodies with Zod.
 - Send every model call through `src/lib/llm`. Send interview modality through `src/lib/voice`.
+- Grade with `LIQUID_COUNCIL_MODELS`, a comma-separated list of pinned model ids. A deployment refuses to grade when any member is a router (`*.auto`, including `liquid.auto`) or the council has fewer than 2 members. The check runs when the server starts and again on the grade. Mock mode (`MOCK_LLM=1`, or local with no provider keys) still uses the offline council. Suggested pins, from `DEFAULT_LIQUID_COUNCIL_MODELS` in `src/lib/llm/openai-compat.ts`: `gpt-oss-120b,deepseek-v3.2,llama-3.3-70b-instruct`. Each stored grade records that model id, temperature `0`, and `GRADING_SEED` (default `0`).
 - Sample which claims to probe, and where to plant errors, with the seeded PRNG in `src/lib/probes.ts` and `src/lib/rng.ts`.
 - Report integrity signals (timing, paste, focus) in their own block. Leave them out of the understanding score.
 - Keep Learn transcripts on the learn session. Only Defend produces a receipt.
