@@ -178,9 +178,23 @@ interface JsonSchema<T> {
     | { success: false; error: { issues: { path: PropertyKey[]; code: string }[] } };
 }
 
+/** `/api/sessions/defend/complete` is killed at this. Grading has to finish sooner. */
+export const DEFEND_ROUTE_BUDGET_MS = 120_000;
+
 function timeoutMs(): number {
   const n = Number(process.env.LLM_TIMEOUT_MS || "45000");
   return Number.isFinite(n) && n > 0 ? n : 45000;
+}
+
+/**
+ * Budget for one model call. The first call and the repair each take at most
+ * half the route limit, and the repair also gives back whatever the first
+ * call already used, so the worst case stays under 120s.
+ */
+export function graderCallBudgetMs(elapsedMs: number): number {
+  const remain = DEFEND_ROUTE_BUDGET_MS - elapsedMs;
+  const half = Math.floor((DEFEND_ROUTE_BUDGET_MS - 1) / 2);
+  return Math.max(0, Math.min(timeoutMs(), half, remain - 1));
 }
 
 /**
@@ -192,11 +206,15 @@ export async function completeJson<T>(
   req: Omit<LlmRequest, "json">,
   schema?: ZodType<T> | JsonSchema<T>,
 ): Promise<{ data: T; raw: LlmResponse }> {
-  const ms = timeoutMs();
-  const first = await runOnce(provider, req, ms);
+  const started = Date.now();
+  const firstLimit = graderCallBudgetMs(0);
+  if (firstLimit <= 0) throw new Error(`LLM timed out after ${DEFEND_ROUTE_BUDGET_MS}ms`);
+  const first = await runOnce(provider, req, firstLimit);
   const parsed = interpret(first.content, schema);
   if (parsed.ok) return { data: parsed.data, raw: first };
 
+  const repairLimit = graderCallBudgetMs(Date.now() - started);
+  if (repairLimit <= 0) throw new Error(`LLM timed out after ${DEFEND_ROUTE_BUDGET_MS}ms`);
   const repaired = await runOnce(
     provider,
     {
@@ -211,7 +229,7 @@ export async function completeJson<T>(
         },
       ],
     },
-    ms,
+    repairLimit,
   );
   const again = interpret(repaired.content, schema);
   if (again.ok) return { data: again.data, raw: repaired };

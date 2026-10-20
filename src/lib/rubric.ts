@@ -14,7 +14,7 @@ export function rubricPrompt(difficulty: Difficulty): string {
 Rubric version: ${RUBRIC_VERSION}
 Difficulty: ${difficulty}
 
-Level 0 means no substantive engagement with the claim. If the answer is blank, "I don't know", a hedge with no content ("I guess it's fine", "sounds good"), off-topic, or only restates the question, set accuracy, reasoning, transfer, errorDetection and ownership all to 0. Repeating the question back is not engagement. An answer that engages the claim but is wrong can still be accuracy 0 with other dimensions above 0.
+Level 0 means no substantive engagement with the claim. If the answer is blank, a refusal ("I don't know"), or only restates the question, set accuracy, reasoning, transfer, errorDetection and ownership all to 0. An answer that engages the claim is not level 0 just because it uses different words, or another language. An answer that engages but is wrong can still be accuracy 0 with other dimensions above 0.
 
 For every probe return integer levels 0, 1, 2, 3 or 4:
 - accuracy: does the answer match the claim and its figures?

@@ -49,34 +49,7 @@ export async function gradeSession(opts: {
   const council = getGradingCouncil();
   const transcript = buildTranscript(opts.claims, opts.plan, opts.turns);
 
-  const settled = await Promise.allSettled(
-    council.map(async (model): Promise<ModelGrade> => {
-      const { data, raw } = await completeJson(model, {
-        purpose: "grade",
-        temperature: 0,
-        messages: [
-          { role: "system", content: rubricPrompt(opts.difficulty) },
-          {
-            role: "user",
-            content: `Grade each answer against its claim. Quote the answer in evidence.\n\n<transcript>\n${transcript}\n</transcript>`,
-          },
-        ],
-      }, gradeResponseSchema);
-      const claimGrades = alignGrades(data.claimGrades, opts.plan, opts.turns, opts.claims);
-      const covered = claimGrades.length;
-      if (covered < Math.ceil(opts.plan.probes.length / 2)) {
-        throw new Error("Grader omitted too many answers");
-      }
-      const grade: ModelGrade = {
-        modelId: raw.modelId,
-        provider: raw.provider,
-        claimGrades,
-        overallScore: 0,
-      };
-      grade.overallScore = graderScore(grade, opts.plan);
-      return grade;
-    }),
-  );
+  const settled = await Promise.allSettled(council.map((model) => gradeOne(model, opts, transcript)));
   const grades = settled
     .filter((r): r is PromiseFulfilledResult<ModelGrade> => r.status === "fulfilled")
     .map((r) => r.value);
@@ -114,7 +87,6 @@ function buildTranscript(claims: Claim[], plan: InterviewPlan, turns: TurnRecord
         `Figures: ${(claim?.figures ?? []).join(", ") || "none"}`,
         `Question: ${neutralizeTags(turn.question)}`,
         `Answer: ${neutralizeTags(turn.answer)}`,
-        `Latency ms: ${turn.latencyMs}`,
       ].join("\n");
     })
     .join("\n\n");
@@ -197,6 +169,43 @@ function alignGrades(
     });
   }
   return aligned;
+}
+
+/** One council member. A skipped question is asked again once, then the grader is dropped. */
+async function gradeOne(
+  model: ReturnType<typeof getGradingCouncil>[number],
+  opts: { difficulty: Difficulty; claims: Claim[]; plan: InterviewPlan; turns: TurnRecord[] },
+  transcript: string,
+): Promise<ModelGrade> {
+  let last = "Grader skipped a question";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { data, raw } = await completeJson(model, {
+      purpose: "grade",
+      temperature: 0,
+      messages: [
+        { role: "system", content: rubricPrompt(opts.difficulty) },
+        {
+          role: "user",
+          content: `Grade each answer against its claim. Quote the answer in evidence.\n\n<transcript>\n${transcript}\n</transcript>`,
+        },
+      ],
+    }, gradeResponseSchema);
+    const claimGrades = alignGrades(data.claimGrades, opts.plan, opts.turns, opts.claims);
+    const answered = opts.plan.probes.filter((probe) => opts.turns.some((turn) => turn.probeId === probe.id));
+    const covered = new Set(claimGrades.map((grade) => grade.probeId));
+    if (answered.every((probe) => covered.has(probe.id))) {
+      const grade: ModelGrade = {
+        modelId: raw.modelId,
+        provider: raw.provider,
+        claimGrades,
+        overallScore: 0,
+      };
+      grade.overallScore = graderScore(grade, opts.plan);
+      return grade;
+    }
+    last = `Grader ${raw.modelId} skipped a question`;
+  }
+  throw new Error(last);
 }
 
 function matchGrade(

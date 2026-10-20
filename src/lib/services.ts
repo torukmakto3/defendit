@@ -129,7 +129,11 @@ interface SessionRow {
   completed_at: string | null;
   purge_after: string;
   channel: Channel;
+  grading_claimed_at?: string | null;
 }
+
+/** A grading claim older than the complete route's 120s limit is abandoned. */
+export const GRADING_CLAIM_TTL_MS = 120_000;
 
 /** How a Defend session takes answers. Hard and Expert require voice unless an accommodation is requested. */
 export type Channel = "text" | "voice" | "text_accommodation";
@@ -684,14 +688,21 @@ export async function completeDefendSession(opts: {
       return {
         receipt: existing,
         score: existing.payload.score,
-        flagged: false,
+        flagged: await sessionFlagged(db, session, plan),
         stampPath: `/api/stamp/${existing.payload.id}`,
         idempotent: true,
       };
     }
   }
   if (session.status === "grading") {
-    throw new HttpError(409, "Grading is still running. Retry in a moment.");
+    if (!gradingClaimIsStale(session.grading_claimed_at)) {
+      throw new HttpError(409, "Grading is still running. Retry in a moment.");
+    }
+    const released = await db.run(
+      `UPDATE sessions SET status = 'in_progress', grading_claimed_at = NULL WHERE id = ? AND status = 'grading'`,
+      [session.id],
+    );
+    if (released.changes !== 1) throw new HttpError(409, "Grading is still running. Retry in a moment.");
   }
   if (request.status === "defended") {
     throw new HttpError(409, "This deliverable has already been defended.");
@@ -706,8 +717,8 @@ export async function completeDefendSession(opts: {
 
   // Claim the session before paying for grading, so a double submit can't grade twice.
   const claimed = await db.run(
-    `UPDATE sessions SET status = 'grading' WHERE id = ? AND status = 'in_progress'`,
-    [session.id],
+    `UPDATE sessions SET status = 'grading', grading_claimed_at = ? WHERE id = ? AND status = 'in_progress'`,
+    [new Date().toISOString(), session.id],
   );
   if (claimed.changes !== 1) throw new HttpError(409, "This defense is already complete.");
 
@@ -724,7 +735,7 @@ export async function completeDefendSession(opts: {
       const extra = makeFollowUpProbe(claim, source);
       const nextPlan: InterviewPlan = { ...plan, probes: [...plan.probes, extra] };
       const released = await db.run(
-        `UPDATE sessions SET plan_enc = ?, status = 'in_progress' WHERE id = ? AND status = 'grading'`,
+        `UPDATE sessions SET plan_enc = ?, status = 'in_progress', grading_claimed_at = NULL WHERE id = ? AND status = 'grading'`,
         [encryptJson(nextPlan, ctx.plan(session.id)), session.id],
       );
       if (released.changes !== 1) throw new HttpError(409, "This defense is already complete.");
@@ -789,7 +800,10 @@ export async function completeDefendSession(opts: {
     });
   } catch (e) {
     // Release the claim so the creator can retry after a grading or storage failure.
-    await db.run(`UPDATE sessions SET status = 'in_progress' WHERE id = ? AND status = 'grading'`, [session.id]);
+    await db.run(
+      `UPDATE sessions SET status = 'in_progress', grading_claimed_at = NULL WHERE id = ? AND status = 'grading'`,
+      [session.id],
+    );
     throw e;
   }
 
@@ -799,6 +813,28 @@ export async function completeDefendSession(opts: {
     flagged: shouldFlagForHuman(grades, plan) || integrity.status !== "Clear",
     stampPath: `/api/stamp/${signed.payload.id}`,
   };
+}
+
+function gradingClaimIsStale(claimedAt: string | null | undefined): boolean {
+  if (!claimedAt) return true;
+  const taken = Date.parse(claimedAt);
+  if (Number.isNaN(taken)) return true;
+  return Date.now() - taken >= GRADING_CLAIM_TTL_MS;
+}
+
+/** The flag from the stored grades and integrity, so a retry reports the same one. */
+async function sessionFlagged(db: Db, session: SessionRow, plan: InterviewPlan): Promise<boolean> {
+  const rows = await db.all<{ id: string; scores_enc: string | null }>(
+    `SELECT id, scores_enc FROM grades WHERE session_id = ?`,
+    [session.id],
+  );
+  const grades = rows
+    .map((row) => decryptJson<ModelGrade>(row.scores_enc, ctx.scores(row.id)))
+    .filter((grade): grade is ModelGrade => !!grade);
+  const integrity = session.integrity_json
+    ? (JSON.parse(session.integrity_json) as { status?: string })
+    : null;
+  return shouldFlagForHuman(grades, plan) || (!!integrity?.status && integrity.status !== "Clear");
 }
 
 async function receiptForSession(db: Db, sessionId: string): Promise<SignedReceipt | null> {

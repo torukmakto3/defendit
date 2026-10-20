@@ -12,8 +12,16 @@ import { join } from "path";
 import { extractClaims } from "../src/lib/claims";
 import { gradeSession } from "../src/lib/grading";
 import { buildInterviewPlan } from "../src/lib/probes";
-import { estimateDefenseCost, scoreDefense, simulateScoreVariance } from "../src/lib/score";
-import type { InterviewPlan, ModelGrade, TurnRecord } from "../src/lib/types";
+import {
+  councilDimensionSpread,
+  estimateDefenseCost,
+  scoreDefense,
+  simulateScoreVariance,
+  transcriptLevels,
+  type DimensionStat,
+} from "../src/lib/score";
+import type { DimensionScores, InterviewPlan, ModelGrade, TurnRecord } from "../src/lib/types";
+import { DIMENSIONS } from "../src/lib/rubric";
 
 const RUNS = Number(process.env.CALIBRATE_RUNS || "8");
 const DIR = join(process.cwd(), "fixtures", "calibration");
@@ -34,7 +42,12 @@ async function gradeOnce(
   text: string,
   kind: "good" | "bad" | "idk",
   seed: string,
-): Promise<{ receipt: number; graderScores: number[] }> {
+): Promise<{
+  receipt: number;
+  graderScores: number[];
+  levels: DimensionScores;
+  council: Record<(typeof DIMENSIONS)[number], DimensionStat>;
+}> {
   const claims = await extractClaims(text);
   const plan: InterviewPlan = buildInterviewPlan({ claims, difficulty: "standard", seed });
   const turns: TurnRecord[] = plan.probes.map((probe, i) => {
@@ -52,7 +65,32 @@ async function gradeOnce(
     };
   });
   const grades: ModelGrade[] = await gradeSession({ difficulty: "standard", claims, plan, turns });
-  return { receipt: scoreDefense(grades, plan).score, graderScores: grades.map((g) => g.overallScore) };
+  return {
+    receipt: scoreDefense(grades, plan).score,
+    graderScores: grades.map((g) => g.overallScore),
+    levels: transcriptLevels(grades, plan),
+    council: councilDimensionSpread(grades, plan),
+  };
+}
+
+function formatDims(stats: Record<string, { min: number; max: number; stdev: number }>): string {
+  return DIMENSIONS.map((key) => {
+    const stat = stats[key];
+    return `${key} min ${stat.min.toFixed(2)} max ${stat.max.toFixed(2)} stdev ${stat.stdev.toFixed(2)}`;
+  }).join("; ");
+}
+
+function spreadAcross(rows: DimensionScores[]): Record<string, { min: number; max: number; stdev: number }> {
+  const out: Record<string, { min: number; max: number; stdev: number }> = {};
+  for (const key of DIMENSIONS) {
+    const values = rows.map((row) => row[key]);
+    out[key] = {
+      min: Math.min(...values),
+      max: Math.max(...values),
+      stdev: stdev(values),
+    };
+  }
+  return out;
 }
 
 function money(n: number): string {
@@ -72,7 +110,8 @@ async function main() {
     const good: number[] = [];
     const bad: number[] = [];
     const idk: number[] = [];
-    let spread = 0;
+    const goodLevels: DimensionScores[] = [];
+    let council = "";
     for (let i = 0; i < RUNS; i++) {
       const g = await gradeOnce(text, "good", `${file}-good`);
       const b = await gradeOnce(text, "bad", `${file}-bad`);
@@ -80,14 +119,17 @@ async function main() {
       good.push(g.receipt);
       bad.push(b.receipt);
       idk.push(u.receipt);
-      spread = Math.max(spread, Math.max(...g.graderScores) - Math.min(...g.graderScores));
+      goodLevels.push(g.levels);
+      council = formatDims(g.council);
     }
     goodScores.push(...good);
     badScores.push(...bad);
     idkScores.push(...idk);
     console.log(
-      `  ${file}: good mean ${avg(good).toFixed(1)} stdev ${stdev(good).toFixed(2)} (range ${Math.min(...good)}-${Math.max(...good)}), bad "I guess it's fine." mean ${avg(bad).toFixed(2)} stdev ${stdev(bad).toFixed(2)}, "I don't know." mean ${avg(idk).toFixed(2)} stdev ${stdev(idk).toFixed(2)}, council spread on one good run up to ${spread.toFixed(1)}`,
+      `  ${file}: overall good mean ${avg(good).toFixed(1)} stdev ${stdev(good).toFixed(2)} (range ${Math.min(...good)}-${Math.max(...good)}), bad "I guess it's fine." mean ${avg(bad).toFixed(2)} stdev ${stdev(bad).toFixed(2)}, "I don't know." mean ${avg(idk).toFixed(2)} stdev ${stdev(idk).toFixed(2)}`,
     );
+    console.log(`    dimensions across ${RUNS} good runs: ${formatDims(spreadAcross(goodLevels))}`);
+    console.log(`    council spread on one good run: ${council}`);
   }
 
   console.log(

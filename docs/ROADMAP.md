@@ -5,8 +5,8 @@ Working list for the beta. The receipt has to be stable enough that two defenses
 ## Now
 
 - Interview reliability: schema-checked model output, one repair turn, a deadline on every model call, idempotent answer saves, and a phase machine on the Defend page so a dropped response can be retried.
-- Scoring: a per-document claim map, a fixed blueprint of question types and difficulties, questions that cite a source span and pass a grounded / unambiguous / answerable check, anchored 0–4 levels, median across the council, one follow-up when graders disagree by two levels, then a flagged receipt (not held for a person). A non-answer scores 0. Difficulty-weighted receipt score. Rubric `defend-it-rubric-v0.4`. Voice follow-up in beta is typed.
-- Calibration script (`npm run calibrate`) and a service-level soak (`npm run soak`) on three fixtures. Known-bad and "I don't know" fixtures score 0.
+- Scoring: a per-document claim map, a fixed blueprint of question types and difficulties, questions that cite a source span and pass a grounded / unambiguous / answerable check, anchored 0–4 levels, median across the council, one follow-up when graders disagree by two levels, then a flagged receipt (not held for a person). Code forces a 0 only for a blank, a refusal, or a restatement of the question. Difficulty-weighted receipt score. Rubric `defend-it-rubric-v0.4`. Voice follow-up in beta is typed.
+- Calibration script (`npm run calibrate`) reports overall stability and per-dimension min/max/stdev. `npm run soak` runs Learn and Defend on three fixtures. "I don't know" scores 0.
 
 ## Next
 

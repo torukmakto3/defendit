@@ -14,6 +14,7 @@ import { rateLimit } from "../src/lib/ratelimit";
 import {
   completeDefendSession,
   createDefenseRequest,
+  GRADING_CLAIM_TTL_MS,
   creatorIngest,
   getAdminSessionDetail,
   getReceipt,
@@ -539,6 +540,7 @@ describe("answer retries and grader disagreement", () => {
     const second = await completeDefendSession({ sessionId: s.sessionId, user });
     expect(second.idempotent).toBe(true);
     expect(second.receipt?.payload.id).toBe(first.receipt?.payload.id);
+    expect(second.flagged).toBe(first.flagged);
   });
 
   it("asks one follow-up when graders disagree, then receipts the median", async () => {
@@ -565,9 +567,84 @@ describe("answer retries and grader disagreement", () => {
     const done = await completeDefendSession({ sessionId: s.sessionId, user });
     expect(done.receipt?.payload.score).toBeGreaterThanOrEqual(0);
     expect(done.flagged).toBe(true);
+    const again = await completeDefendSession({ sessionId: s.sessionId, user });
+    expect(again.idempotent).toBe(true);
+    expect(again.flagged).toBe(true);
+    expect(again.receipt?.payload.id).toBe(done.receipt?.payload.id);
     const db = await getDb();
     const n = await db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM receipts WHERE session_id = ?`, [s.sessionId]);
     expect(Number(n?.n)).toBe(1);
+  });
+});
+
+describe("incomplete defenses", () => {
+  it("rejects a text session that has not answered every question", async () => {
+    const { user } = await signIn("partial-text@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "pt.md", buffer: memo, difficulty: "standard" });
+    const s = await startSession({ token: ingest.token, user, mode: "defend" });
+    expect(s.channel).toBe("text");
+    await recordDefendAnswer({
+      sessionId: s.sessionId,
+      user,
+      probeId: s.plan.probes[0].id,
+      answer: "Because churn is 1.2%, the case holds if that rate stays put.",
+    });
+    await expect(completeDefendSession({ sessionId: s.sessionId, user })).rejects.toMatchObject({ status: 409 });
+    const db = await getDb();
+    const row = await db.get<{ status: string }>(`SELECT status FROM sessions WHERE id = ?`, [s.sessionId]);
+    expect(row?.status).toBe("in_progress");
+  });
+
+  it("rejects a voice session that has not answered every question", async () => {
+    const { user } = await signIn("partial-voice@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "pv.md", buffer: memo, difficulty: "hard" });
+    const s = await startSession({ token: ingest.token, user, mode: "defend" });
+    expect(s.channel).toBe("voice");
+    const plan = await voicePlan(s.sessionId);
+    const t = Date.now();
+    const iso = (ms: number) => new Date(ms).toISOString();
+    await recordVoiceAnswer({
+      sessionId: s.sessionId,
+      probeId: plan.probes[0].id,
+      answer: "Spoken answer: churn near 1.2% carries the case.",
+      questionEndedAt: iso(t - 900),
+      answerStartedAt: iso(t - 650),
+      answerEndedAt: iso(t - 50),
+    });
+    await expect(completeDefendSession({ sessionId: s.sessionId, user })).rejects.toMatchObject({ status: 409 });
+    const db = await getDb();
+    const row = await db.get<{ status: string }>(`SELECT status FROM sessions WHERE id = ?`, [s.sessionId]);
+    expect(row?.status).toBe("in_progress");
+  });
+});
+
+describe("stuck grading", () => {
+  it("releases a grading claim older than the route budget and completes on retry", async () => {
+    const { user } = await signIn("stale-grade@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "stale.md", buffer: memo });
+    const s = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
+    await answerAll(s, user);
+    const db = await getDb();
+    const old = new Date(Date.now() - GRADING_CLAIM_TTL_MS - 5_000).toISOString();
+    await db.run(`UPDATE sessions SET status = 'grading', grading_claimed_at = ? WHERE id = ?`, [old, s.sessionId]);
+    const done = await completeDefendSession({ sessionId: s.sessionId, user });
+    expect(done.receipt?.payload.id).toBeTruthy();
+    expect(done.idempotent).toBeUndefined();
+  });
+
+  it("does not steal a grading claim that is still inside the route budget", async () => {
+    const { user } = await signIn("fresh-grade@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "fresh.md", buffer: memo });
+    const s = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
+    await answerAll(s, user);
+    const db = await getDb();
+    await db.run(`UPDATE sessions SET status = 'grading', grading_claimed_at = ? WHERE id = ?`, [
+      new Date().toISOString(),
+      s.sessionId,
+    ]);
+    await expect(completeDefendSession({ sessionId: s.sessionId, user })).rejects.toMatchObject({ status: 409 });
+    const row = await db.get<{ status: string }>(`SELECT status FROM sessions WHERE id = ?`, [s.sessionId]);
+    expect(row?.status).toBe("grading");
   });
 });
 

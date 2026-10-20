@@ -51,12 +51,12 @@ function weightOf(probe: Probe): QuestionDifficulty {
   return probe.difficulty === 1 || probe.difficulty === 3 ? probe.difficulty : 2;
 }
 
-function gradeFor(grade: ModelGrade, probe: Probe, index: number): ClaimGrade | undefined {
+function gradeFor(grade: ModelGrade, probe: Probe): ClaimGrade | undefined {
   const byProbe = grade.claimGrades.find((c) => c.probeId === probe.id);
   if (byProbe) return byProbe;
   const byClaim = grade.claimGrades.filter((c) => c.claimId === probe.claimId && !c.probeId);
   if (byClaim.length === 1) return byClaim[0];
-  return grade.claimGrades[index];
+  return undefined;
 }
 
 export interface ProbeScore {
@@ -91,9 +91,9 @@ function blankDims(): DimensionScores {
  * middle score is invented.
  */
 export function scoreDefense(grades: ModelGrade[], plan: InterviewPlan): DefenseScore {
-  const probes: ProbeScore[] = plan.probes.map((probe, index) => {
+  const probes: ProbeScore[] = plan.probes.map((probe) => {
     const rows = grades
-      .map((g) => gradeFor(g, probe, index))
+      .map((g) => gradeFor(g, probe))
       .filter((c): c is ClaimGrade => !!c);
     const medianScores = blankDims();
     let spread = 0;
@@ -151,6 +151,49 @@ export function scoreDefense(grades: ModelGrade[], plan: InterviewPlan): Defense
 /** One grader's difficulty-weighted score, ignoring any holistic overallScore. */
 export function graderScore(grade: ModelGrade, plan: InterviewPlan): number {
   return scoreDefense([grade], plan).score;
+}
+
+export interface DimensionStat {
+  min: number;
+  max: number;
+  stdev: number;
+}
+
+/** Difficulty-weighted mean of the per-probe median level, one number per dimension. */
+export function transcriptLevels(grades: ModelGrade[], plan: InterviewPlan): DimensionScores {
+  const scored = scoreDefense(grades, plan);
+  const weight = scored.probes.reduce((sum, probe) => sum + probe.weight, 0);
+  const levels = blankDims();
+  for (const key of ALL_DIMS) {
+    levels[key] = weight
+      ? scored.probes.reduce((sum, probe) => sum + probe.median[key] * probe.weight, 0) / weight
+      : 0;
+  }
+  return levels;
+}
+
+function stat(values: number[]): DimensionStat {
+  if (values.length === 0) return { min: 0, max: 0, stdev: 0 };
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+  return {
+    min: Math.min(...values),
+    max: Math.max(...values),
+    stdev: Math.sqrt(variance),
+  };
+}
+
+/** Min, max, and standard deviation of each dimension across council members. */
+export function councilDimensionSpread(
+  grades: ModelGrade[],
+  plan: InterviewPlan,
+): Record<(typeof ALL_DIMS)[number], DimensionStat> {
+  const perGrader = grades.map((grade) => transcriptLevels([grade], plan));
+  const spread = {} as Record<(typeof ALL_DIMS)[number], DimensionStat>;
+  for (const key of ALL_DIMS) {
+    spread[key] = stat(perGrader.map((levels) => levels[key]));
+  }
+  return spread;
 }
 
 /**

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { completeJson } from "../src/lib/llm";
+import { completeJson, graderCallBudgetMs } from "../src/lib/llm";
 import type { LlmProvider, LlmRequest, LlmResponse } from "../src/lib/llm";
 
 const schema = z.object({ ok: z.literal(true), n: z.number() });
@@ -52,6 +52,15 @@ describe("structured model output", () => {
         schema,
       ),
     ).rejects.toThrow(/non-JSON after repair/);
+  });
+
+  it("keeps the repair turn inside the 120s route budget", () => {
+    process.env.LLM_TIMEOUT_MS = "90000";
+    const first = graderCallBudgetMs(0);
+    const repair = graderCallBudgetMs(first);
+    expect(first + repair).toBeLessThan(120_000);
+    delete process.env.LLM_TIMEOUT_MS;
+    expect(graderCallBudgetMs(0) + graderCallBudgetMs(graderCallBudgetMs(0))).toBeLessThan(120_000);
   });
 
   it("times out a provider that ignores the abort signal", async () => {

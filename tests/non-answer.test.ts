@@ -33,25 +33,29 @@ beforeEach(() => {
 });
 
 describe("detectNonAnswer", () => {
-  it("flags blank, refusal, evasive, off-topic, and a restatement of the question", () => {
+  it("flags only a blank, a refusal, or a restatement of the question", () => {
     expect(judge("")).toMatchObject({ kind: "blank" });
     expect(judge("   ")).toMatchObject({ kind: "blank" });
     expect(judge("n/a")).toMatchObject({ kind: "blank" });
     expect(judge("I don't know.")).toMatchObject({ kind: "refusal" });
     expect(judge("idk")).toMatchObject({ kind: "refusal" });
     expect(judge("I don't know, I guess it's fine.")).toMatchObject({ kind: "refusal" });
-    expect(judge("I guess it's fine.")).toMatchObject({ kind: "evasive" });
-    expect(judge("sounds good")).toMatchObject({ kind: "evasive" });
-    expect(judge("ok")).toMatchObject({ kind: "evasive" });
-    expect(judge("The weather in Lisbon is lovely and I had pasta for lunch.")).toMatchObject({ kind: "off_topic" });
+    expect(judge("I guess it's fine.")).toMatchObject({ kind: "refusal" });
     expect(judge(question)).toMatchObject({ kind: "restatement" });
   });
 
-  it("keeps an answer that cites the figure, including a hedged one", () => {
+  it("leaves substantive answers to the graders, including synonyms and another language", () => {
     expect(judge("Churn is 1.2%.")).toBeNull();
     expect(
       judge("I'm not sure of the exact wording, but churn is 1.2% because the cohort stays."),
     ).toBeNull();
+    expect(
+      judge("The rate at which logos leave each month is the load-bearing fact, and if that departure rate rose the payback would stretch."),
+    ).toBeNull();
+    expect(
+      judge("A rotatividade mensal de clientes fica em 1,2% porque a coorte se mantém, e se essa premissa piorar a conclusão enfraquece."),
+    ).toBeNull();
+    expect(judge("The weather in Lisbon is lovely and I had pasta for lunch.")).toBeNull();
   });
 
   it("does not treat a planted-error catch as a non-answer", () => {
@@ -77,6 +81,39 @@ describe("gradeSession non-answers", () => {
         expect(row.band).toBe("Weak");
       }
     }
+  });
+
+  it("scores a correct answer in Portuguese, and one that uses synonyms, above zero", async () => {
+    const plan = buildInterviewPlan({ claims, difficulty: "standard", seed: "lang" });
+    const portuguese = await gradeSession({
+      difficulty: "standard",
+      claims,
+      plan,
+      turns: turnsFor(
+        plan,
+        () =>
+          "A rotatividade mensal de clientes fica em 1,2% porque a coorte se mantém. Se essa premissa piorar, a conclusão enfraquece e eu confirmaria o número na fonte.",
+      ),
+    });
+    const synonyms = await gradeSession({
+      difficulty: "standard",
+      claims,
+      plan,
+      turns: turnsFor(
+        plan,
+        () =>
+          "The rate at which logos leave each month is the load-bearing fact. If that departure rate rose, payback would stretch, and I would verify the source table before signing.",
+      ),
+    });
+    expect(scoreDefense(portuguese, plan).score).toBeGreaterThan(0);
+    expect(scoreDefense(synonyms, plan).score).toBeGreaterThan(0);
+    const refused = await gradeSession({
+      difficulty: "standard",
+      claims,
+      plan,
+      turns: turnsFor(plan, () => "I don't know."),
+    });
+    expect(scoreDefense(refused, plan).score).toBe(0);
   });
 
   it("zeros only the question that was not answered", async () => {
