@@ -12,6 +12,7 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
     "agent/**",
+    "data/**",
   ]),
   // PR #3 is actively editing these paths. eslint-config-next 16 flags the
   // existing fetch/sync effects; leave the files alone and turn off only this rule.

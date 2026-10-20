@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "calibrate": "tsx scripts/calibrate-grading.ts",
+    "soak": "tsx scripts/interview-soak.ts"
   },
   "dependencies": {
     "@noble/ed25519": "^3.2.0",

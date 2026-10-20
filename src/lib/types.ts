@@ -11,12 +11,21 @@ export type ProbeType =
 export type UnderstandingBand = "Weak" | "Partial" | "Strong";
 export type IntegrityStatus = "Clear" | "Review" | "Concerns";
 
+export type ClaimKind = "claim" | "assumption" | "number";
+
+/** 1 = straightforward, 2 = standard, 3 = the harder what-if / prediction items. */
+export type QuestionDifficulty = 1 | 2 | 3;
+
 export interface Claim {
   id: string;
   text: string;
   section: string;
   sourceSpan: string;
   stakes: "high" | "medium" | "low";
+  /** What kind of load-bearing point this is. Inferred when the model omits it. */
+  kind?: ClaimKind;
+  /** Figures quoted from the document (the claim map's numbers). */
+  figures?: string[];
 }
 
 export interface Probe {
@@ -24,6 +33,15 @@ export interface Probe {
   claimId: string;
   type: ProbeType;
   question: string;
+  /** Item difficulty from the fixed blueprint. Older plans may omit it. */
+  difficulty?: QuestionDifficulty;
+  /** Set when this probe was added because graders disagreed on another probe. */
+  followUpOf?: string;
+  /**
+   * Verbatim span from the claim map this question tests. Stored on the probe
+   * so the creator's receipt can show it. It is not part of the public receipt.
+   */
+  sourceSpan?: string;
   /** Altered text shown for planted-error probes */
   plantedContent?: string;
   expectedFocus: string;
@@ -62,6 +80,8 @@ export interface ClaimGrade {
   band: UnderstandingBand;
   evidence: string;
   reason: string;
+  /** Set when the grader returned a per-question id. */
+  probeId?: string;
 }
 
 export interface ModelGrade {

@@ -144,8 +144,22 @@ async function main() {
   console.log(`  ✓ ${probes.length} answers recorded server-side`);
   const forged = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId, turns: [{ probeId: "x", answer: "forged", latencyMs: 9000 }] }, mallory);
   check(forged.status === 404, "another account cannot complete this defense");
-  const done = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId, showName: true }, ana);
-  check(done.status === 200, `defense graded: ${done.json?.receipt?.payload?.outcome} ${done.json?.score}/100${done.status !== 200 ? ` — ${done.text}` : ""}`);
+  let done = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId, showName: true }, ana);
+  if (done.status === 200 && done.json?.followUp?.probe) {
+    const extra = done.json.followUp.probe as { id: string };
+    const saved = await post(
+      "/api/sessions/defend/answer",
+      {
+        sessionId: defend.json.sessionId,
+        probeId: extra.id,
+        answer: "The memo states churn of 1.2% and a $12M round. The assumption that would change my answer is churn doubling to 2.4%.",
+      },
+      ana,
+    );
+    check(saved.status === 200, "disagreement follow-up accepted");
+    done = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId, showName: true }, ana);
+  }
+  check(done.status === 200 && done.json?.receipt?.payload?.id, `defense graded: ${done.json?.receipt?.payload?.outcome} ${done.json?.score}/100${done.status !== 200 ? ` — ${done.text}` : ""}`);
 
   const id = done.json.receipt.payload.id as string;
   const pub = await call(`/api/receipts/${id}`);
@@ -167,7 +181,7 @@ async function main() {
   const again = await post("/api/sessions/start", { token, mode: "learn" }, ana);
   check(again.status === 410, "document text purged once the defense completed");
   const twice = await post("/api/sessions/defend/complete", { sessionId: defend.json.sessionId }, ana);
-  check(twice.status === 409, "a defense cannot be graded twice");
+  check(twice.status === 200 && twice.json?.receipt?.payload?.id === id, "retrying a finished defense returns the same receipt");
 
   // Voice: Hard defenses are live voice; typed answers are refused unless the
   // creator takes the accommodation path.

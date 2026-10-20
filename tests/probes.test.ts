@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildInterviewPlan } from "../src/lib/probes";
+import { blueprintMix, buildInterviewPlan } from "../src/lib/probes";
 import type { Claim } from "../src/lib/types";
 
 const claims: Claim[] = [
@@ -73,6 +73,17 @@ describe("probe sampling", () => {
       JSON.stringify(a.probes.map((p) => [p.claimId, p.type])) ===
       JSON.stringify(b.probes.map((p) => [p.claimId, p.type]));
     expect(same).toBe(false);
+  });
+
+  it("keeps the same mix of type and difficulty across seeds", () => {
+    const seeds = ["a", "b", "c", "d", "e"];
+    for (const difficulty of ["standard", "hard", "expert"] as const) {
+      const mixes = seeds.map((seed) =>
+        buildInterviewPlan({ claims, difficulty, seed }).probes.map((p) => `${p.type}:${p.difficulty}`).sort().join("|"),
+      );
+      expect(new Set(mixes).size).toBe(1);
+      expect(mixes[0].split("|")).toEqual(blueprintMix(difficulty));
+    }
   });
 
   it("includes a planted error on hard difficulty", () => {

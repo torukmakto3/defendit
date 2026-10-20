@@ -40,10 +40,12 @@ export function VoiceInterview({
   const roomRef = useRef<Room | null>(null);
   const audioRef = useRef<HTMLDivElement>(null);
   const finishing = useRef(false);
+  const [gradeAttempted, setGradeAttempted] = useState(false);
 
   const finish = useCallback(async () => {
     if (finishing.current) return;
     finishing.current = true;
+    setGradeAttempted(true);
     setPhase("grading");
     // Let the closing line play, then leave the room and grade.
     await new Promise((r) => setTimeout(r, 3500));
@@ -236,9 +238,16 @@ export function VoiceInterview({
         )}
         {error && <p className="text-sm text-danger">{error}</p>}
         {phase === "error" && (
-          <button type="button" className="btn btn-ghost justify-self-start" onClick={start}>
-            Try again
-          </button>
+          <div className="flex flex-wrap gap-2">
+            {gradeAttempted && (
+              <button type="button" className="btn btn-primary" onClick={() => void finish()}>
+                Retry grading
+              </button>
+            )}
+            <button type="button" className="btn btn-ghost" onClick={start}>
+              Reconnect voice
+            </button>
+          </div>
         )}
         <div ref={audioRef} hidden />
       </div>

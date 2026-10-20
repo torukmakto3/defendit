@@ -155,7 +155,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_receipts_request ON receipts(request_id);
 `;
 
 /** Columns added after a table first shipped: [table, column, definition]. */
-const ADDED_COLUMNS: [string, string, string][] = [["sessions", "channel", "TEXT NOT NULL DEFAULT 'text'"]];
+const ADDED_COLUMNS: [string, string, string][] = [
+  ["sessions", "channel", "TEXT NOT NULL DEFAULT 'text'"],
+  ["sessions", "grading_claimed_at", "TEXT"],
+];
 
 let dbPromise: Promise<Db> | null = null;
 
