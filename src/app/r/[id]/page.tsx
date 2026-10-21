@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Companion } from "@/components/companion/Companion";
 import { LoadTest } from "@/components/receipt/LoadTest";
-import { claimResults } from "@/components/receipt/metrics";
+import { claimResults, gradedWithLine } from "@/components/receipt/metrics";
 import { PlotterStamp } from "@/components/receipt/PlotterStamp";
 import { ToleranceChart } from "@/components/receipt/ToleranceChart";
 import type { SignedReceipt } from "@/lib/types";
@@ -138,9 +138,7 @@ export default function ReceiptPage() {
           </Link>
         </div>
       </div>
-      <p className="text-xs text-[var(--ink-2)]">
-        Graded with {p.modelVersions.join(", ")} &middot; {p.rubricVersion}
-      </p>
+      <p className="text-xs text-[var(--ink-2)]">{gradedWithLine(p)}</p>
     </div>
   );
 }
