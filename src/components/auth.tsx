@@ -63,13 +63,95 @@ export async function saveDisplayName(displayName: string) {
   });
 }
 
-/** Email sign-in card. In dev (no email provider) it shows the link directly. */
+type SignInMethods = { google: boolean; email: boolean };
+
+let methods: SignInMethods | null | undefined;
+const methodListeners = new Set<() => void>();
+let methodsStarted = false;
+
+function emitMethods() {
+  for (const listener of methodListeners) listener();
+}
+
+function subscribeMethods(onStoreChange: () => void) {
+  methodListeners.add(onStoreChange);
+  return () => methodListeners.delete(onStoreChange);
+}
+
+function ensureMethods() {
+  if (methodsStarted) return;
+  methodsStarted = true;
+  void (async () => {
+    try {
+      const res = await fetch("/api/auth/providers", { cache: "no-store" });
+      const data = await res.json();
+      methods = res.ok ? { google: Boolean(data.google), email: Boolean(data.email) } : null;
+    } catch {
+      methods = null;
+    }
+    emitMethods();
+  })();
+}
+
+function useSignInMethods() {
+  const current = useSyncExternalStore(subscribeMethods, () => methods, () => undefined);
+  useEffect(() => {
+    ensureMethods();
+  }, []);
+  return current;
+}
+
+function authErrorCode(): string | null {
+  return new URLSearchParams(window.location.search).get("auth_error");
+}
+
+function subscribeLocation(onStoreChange: () => void) {
+  window.addEventListener("popstate", onStoreChange);
+  return () => window.removeEventListener("popstate", onStoreChange);
+}
+
+const AUTH_ERROR_COPY: Record<string, string> = {
+  state_mismatch: "Sign-in could not be confirmed. Start again.",
+  expired: "That sign-in attempt expired. Start again.",
+  unverified_email:
+    "Google has not verified that email. Verify it on the Google account, then try again.",
+  missing_email: "Google did not share an email address.",
+  denied: "Google sign-in was cancelled.",
+  invalid_token: "Google sign-in failed. Try again.",
+  wrong_host: "Google sign-in is configured for a different site address.",
+  not_configured: "Google sign-in is not turned on.",
+  failed: "Google sign-in failed. Try again.",
+};
+
+function returnPath(): string {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("auth_error");
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function introFor(options: SignInMethods): string {
+  if (options.google && options.email) {
+    return "Sign in with Google, or use a one-time email link. No password. Your files stay private to your account.";
+  }
+  if (options.google) {
+    return "Sign in with the Google account whose verified email you want on your receipt. No password.";
+  }
+  if (options.email) {
+    return "We email you a one-time link. No password. Your files stay private to your account.";
+  }
+  return "";
+}
+
+/** Google first, then an email link when that path is actually available. */
 export function SignInCard({ title = "Sign in to continue", next }: { title?: string; next?: string }) {
+  const options = useSignInMethods();
+  const authError = useSyncExternalStore(subscribeLocation, authErrorCode, () => null);
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
   const [devLink, setDevLink] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const googleHref = next ? `/api/auth/google?next=${encodeURIComponent(next)}` : "/api/auth/google";
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -81,7 +163,7 @@ export function SignInCard({ title = "Sign in to continue", next }: { title?: st
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email,
-          next: next ?? window.location.pathname + window.location.search,
+          next: next ?? returnPath(),
         }),
       });
       const data = await res.json();
@@ -95,13 +177,18 @@ export function SignInCard({ title = "Sign in to continue", next }: { title?: st
     }
   }
 
+  const shownError = error ?? (authError ? AUTH_ERROR_COPY[authError] ?? "Sign-in failed. Try again." : null);
+
   return (
     <div className="panel rounded-2xl p-6">
       <h2 className="text-2xl text-[var(--moss)]">{title}</h2>
-      <p className="mt-2 text-sm opacity-75">
-        We email you a one-time link. No password. Your files stay private to your account.
-      </p>
-      {sent ? (
+      {options === undefined ? (
+        <p className="mt-2 text-sm opacity-75">Loading sign-in…</p>
+      ) : options === null ? (
+        <p className="mt-2 text-sm text-[var(--amber)]">
+          Could not load sign-in options. Refresh and try again.
+        </p>
+      ) : sent ? (
         <div className="mt-4 space-y-3">
           <p>Check <strong>{email}</strong> for your sign-in link. It expires in 15 minutes.</p>
           {devLink && (
@@ -111,24 +198,47 @@ export function SignInCard({ title = "Sign in to continue", next }: { title?: st
           )}
         </div>
       ) : (
-        <form onSubmit={submit} className="mt-4 flex flex-col gap-3 sm:flex-row">
-          <label className="sr-only" htmlFor="signin-email">Email</label>
-          <input
-            id="signin-email"
-            type="email"
-            required
-            autoComplete="email"
-            className="field flex-1"
-            placeholder="you@company.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-          <button className="btn btn-primary" disabled={busy}>
-            {busy ? "Sending…" : "Email me a link"}
-          </button>
-        </form>
+        <>
+          {introFor(options) && <p className="mt-2 text-sm opacity-75">{introFor(options)}</p>}
+          {options.google && (
+            <a className="btn btn-primary mt-4 w-full" href={googleHref}>
+              Sign in with Google
+            </a>
+          )}
+          {options.google && options.email && (
+            <div className="mt-4 flex items-center gap-3 text-xs uppercase tracking-[0.08em] text-[var(--ink-2)]">
+              <span className="h-px flex-1 bg-[var(--line)]" />
+              or
+              <span className="h-px flex-1 bg-[var(--line)]" />
+            </div>
+          )}
+          {options.email ? (
+            <form onSubmit={submit} className="mt-4 flex flex-col gap-3 sm:flex-row">
+              <label className="sr-only" htmlFor="signin-email">Email</label>
+              <input
+                id="signin-email"
+                type="email"
+                required
+                autoComplete="email"
+                className="field flex-1"
+                placeholder="you@company.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+              <button className="btn btn-primary" disabled={busy}>
+                {busy ? "Sending…" : "Email me a link"}
+              </button>
+            </form>
+          ) : options.google ? (
+            <p className="mt-3 text-sm opacity-75">Email sign-in links aren&apos;t set up on this server.</p>
+          ) : (
+            <p className="mt-4 text-sm">
+              Sign-in isn&apos;t available on this server yet. Google sign-in and email links are both turned off.
+            </p>
+          )}
+        </>
       )}
-      {error && <p className="mt-3 text-sm text-[var(--amber)]">{error}</p>}
+      {shownError && <p className="mt-3 text-sm text-[var(--amber)]">{shownError}</p>}
     </div>
   );
 }
