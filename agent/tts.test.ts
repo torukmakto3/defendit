@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { selectTts } from "../agent/src/tts";
+import { selectTts } from "./src/tts";
+
+// Lives beside the agent, not under tests/. Next typechecks tests/ during
+// `next build`, and Vercel does not upload /agent (.vercelignore).
 
 describe("interviewer TTS provider", () => {
   it("keeps LiveKit Inference Aura-2 when nothing is set", () => {
