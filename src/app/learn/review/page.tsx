@@ -9,6 +9,7 @@ interface Card {
   id: string;
   front: string;
   back: string;
+  source: string | null;
 }
 
 type RatingName = "again" | "hard" | "good" | "easy";
@@ -122,6 +123,12 @@ export default function ReviewPage() {
                 <span className="mono text-xs uppercase tracking-[0.08em] text-[var(--ink-2)]">Answer</span>
                 <p className="mt-1">{current.back}</p>
               </div>
+              {current.source && (
+                <div>
+                  <span className="mono text-xs uppercase tracking-[0.08em] text-[var(--ink-2)]">Source</span>
+                  <p className="mt-1 text-sm text-[var(--ink-2)]">{current.source}</p>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" role="group" aria-label="How well did you recall it?">
                 {RATINGS.map((r) => (
                   <button

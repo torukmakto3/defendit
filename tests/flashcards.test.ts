@@ -4,7 +4,16 @@ import { join } from "path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { consumeMagicLink, requestMagicLink, type User } from "../src/lib/auth";
 import { getDb } from "../src/lib/db";
-import { dueCards, generateFlashcards, listProjects, reviewCard } from "../src/lib/flashcards";
+import { cardTextIssues } from "../src/lib/card-text";
+import {
+  DEFAULT_FLASHCARD_MODEL,
+  dedupeFlashcards,
+  dueCards,
+  flashcardLlm,
+  generateFlashcards,
+  listProjects,
+  reviewCard,
+} from "../src/lib/flashcards";
 import { creatorIngest, purgeExpired } from "../src/lib/services";
 
 const memo = readFileSync(join(__dirname, "..", "fixtures", "sample-memo.md"));
@@ -77,6 +86,96 @@ describe("flashcards", () => {
     expect(p.cards).toBeGreaterThan(0);
     expect(p.due).toBe(p.cards);
     expect(p.documentAvailable).toBe(true);
+  });
+
+  it("keeps generated faces clean and quotes the file on the source line", async () => {
+    const dirty = Buffer.from(
+      [
+        "monthly_churn in north_star.md is status=high and should stay in the source quote only, not on the card face itself.",
+        "",
+        "Payback on the new customers is eleven months, and the contribution margin is sixty two percent after support costs are paid.",
+        "",
+        "The field monthlyChurn and the dump file_name=north_star.md do not belong on the face of a card at all.",
+      ].join("\n"),
+    );
+    const user = await signIn("clean-cards@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "north_star.md", buffer: dirty });
+    const made = await generateFlashcards({ token: ingest.token, user });
+    expect(made.created).toBeGreaterThan(0);
+    const cards = await dueCards({ user, token: ingest.token });
+    expect(cards.length).toBe(made.created);
+    for (const card of cards) {
+      expect(cardTextIssues(card.front, { fileName: "north_star.md" })).toEqual([]);
+      expect(cardTextIssues(card.back, { fileName: "north_star.md" })).toEqual([]);
+    }
+    expect(
+      cards.some((card) => card.source && /monthly_churn|north_star\.md|status=high|monthlyChurn/.test(card.source)),
+    ).toBe(true);
+  });
+
+  it("dedupes repeated points and regenerates only when asked", async () => {
+    expect(
+      dedupeFlashcards([
+        { front: "What is payback?", back: "Payback is eleven months.", source: "Payback is eleven months at the current pace." },
+        { front: "Say the payback again?", back: "Payback is eleven months.", source: "Payback is eleven months at the current pace." },
+      ]),
+    ).toHaveLength(1);
+
+    const repeated = Buffer.from(
+      [
+        "Payback period on customer acquisition is eleven months at the current sales efficiency, and that is the figure to remember.",
+        "",
+        "Payback period on customer acquisition is eleven months at the current sales efficiency, and that is the figure to remember.",
+        "",
+        "Contribution margin is sixty two percent after payment processing and support, which is a separate point from payback.",
+      ].join("\n"),
+    );
+    const user = await signIn("dedupe-cards@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "repeat.md", buffer: repeated });
+    const first = await generateFlashcards({ token: ingest.token, user });
+    expect(first.cached).toBe(false);
+    expect(first.created).toBeLessThan(3);
+    const cached = await generateFlashcards({ token: ingest.token, user });
+    expect(cached.created).toBe(0);
+    expect(cached.cached).toBe(true);
+    expect(cached.total).toBe(first.total);
+
+    const before = await dueCards({ user, token: ingest.token });
+    const fresh = await generateFlashcards({ token: ingest.token, user, regenerate: true });
+    expect(fresh.created).toBeGreaterThan(0);
+    expect(fresh.cached).toBe(false);
+    const after = await dueCards({ user, token: ingest.token });
+    expect(after).toHaveLength(fresh.total);
+    expect(after.some((card) => before.some((old) => old.id === card.id))).toBe(false);
+  });
+
+  it("uses a pinned cheap Liquid model when Liquid is configured", () => {
+    const saved = {
+      MOCK_LLM: process.env.MOCK_LLM,
+      LIQUID_API_KEY: process.env.LIQUID_API_KEY,
+      FLASHCARD_MODEL: process.env.FLASHCARD_MODEL,
+    };
+    try {
+      process.env.MOCK_LLM = "0";
+      process.env.LIQUID_API_KEY = "test-key";
+      delete process.env.FLASHCARD_MODEL;
+      const pinned = flashcardLlm();
+      expect(pinned.provider).toBe("liquid");
+      expect(pinned.id).toBe(DEFAULT_FLASHCARD_MODEL);
+      expect(pinned.id).not.toMatch(/auto/i);
+
+      process.env.FLASHCARD_MODEL = "llama-3.2-3b-instruct";
+      expect(flashcardLlm().id).toBe("llama-3.2-3b-instruct");
+
+      process.env.MOCK_LLM = "1";
+      expect(flashcardLlm().provider).toBe("mock");
+    } finally {
+      process.env.MOCK_LLM = saved.MOCK_LLM;
+      if (saved.LIQUID_API_KEY === undefined) delete process.env.LIQUID_API_KEY;
+      else process.env.LIQUID_API_KEY = saved.LIQUID_API_KEY;
+      if (saved.FLASHCARD_MODEL === undefined) delete process.env.FLASHCARD_MODEL;
+      else process.env.FLASHCARD_MODEL = saved.FLASHCARD_MODEL;
+    }
   });
 
   it("purges card text with the deliverable's retention window", async () => {
