@@ -9,7 +9,6 @@ YYYY-MM-DD BLOCKED — what stopped the work · what the next agent needs
 
 ## Log
 
-2026-10-21 DONE — Signed receipts record each grader's model, temperature, and seed. `/r/[id]` and `/verify/[id]` show them; receipts without `graders` still verify and render the model-only line. · PR #26 · `tsc`, `eslint`, `vitest` (145), mock `npm run smoke`, receipt and verify pages in the browser
 2026-10-20 DONE — Token and USD cost are stored for each model call. A defend session rolls up every call on that defense and is flagged over `SESSION_BUDGET_USD` (default $3). Admin list and session page show the total. Liquid uses `exchange.charge.total_usd` when present. · PR #23 · `tsc`, `eslint`, `vitest` (142), mock `npm run smoke`, admin UI in the browser
 2026-10-20 DONE — A deployment refuses to grade when a council member is a router (`*.auto`) or there are fewer than 2 pinned models. Each stored grade records model id, temperature, and seed. Council list is `LIQUID_COUNCIL_MODELS`. · PR #15 · `tsc`, `eslint`, `vitest` (131)
 2026-10-20 DONE — Rebased the agent brief onto main after #2, #3, #13, and #14. Roadmap now lists shipped work, next work (#7, #8, Resend, live Liquid calibration), and the on-screen magic link in production. Handoff log from #13 kept. · PR #4 · `tsc`, `eslint`, `vitest` (122), mock `npm run smoke`
