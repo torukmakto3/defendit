@@ -167,6 +167,16 @@ async function main() {
   const r = pub.json.receipt;
   check(verifySignature(r.payload, r.signature, r.publicKey), "receipt signature valid (independent check)");
   check(r.payload.deliverable.sha256 === sha256Hex(fixture), "receipt bound to the exact file hash");
+  check(
+    Array.isArray(r.payload.graders) &&
+      r.payload.graders.length > 0 &&
+      r.payload.modelVersions.length === r.payload.graders.length &&
+      r.payload.graders.every(
+        (g: { model?: unknown; temperature?: unknown; seed?: unknown }, i: number) =>
+          g.model === r.payload.modelVersions[i] && g.temperature === 0 && typeof g.seed === "number",
+      ),
+    "receipt signs model, temperature, and seed per grader",
+  );
   const receiptText = JSON.stringify(r);
   check(!receiptText.includes("fund.example"), "receipt carries no email");
   check(!receiptText.includes("Project-North"), "receipt carries no file name");

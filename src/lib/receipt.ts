@@ -8,6 +8,7 @@ import type {
   InterviewMode,
   InterviewPlan,
   ModelGrade,
+  ReceiptGrader,
   ReceiptOutcome,
   ReceiptPayload,
   SignedReceipt,
@@ -31,6 +32,26 @@ export function countBands(grades: ModelGrade[], plan?: InterviewPlan): ReceiptP
   return bands;
 }
 
+/**
+ * Per-grader settings for the signature. Omitted when any grade lacks a
+ * temperature or seed, so a receipt built from older grade rows keeps the
+ * model-only shape.
+ */
+function gradersForReceipt(grades: ModelGrade[]): ReceiptGrader[] | undefined {
+  if (grades.length === 0) return undefined;
+  const graders: ReceiptGrader[] = [];
+  for (const grade of grades) {
+    if (typeof grade.temperature !== "number" || !Number.isFinite(grade.temperature)) return undefined;
+    if (typeof grade.seed !== "number" || !Number.isInteger(grade.seed)) return undefined;
+    graders.push({
+      model: `${grade.provider}:${grade.modelId}`,
+      temperature: grade.temperature,
+      seed: grade.seed,
+    });
+  }
+  return graders;
+}
+
 export function buildSignedReceipt(opts: {
   difficulty: Difficulty;
   sha256: string;
@@ -44,6 +65,7 @@ export function buildSignedReceipt(opts: {
   plan?: InterviewPlan;
 }): SignedReceipt {
   const score = aggregateScore(opts.grades, opts.plan);
+  const graders = gradersForReceipt(opts.grades);
   const payload: ReceiptPayload = {
     id: newReceiptId(),
     version: "defend-it-receipt-v2",
@@ -57,6 +79,7 @@ export function buildSignedReceipt(opts: {
     deliverable: { sha256: opts.sha256, byteLength: opts.byteLength },
     rubricVersion: RUBRIC_VERSION,
     modelVersions: opts.grades.map((g) => `${g.provider}:${g.modelId}`),
+    ...(graders ? { graders } : {}),
     integrity: { status: opts.integrity.status },
     attempt: opts.attempt ?? 1,
     assuranceLevel: "L1",

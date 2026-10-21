@@ -3,6 +3,7 @@
 import { useParams } from "next/navigation";
 import * as ed from "@noble/ed25519";
 import { useEffect, useState } from "react";
+import { gradedWithLine } from "@/components/receipt/metrics";
 import { canonicalJson } from "@/lib/canonical";
 import type { SignedReceipt } from "@/lib/types";
 
@@ -43,6 +44,7 @@ export default function VerifyPage() {
   const [result, setResult] = useState<"match" | "mismatch" | null>(null);
   const [gotHash, setGotHash] = useState<string | null>(null);
   const [score, setScore] = useState<number | null>(null);
+  const [gradedWith, setGradedWith] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -53,6 +55,7 @@ export default function VerifyPage() {
         setExpected(j.receipt.payload.deliverable.sha256);
         setOutcome(j.receipt.payload.outcome);
         setScore(j.receipt.payload.score);
+        setGradedWith(gradedWithLine(j.receipt.payload));
         setSignatureValid(await verifyInBrowser(j.receipt));
       })
       .catch((e) => setError(e.message));
@@ -86,6 +89,7 @@ export default function VerifyPage() {
               {signatureValid === null ? "checking…" : signatureValid ? "valid" : "invalid"}
             </strong>
           </p>
+          {gradedWith && <p className="text-sm text-[var(--ink-2)]">{gradedWith}</p>}
           <p className="break-all font-mono text-xs">sha256:{expected}</p>
           <input
             type="file"

@@ -108,6 +108,14 @@ export type InterviewMode = "voice" | "text" | "text-accommodation";
 
 export type ReceiptOutcome = "Defended" | "Partially defended" | "Not defended";
 
+/** One grader's call settings, as signed on the receipt. */
+export interface ReceiptGrader {
+  /** `provider:modelId`, matching an entry in `modelVersions`. */
+  model: string;
+  temperature: number;
+  seed: number;
+}
+
 /**
  * v2 receipt: only what a receiver needs to trust the file they hold.
  * No file name, email, transcript excerpts, section names or internal ids:
@@ -136,6 +144,12 @@ export interface ReceiptPayload {
   };
   rubricVersion: string;
   modelVersions: string[];
+  /**
+   * Model, temperature, and seed for each grader, covered by the signature.
+   * `model` is `provider:modelId`, the same string as `modelVersions`.
+   * Receipts minted before this field omit it and still verify.
+   */
+  graders?: ReceiptGrader[];
   integrity: { status: IntegrityStatus };
   /**
    * Present only when the creator chose to show their name. The name is

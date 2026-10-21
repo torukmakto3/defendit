@@ -1,5 +1,16 @@
 import type { ReceiptPayload } from "@/lib/types";
 
+/**
+ * Footer line for a receipt. New receipts name each grader's temperature and
+ * seed. Older receipts only have model ids, and keep the model-only line.
+ */
+export function gradedWithLine(p: Pick<ReceiptPayload, "graders" | "modelVersions" | "rubricVersion">): string {
+  const models = p.graders?.length
+    ? p.graders.map((g) => `${g.model} (temperature ${g.temperature}, seed ${g.seed})`).join(", ")
+    : p.modelVersions.join(", ");
+  return `Graded with ${models} · ${p.rubricVersion}`;
+}
+
 export type Band = "strong" | "partial" | "weak";
 export interface ClaimResult {
   label: string;

@@ -1,6 +1,6 @@
 # Roadmap
 
-Status of Defend It on `main` as of 20 Oct 2026. #2, #3 (including #13 and #14), are merged. #1 is closed.
+Status of Defend It on `main` as of 21 Oct 2026. #2, #3 (including #13 and #14), are merged. #1 is closed.
 
 ## Shipped
 
@@ -10,6 +10,7 @@ Status of Defend It on `main` as of 20 Oct 2026. #2, #3 (including #13 and #14),
 - **CI** ([#14](https://github.com/torukmakto3/defendit/pull/14)). Every pull request runs install, typecheck, lint, tests, and mock-mode smoke on Node 22.
 - **Pinned grading council** ([#15](https://github.com/torukmakto3/defendit/pull/15), [#7](https://github.com/torukmakto3/defendit/issues/7)). `LIQUID_COUNCIL_MODELS` is a comma-separated list of pinned models. A deployment refuses to start and refuses to grade when any member is `*.auto` or there are fewer than 2. Each stored grade keeps the model id, temperature, and seed.
 - **Per-defense token and cost tracking** ([#8](https://github.com/torukmakto3/defendit/issues/8)). Each model call stores prompt tokens, completion tokens, and USD cost. A defend session total includes every call on that defense. The admin list and session page show the total and flag a defense over `SESSION_BUDGET_USD` (default $3).
+- **Grader settings on the receipt** ([#25](https://github.com/torukmakto3/defendit/issues/25)). The signed receipt records each grader's model, temperature, and seed. `/r/[id]` and `/verify/[id]` show them. Older receipts that only have model ids still verify and render.
 
 ## Next
 
