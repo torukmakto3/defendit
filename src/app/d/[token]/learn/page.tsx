@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { Companion, type CompanionState } from "@/components/companion/Companion";
+import { StudyReupload } from "@/components/study-reupload";
 import {
   DEFAULT_LEARN_MODE,
   LEARN_MODES,
@@ -11,6 +12,7 @@ import {
   learnModeStatus,
   type LearnModeId,
 } from "@/lib/learn-modes";
+import { isStudyFileMissing, STUDY_FILE_DELETED } from "@/lib/study-file";
 
 interface StudyCard {
   id: string;
@@ -46,6 +48,8 @@ export default function LearnPage() {
   const { token } = useParams<{ token: string }>();
   const [mode, setMode] = useState<LearnModeId>(DEFAULT_LEARN_MODE);
   const [title, setTitle] = useState("Your file");
+  const [status, setStatus] = useState<string | null>(null);
+  const [documentAvailable, setDocumentAvailable] = useState<boolean | null>(null);
   const [cards, setCards] = useState<StudyCard[] | null>(null);
   const [revealed, setRevealed] = useState(false);
   const [done, setDone] = useState(0);
@@ -92,7 +96,12 @@ export default function LearnPage() {
     fetch(`/api/requests/${token}`, { cache: "no-store" })
       .then(async (res) => {
         const body = await res.json();
-        if (!cancelled && res.ok && typeof body.title === "string" && body.title) setTitle(body.title);
+        if (cancelled || !res.ok) return;
+        if (typeof body.title === "string" && body.title) setTitle(body.title);
+        if (typeof body.status === "string") setStatus(body.status);
+        if (typeof body.deliverable?.documentAvailable === "boolean") {
+          setDocumentAvailable(body.deliverable.documentAvailable);
+        }
       })
       .catch(() => undefined);
     return () => {
@@ -141,6 +150,7 @@ export default function LearnPage() {
 
   const companion: CompanionState = busy ? "thinking" : revealed ? "listening" : "listening";
   const remaining = cards?.length ?? 0;
+  const fileMissing = isStudyFileMissing(error) && cards === null;
 
   return (
     <div className="shell grid max-w-2xl gap-6">
@@ -149,9 +159,15 @@ export default function LearnPage() {
           <span className="eyebrow">Learn · private</span>
           <h1 className="text-3xl font-bold [overflow-wrap:anywhere]">{title}</h1>
         </div>
-        <Link href={`/d/${token}/defend`} className="btn btn-ghost">
-          Ready to Defend
-        </Link>
+        {status === "defended" ? (
+          <Link href="/dashboard" className="btn btn-ghost">
+            Dashboard
+          </Link>
+        ) : (
+          <Link href={`/d/${token}/defend`} className="btn btn-ghost">
+            Ready to Defend
+          </Link>
+        )}
       </div>
 
       <nav className="flex flex-wrap gap-2" aria-label="Learn modes">
@@ -169,22 +185,39 @@ export default function LearnPage() {
         ))}
       </nav>
 
-      {error && <p className="text-sm text-danger">{error}</p>}
+      {error && !fileMissing && <p className="text-sm text-danger">{error}</p>}
 
-      <LearnModeBody
-        mode={mode}
-        token={token}
-        busy={busy}
-        companion={companion}
-        current={current}
-        cardsLoaded={cards !== null}
-        remaining={remaining}
-        done={done}
-        revealed={revealed}
-        onReveal={() => setRevealed(true)}
-        onRate={(rating) => void rate(rating)}
-        onReload={(regenerate) => void load(regenerate)}
-      />
+      {fileMissing ? (
+        <div className="panel p-6">
+          <StudyReupload
+            token={token}
+            defended={status === "defended" || error === STUDY_FILE_DELETED}
+            message={error ?? STUDY_FILE_DELETED}
+            onUploaded={() => {
+              if (status !== "defended" && error !== STUDY_FILE_DELETED) setDocumentAvailable(true);
+              setError(null);
+              void load(false);
+            }}
+          />
+        </div>
+      ) : (
+        <LearnModeBody
+          mode={mode}
+          token={token}
+          busy={busy}
+          companion={companion}
+          current={current}
+          cardsLoaded={cards !== null}
+          remaining={remaining}
+          done={done}
+          revealed={revealed}
+          allowRegenerate={documentAvailable !== false}
+          documentAvailable={documentAvailable !== false}
+          onReveal={() => setRevealed(true)}
+          onRate={(rating) => void rate(rating)}
+          onReload={(regenerate) => void load(regenerate)}
+        />
+      )}
     </div>
   );
 }
@@ -199,17 +232,33 @@ function LearnModeBody(props: {
   remaining: number;
   done: number;
   revealed: boolean;
+  allowRegenerate: boolean;
+  documentAvailable: boolean;
   onReveal: () => void;
   onRate: (rating: RatingName) => void;
   onReload: (regenerate: boolean) => void;
 }) {
   switch (props.mode) {
     case "flashcards":
-      return <FlashcardStudy {...props} />;
+      return (
+        <FlashcardStudy
+          busy={props.busy}
+          companion={props.companion}
+          current={props.current}
+          cardsLoaded={props.cardsLoaded}
+          remaining={props.remaining}
+          done={props.done}
+          revealed={props.revealed}
+          allowRegenerate={props.allowRegenerate}
+          onReveal={props.onReveal}
+          onRate={props.onRate}
+          onReload={props.onReload}
+        />
+      );
     case "quiz":
     case "explain_back":
     case "weak_spots":
-      return <UpcomingMode mode={props.mode} token={props.token} />;
+      return <UpcomingMode mode={props.mode} token={props.token} documentAvailable={props.documentAvailable} />;
     default: {
       const unknown: never = props.mode;
       return unknown;
@@ -225,6 +274,7 @@ function FlashcardStudy(props: {
   remaining: number;
   done: number;
   revealed: boolean;
+  allowRegenerate: boolean;
   onReveal: () => void;
   onRate: (rating: RatingName) => void;
   onReload: (regenerate: boolean) => void;
@@ -244,11 +294,15 @@ function FlashcardStudy(props: {
         <Companion state="impressed" size={84} />
         <p className="text-lg font-semibold">{props.done > 0 ? "That's the deck for now." : "No cards are due."}</p>
         <p className="max-w-md text-[var(--ink-2)]">
-          Cards come back when they are due. Regenerating builds a fresh deck from the same file and replaces this one.
+          {props.allowRegenerate
+            ? "Cards come back when they are due. Regenerating builds a fresh deck from the same file and replaces this one."
+            : "Cards come back when they are due. This deck was saved before the file text was deleted."}
         </p>
-        <button type="button" className="btn btn-ghost" disabled={props.busy} onClick={() => props.onReload(true)}>
-          {props.busy ? "Writing cards…" : "Regenerate cards"}
-        </button>
+        {props.allowRegenerate && (
+          <button type="button" className="btn btn-ghost" disabled={props.busy} onClick={() => props.onReload(true)}>
+            {props.busy ? "Writing cards…" : "Regenerate cards"}
+          </button>
+        )}
       </div>
     );
   }
@@ -259,9 +313,11 @@ function FlashcardStudy(props: {
         <span className="mono text-sm text-[var(--ink-2)]">
           {props.done} done · {props.remaining} left
         </span>
-        <button type="button" className="btn btn-ghost" disabled={props.busy} onClick={() => props.onReload(true)}>
-          {props.busy ? "Writing cards…" : "Regenerate"}
-        </button>
+        {props.allowRegenerate && (
+          <button type="button" className="btn btn-ghost" disabled={props.busy} onClick={() => props.onReload(true)}>
+            {props.busy ? "Writing cards…" : "Regenerate"}
+          </button>
+        )}
       </div>
       <div className="panel grid gap-5 p-5 sm:p-6">
         <div className="grid grid-cols-[auto_1fr] items-start gap-4">
@@ -315,7 +371,15 @@ function FlashcardStudy(props: {
   );
 }
 
-function UpcomingMode({ mode, token }: { mode: Exclude<LearnModeId, "flashcards">; token: string }) {
+function UpcomingMode({
+  mode,
+  token,
+  documentAvailable,
+}: {
+  mode: Exclude<LearnModeId, "flashcards">;
+  token: string;
+  documentAvailable: boolean;
+}) {
   const spec = learnMode(mode);
   return (
     <div className="panel grid gap-3 p-6">
@@ -324,12 +388,20 @@ function UpcomingMode({ mode, token }: { mode: Exclude<LearnModeId, "flashcards"
       </span>
       <h2 className="text-2xl font-bold">{spec.label}</h2>
       <p>{spec.summary}</p>
-      <UpcomingDetail mode={mode} token={token} />
+      <UpcomingDetail mode={mode} token={token} documentAvailable={documentAvailable} />
     </div>
   );
 }
 
-function UpcomingDetail({ mode, token }: { mode: Exclude<LearnModeId, "flashcards">; token: string }) {
+function UpcomingDetail({
+  mode,
+  token,
+  documentAvailable,
+}: {
+  mode: Exclude<LearnModeId, "flashcards">;
+  token: string;
+  documentAvailable: boolean;
+}) {
   switch (mode) {
     case "quiz":
       return (
@@ -345,9 +417,15 @@ function UpcomingDetail({ mode, token }: { mode: Exclude<LearnModeId, "flashcard
             Explain-back asks you to teach one section before the file wording is shown. The private coach is the
             conversation that starts that practice.
           </p>
-          <Link href={`/d/${token}/learn/coach`} className="btn btn-ghost justify-self-start">
-            Talk it through with the coach
-          </Link>
+          {documentAvailable ? (
+            <Link href={`/d/${token}/learn/coach`} className="btn btn-ghost justify-self-start">
+              Talk it through with the coach
+            </Link>
+          ) : (
+            <p className="text-sm text-[var(--ink-2)]">
+              The coach needs the file text, and that text was deleted. Flashcards from the saved deck still work.
+            </p>
+          )}
         </div>
       );
     case "weak_spots":

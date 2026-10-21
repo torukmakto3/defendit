@@ -14,6 +14,7 @@ Status of Defend It on `main` as of 21 Oct 2026. #2, #3 (including #13 and #14),
 - **Grader settings on the receipt** ([#25](https://github.com/torukmakto3/defendit/issues/25)). The signed receipt records each grader's model, temperature, and seed. `/r/[id]` and `/verify/[id]` show them. Older receipts that only have model ids still verify and render.
 - **Optional warmer interviewer voice** ([#28](https://github.com/torukmakto3/defendit/issues/28)). `TTS_PROVIDER=xai` speaks with xAI Grok TTS, voice Ara, through LiveKit Inference. Unset or `deepgram` keeps Aura-2 Thalia. Comparison and the Muse Wonder finding are in `docs/voice-evaluation.md`.
 - **Interview start and grading latency** ([#27](https://github.com/torukmakto3/defendit/issues/27)). Per-stage timings on the admin session. The council runs in parallel, each member on its own timeout, and token accounting is flushed once after the graders return. The first question is phrased while the upload is saved. The interview shows how many graders have finished.
+- **Learn after the file text is deleted.** Dashboard Workspace for a creator opens that deliverable's Learn flashcards. The deck is cached, encrypted like other card fields, just before document text is deleted (defense completion, or the 72-hour text timer). Learn serves that deck afterwards. A finished defense with no saved deck asks the creator to upload the same file again. Raw document text is not kept any longer.
 
 ## Next
 

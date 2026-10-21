@@ -1,9 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { SignInCard, useMe } from "@/components/auth";
+import { StudyReupload } from "@/components/study-reupload";
+import { STUDY_FILE_DELETED, STUDY_TEXT_EXPIRED } from "@/lib/study-file";
 
 interface RequestView {
   title: string;
@@ -20,6 +22,7 @@ interface RequestView {
     byteLength: number;
     claimCount: number;
     documentAvailable: boolean;
+    studyDeck: boolean;
     purged: boolean;
   } | null;
 }
@@ -27,6 +30,7 @@ interface RequestView {
 export default function CreatorEntryPage() {
   const params = useParams<{ token: string }>();
   const token = params.token;
+  const router = useRouter();
   const { me } = useMe();
   const [data, setData] = useState<RequestView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -148,18 +152,21 @@ export default function CreatorEntryPage() {
           </p>
           <p className="font-mono text-xs break-all">sha256:{d.sha256}</p>
           {d.purged && <p className="text-sm text-[var(--amber)]">This upload has expired and was purged.</p>}
-          <div className="flex flex-wrap gap-3">
-            {d.documentAvailable ? (
-              <Link className="btn btn-ghost" href={`/d/${token}/learn`}>
-                Learn first (private)
+          <div className="grid gap-3">
+            {d.documentAvailable || d.studyDeck ? (
+              <Link className="btn btn-ghost justify-self-start" href={`/d/${token}/learn`}>
+                {data.status === "defended" ? "Learn" : "Learn first (private)"}
               </Link>
             ) : (
-              <span className="btn btn-ghost opacity-50" title="Document text was deleted after your defense">
-                Learn (document deleted)
-              </span>
+              <StudyReupload
+                token={token}
+                defended={data.status === "defended"}
+                message={data.status === "defended" ? STUDY_FILE_DELETED : STUDY_TEXT_EXPIRED}
+                onUploaded={() => router.push(`/d/${token}/learn`)}
+              />
             )}
             {data.status !== "defended" && !d.purged && (
-              <Link className="btn btn-primary" href={`/d/${token}/defend`}>
+              <Link className="btn btn-primary justify-self-start" href={`/d/${token}/defend`}>
                 Start Defend interview
               </Link>
             )}

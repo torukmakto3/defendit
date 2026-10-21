@@ -14,6 +14,7 @@ interface Row {
   receiptId: string | null;
   score: number | null;
   outcome: string | null;
+  workspaceHref: string;
 }
 
 export default function DashboardPage() {
@@ -75,7 +76,7 @@ export default function DashboardPage() {
                       {row.score != null ? `${row.outcome} · ${row.score}/100` : "—"}
                     </td>
                     <td className="space-x-3 px-4 py-3">
-                      <Link href={`/d/${row.token}`} className="text-[var(--moss)] underline">
+                      <Link href={row.workspaceHref} className="text-[var(--moss)] underline">
                         Workspace
                       </Link>
                       {row.receiptId && (
