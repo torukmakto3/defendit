@@ -173,6 +173,21 @@ CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls(session_id);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_request ON llm_calls(request_id);
 -- One receipt per deliverable request, enforced by the database too.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_receipts_request ON receipts(request_id);
+
+-- Per-stage latency for one defense. Upload rows exist before the session does,
+-- so request_id is set and session_id is null until a session is known.
+CREATE TABLE IF NOT EXISTS stage_timings (
+  id TEXT PRIMARY KEY,
+  request_id TEXT,
+  session_id TEXT,
+  stage TEXT NOT NULL,
+  detail TEXT,
+  duration_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_stage_timings_session ON stage_timings(session_id);
+CREATE INDEX IF NOT EXISTS idx_stage_timings_request ON stage_timings(request_id);
 `;
 
 /** Columns added after a table first shipped: [table, column, definition]. */
@@ -188,6 +203,10 @@ const ADDED_COLUMNS: [string, string, string][] = [
   ["sessions", "cost_usd", "DOUBLE PRECISION NOT NULL DEFAULT 0"],
   ["sessions", "over_budget", "INTEGER NOT NULL DEFAULT 0"],
   ["flashcards", "source_enc", "TEXT"],
+  // Live grading progress for the interview UI: {done, total, stage}.
+  ["sessions", "grading_progress", "TEXT"],
+  // Phrased first question, encrypted, computed while the upload is saved.
+  ["defense_requests", "question_prefetch_enc", "TEXT"],
 ];
 
 let dbPromise: Promise<Db> | null = null;

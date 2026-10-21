@@ -13,6 +13,7 @@ Status of Defend It on `main` as of 21 Oct 2026. #2, #3 (including #13 and #14),
 - **Google sign-in** ([#16](https://github.com/torukmakto3/defendit/issues/16)). Authorization code with PKCE and state. The ID token is verified (issuer, audience, signature) and `email_verified` must be true. The verified email opens the same `users` / `auth_sessions` rows and `di_session` cookie as a magic link, matched case-insensitively, including `ADMIN_EMAILS`.
 - **Grader settings on the receipt** ([#25](https://github.com/torukmakto3/defendit/issues/25)). The signed receipt records each grader's model, temperature, and seed. `/r/[id]` and `/verify/[id]` show them. Older receipts that only have model ids still verify and render.
 - **Optional warmer interviewer voice** ([#28](https://github.com/torukmakto3/defendit/issues/28)). `TTS_PROVIDER=xai` speaks with xAI Grok TTS, voice Ara, through LiveKit Inference. Unset or `deepgram` keeps Aura-2 Thalia. Comparison and the Muse Wonder finding are in `docs/voice-evaluation.md`.
+- **Interview start and grading latency** ([#27](https://github.com/torukmakto3/defendit/issues/27)). Per-stage timings on the admin session. The council runs in parallel, each member on its own timeout, and token accounting is flushed once after the graders return. The first question is phrased while the upload is saved. The interview shows how many graders have finished.
 
 ## Next
 

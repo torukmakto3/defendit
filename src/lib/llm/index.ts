@@ -125,7 +125,11 @@ function selectPrimary(): LlmProvider {
   return createMockProvider("mock-defend-v1");
 }
 
-/** Record token usage when the call runs inside a defense scope. */
+/**
+ * Record token usage when the call runs inside a defense scope.
+ * The write is queued and flushed once when the scope ends. Awaiting it here
+ * used to hold each council grader on a session-total update (#23).
+ */
 function trackLlm(provider: LlmProvider): LlmProvider {
   return {
     ...provider,
@@ -339,12 +343,18 @@ export async function completeJson<T>(
   );
 }
 
+function deadlineSignal(ms: number, outer?: AbortSignal): AbortSignal {
+  const timed = AbortSignal.timeout(ms);
+  if (!outer) return timed;
+  return AbortSignal.any([timed, outer]);
+}
+
 async function runOnce(
   provider: LlmProvider,
   req: Omit<LlmRequest, "json">,
   ms: number,
 ): Promise<LlmResponse> {
-  const signal = AbortSignal.timeout(ms);
+  const signal = deadlineSignal(ms, req.signal);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -354,6 +364,7 @@ async function runOnce(
       }),
     ]);
   } catch (e) {
+    if (req.signal?.aborted) throw new Error("Grader timed out");
     if (signal.aborted) throw new Error(`LLM timed out after ${ms}ms`);
     throw e;
   } finally {

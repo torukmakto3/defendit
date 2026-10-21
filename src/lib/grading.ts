@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { GradingProgress } from "./grading-progress";
 import { completeJson, getGradingCouncil, GRADING_TEMPERATURE, gradingSeed } from "./llm";
 import { detectNonAnswer } from "./non-answer";
 import { RUBRIC_VERSION, rubricPrompt } from "./rubric";
@@ -40,16 +41,77 @@ const gradeResponseSchema = z.object({
   overallScore: z.coerce.number().optional(),
 });
 
-export async function gradeSession(opts: {
-  difficulty: Difficulty;
-  claims: Claim[];
-  plan: InterviewPlan;
-  turns: TurnRecord[];
-}): Promise<ModelGrade[]> {
+/** One grader, including its repair turn, may not hold the council longer than this. */
+export function graderTimeoutMs(): number {
+  const raw = process.env.GRADER_TIMEOUT_MS;
+  if (raw !== undefined && raw.trim() !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 20_000;
+}
+
+export interface GraderProgress extends GradingProgress {
+  modelId?: string;
+  durationMs?: number;
+}
+
+/**
+ * Grade with the council in parallel. Each member has its own timeout.
+ * A member that times out is dropped; a majority of the council is still required.
+ * Token accounting is not done here: the caller flushes it after this returns.
+ */
+export async function gradeSession(
+  opts: {
+    difficulty: Difficulty;
+    claims: Claim[];
+    plan: InterviewPlan;
+    turns: TurnRecord[];
+  },
+  hooks?: {
+    onProgress?: (progress: GraderProgress) => void | Promise<void>;
+  },
+): Promise<ModelGrade[]> {
   const council = getGradingCouncil();
   const transcript = buildTranscript(opts.claims, opts.plan, opts.turns);
+  const timeout = graderTimeoutMs();
+  let settledCount = 0;
+  // Progress writes stay in order and off each grader's clock.
+  let progressChain = Promise.resolve();
+  const report = (progress: GraderProgress) => {
+    progressChain = progressChain.then(() => notify(hooks, progress));
+  };
 
-  const settled = await Promise.allSettled(council.map((model) => gradeOne(model, opts, transcript)));
+  report({ done: 0, total: council.length, stage: "grading" });
+
+  const settled = await Promise.allSettled(
+    council.map(async (model) => {
+      const started = Date.now();
+      try {
+        const grade = await gradeWithTimeout(model, opts, transcript, timeout);
+        settledCount += 1;
+        report({
+          done: settledCount,
+          total: council.length,
+          stage: "grading",
+          modelId: model.id,
+          durationMs: Date.now() - started,
+        });
+        return grade;
+      } catch (error) {
+        settledCount += 1;
+        report({
+          done: settledCount,
+          total: council.length,
+          stage: "grading",
+          modelId: model.id,
+          durationMs: Date.now() - started,
+        });
+        throw error;
+      }
+    }),
+  );
+  await progressChain;
   const grades = settled
     .filter((r): r is PromiseFulfilledResult<ModelGrade> => r.status === "fulfilled")
     .map((r) => r.value);
@@ -59,6 +121,39 @@ export async function gradeSession(opts: {
     throw first?.reason instanceof Error ? first.reason : new Error("Grading failed");
   }
   return grades;
+}
+
+async function notify(
+  hooks: { onProgress?: (progress: GraderProgress) => void | Promise<void> } | undefined,
+  progress: GraderProgress,
+): Promise<void> {
+  try {
+    await hooks?.onProgress?.(progress);
+  } catch (e) {
+    console.error("[grading] progress", e instanceof Error ? e.message : e);
+  }
+}
+
+/** Bound one grader so a hung model cannot hold the other two. */
+async function gradeWithTimeout(
+  model: ReturnType<typeof getGradingCouncil>[number],
+  opts: { difficulty: Difficulty; claims: Claim[]; plan: InterviewPlan; turns: TurnRecord[] },
+  transcript: string,
+  timeout: number,
+): Promise<ModelGrade> {
+  const ac = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timed = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      ac.abort();
+      reject(new Error(`Grader ${model.id} timed out after ${timeout}ms`));
+    }, timeout);
+  });
+  try {
+    return await Promise.race([gradeOne(model, opts, transcript, ac.signal), timed]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** Per-claim score (0-100) from the median rubric, in interview order. */
@@ -176,15 +271,18 @@ async function gradeOne(
   model: ReturnType<typeof getGradingCouncil>[number],
   opts: { difficulty: Difficulty; claims: Claim[]; plan: InterviewPlan; turns: TurnRecord[] },
   transcript: string,
+  signal?: AbortSignal,
 ): Promise<ModelGrade> {
   const temperature = GRADING_TEMPERATURE;
   const seed = gradingSeed();
   let last = "Grader skipped a question";
   for (let attempt = 0; attempt < 2; attempt++) {
+    if (signal?.aborted) throw new Error(`Grader ${model.id} timed out after ${graderTimeoutMs()}ms`);
     const { data } = await completeJson(model, {
       purpose: "grade",
       temperature,
       seed,
+      signal,
       messages: [
         { role: "system", content: rubricPrompt(opts.difficulty) },
         {

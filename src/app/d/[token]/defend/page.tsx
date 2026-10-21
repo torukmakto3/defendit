@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMe } from "@/components/auth";
 import { Companion } from "@/components/companion/Companion";
 import { VoiceInterview } from "@/components/voice/VoiceInterview";
+import { gradingProgressLabel, type GradingProgress } from "@/lib/grading-progress";
 import { canSubmit, INITIAL_INTERVIEW, interviewReducer, type InterviewState } from "@/lib/interview-state";
 
 interface Probe {
@@ -33,6 +34,7 @@ export default function DefendPage() {
   const startedRef = useRef(false);
   const { me } = useMe();
   const [showName, setShowName] = useState(false);
+  const [gradeProgress, setGradeProgress] = useState<GradingProgress | null>(null);
   useEffect(() => {
     if (me?.displayName) setShowName(true);
   }, [me]);
@@ -54,18 +56,62 @@ export default function DefendPage() {
     async (accommodation = false) => {
       setError(null);
       try {
-        const start = await fetch("/api/sessions/start", {
+        const res = await fetch("/api/sessions/start", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
           body: JSON.stringify({ token, mode: "defend", ...(accommodation ? { accommodation: true } : {}) }),
-        }).then((r) => r.json());
-        if (start.error) throw new Error(start.error);
-        const nextProbes = (start.probes || []) as Probe[];
-        setSessionId(start.sessionId);
-        setChannel(start.channel ?? "text");
-        setProbes(nextProbes);
-        dispatch({ type: "start_ok", total: nextProbes.length });
-        setSessionStartedAt(new Date().toISOString());
+        });
+        if (!res.ok) {
+          const failed = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(failed.error || "Failed to start");
+        }
+        const contentType = res.headers.get("content-type") || "";
+        if (!contentType.includes("ndjson") || !res.body) {
+          const start = (await res.json()) as {
+            error?: string;
+            probes?: Probe[];
+            sessionId?: string;
+            channel?: "text" | "voice" | "text_accommodation";
+          };
+          if (start.error) throw new Error(start.error);
+          const nextProbes = start.probes || [];
+          setSessionId(start.sessionId ?? null);
+          setChannel(start.channel ?? "text");
+          setProbes(nextProbes);
+          dispatch({ type: "start_ok", total: nextProbes.length });
+          setSessionStartedAt(new Date().toISOString());
+          return;
+        }
+        await readNdjson(res.body, (event) => {
+          if (event.type === "error") throw new Error(typeof event.error === "string" ? event.error : "Failed to start");
+          if (event.type === "question" && event.probe && typeof event.probe === "object") {
+            const probe = event.probe as Probe;
+            setSessionId(typeof event.sessionId === "string" ? event.sessionId : null);
+            setChannel(event.channel === "voice" || event.channel === "text_accommodation" ? event.channel : "text");
+            setProbes((prev) => (prev.length > 1 ? prev : [probe]));
+            if (interviewRef.current.phase === "starting") {
+              dispatch({ type: "start_ok", total: typeof event.total === "number" ? event.total : 1 });
+              setSessionStartedAt(new Date().toISOString());
+            }
+          }
+          if (event.type === "text" && typeof event.text === "string") {
+            setProbes((prev) => (prev[0] ? [{ ...prev[0], question: prev[0].question + event.text }] : prev));
+          }
+          if (event.type === "ready" && Array.isArray(event.probes)) {
+            const nextProbes = event.probes as Probe[];
+            setSessionId(typeof event.sessionId === "string" ? event.sessionId : null);
+            setChannel(event.channel === "voice" || event.channel === "text_accommodation" ? event.channel : "text");
+            setProbes((prev) => {
+              const index = interviewRef.current.index;
+              if (index <= 0) return nextProbes;
+              return nextProbes.map((probe, i) => (i < index ? (prev[i] ?? probe) : probe));
+            });
+            if (interviewRef.current.phase === "starting") {
+              dispatch({ type: "start_ok", total: nextProbes.length });
+              setSessionStartedAt(new Date().toISOString());
+            }
+          }
+        });
       } catch (e) {
         dispatch({ type: "start_fail" });
         setError(e instanceof Error ? e.message : "Failed to start");
@@ -80,6 +126,27 @@ export default function DefendPage() {
     startedRef.current = true;
     void begin();
   }, [begin]);
+
+  useEffect(() => {
+    if (interview.phase !== "grading" || !sessionId) return;
+    let stop = false;
+    const poll = async () => {
+      while (!stop) {
+        try {
+          const res = await fetch(`/api/sessions/defend/progress?sessionId=${encodeURIComponent(sessionId)}`);
+          const data = (await res.json()) as { progress?: GradingProgress | null };
+          if (data.progress) setGradeProgress(data.progress);
+        } catch {
+          // The complete request is the source of truth; a missed poll just keeps the last line.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+    };
+    void poll();
+    return () => {
+      stop = true;
+    };
+  }, [interview.phase, sessionId]);
 
   const completeDefense = useCallback(async () => {
     if (interviewRef.current.phase !== "grading") {
@@ -120,7 +187,9 @@ export default function DefendPage() {
 
   const index = interview.index;
   const busy = interview.phase === "saving" || interview.phase === "grading" || interview.phase === "starting";
+  const total = Math.max(interview.total, probes.length);
   const current = probes[index];
+  const voiceReady = channel === "voice" && total > 0 && probes.length === total;
   const minutes = useMemo(() => {
     const s = Math.floor(elapsed / 1000);
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -142,6 +211,9 @@ export default function DefendPage() {
       }).then((r) => r.json());
       if (saved.error) throw new Error(saved.error);
       setAnswer("");
+      if (saved.nextProbe?.id) {
+        setProbes((prev) => prev.map((probe) => (probe.id === saved.nextProbe.id ? { ...probe, ...saved.nextProbe } : probe)));
+      }
       dispatch({ type: "saved", answered: saved.answered, total: saved.total });
       if (saved.done) await completeDefense();
     } catch (err) {
@@ -182,7 +254,7 @@ export default function DefendPage() {
     return (
       <div className="shell grid max-w-3xl gap-4">
         <Companion state="thinking" size={72} />
-        <p>{error ? "Grading didn't finish." : "Grading council scoring…"}</p>
+        <p>{gradingProgressLabel(gradeProgress, !!error)}</p>
         {error && <p className="text-sm text-danger">{error}</p>}
         {error && (
           <button type="button" className="btn btn-primary justify-self-start" onClick={() => void retryGrade()}>
@@ -202,7 +274,7 @@ export default function DefendPage() {
     );
   }
 
-  if (channel === "voice" && sessionId && interview.phase !== "follow_up") {
+  if (voiceReady && sessionId && interview.phase !== "follow_up") {
     return (
       <div className="shell grid max-w-3xl gap-6">
         <div>
@@ -237,16 +309,18 @@ export default function DefendPage() {
         </div>
         <div className="text-right text-sm">
           <div>
-            Question {index + 1} / {probes.length}
+            Question {index + 1} / {total}
           </div>
           <div className="font-mono">{minutes}</div>
         </div>
       </div>
 
       <ol className="mt-6 flex gap-1.5" aria-label="Interview progress">
-        {probes.map((p, i) => (
+        {Array.from({ length: total }, (_, i) => {
+          const p = probes[i];
+          return (
           <li
-            key={p.id}
+            key={p?.id ?? `pending-${i}`}
             aria-current={i === index ? "step" : undefined}
             className={`h-1.5 flex-1 ${
               i < index ? "bg-[var(--blueprint)]" : i === index ? "bg-[var(--ink)]" : "bg-[var(--line)]"
@@ -257,7 +331,8 @@ export default function DefendPage() {
               {i < index ? " answered" : i === index ? " current" : ""}
             </span>
           </li>
-        ))}
+          );
+        })}
       </ol>
 
       <div className="panel mt-6 grid gap-5 p-5 sm:p-6">
@@ -291,7 +366,7 @@ export default function DefendPage() {
             required
             disabled={busy}
           />
-          {index + 1 === probes.length && me?.displayName && (
+          {index + 1 === total && me?.displayName && (
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -302,12 +377,15 @@ export default function DefendPage() {
             </label>
           )}
           {error && <p className="text-sm text-danger">{error}</p>}
-          <button type="submit" className="btn btn-primary" disabled={busy}>
+          {channel === "voice" && (
+            <p className="text-sm text-[var(--ink-2)]">Opening the voice interview…</p>
+          )}
+          <button type="submit" className="btn btn-primary" disabled={busy || channel === "voice"}>
             {busy
-              ? index + 1 < probes.length
+              ? index + 1 < total
                 ? "Saving…"
-                : "Grading council scoring…"
-              : index + 1 < probes.length
+                : gradingProgressLabel(gradeProgress, false)
+              : index + 1 < total
                 ? "Submit & next"
                 : "Submit & finish"}
           </button>
@@ -315,4 +393,34 @@ export default function DefendPage() {
       </div>
     </div>
   );
+}
+
+interface StartEvent {
+  type?: string;
+  error?: unknown;
+  sessionId?: unknown;
+  channel?: unknown;
+  total?: unknown;
+  text?: unknown;
+  probe?: unknown;
+  probes?: unknown;
+}
+
+/** Read a newline-delimited JSON response, handing each object to the caller as it arrives. */
+async function readNdjson(body: ReadableStream<Uint8Array>, onEvent: (event: StartEvent) => void) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      onEvent(JSON.parse(line) as StartEvent);
+    }
+  }
+  if (buffer.trim()) onEvent(JSON.parse(buffer) as StartEvent);
 }

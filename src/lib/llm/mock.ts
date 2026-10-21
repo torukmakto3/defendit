@@ -14,6 +14,7 @@ export function createMockProvider(modelId = "mock-defend-v1"): LlmProvider {
     async complete(req: LlmRequest): Promise<LlmResponse> {
       const user = req.messages.filter((m) => m.role === "user").pop()?.content ?? "";
       const purpose = req.purpose ?? "generic";
+      if (purpose === "grade") await waitForGrade(req, modelId);
 
       let content: string;
       if (req.json) {
@@ -33,6 +34,32 @@ export function createMockProvider(modelId = "mock-defend-v1"): LlmProvider {
       };
     },
   };
+}
+
+/**
+ * Test knobs for the grading council. Unset in normal mock mode.
+ * `MOCK_GRADER_DELAY_MS` pauses every grade. `MOCK_GRADER_HANG_MODEL` pauses
+ * one model until the per-grader abort fires.
+ */
+async function waitForGrade(req: LlmRequest, modelId: string): Promise<void> {
+  const hang = process.env.MOCK_GRADER_HANG_MODEL === modelId;
+  const delay = hang ? 5_000 : Number(process.env.MOCK_GRADER_DELAY_MS || "0");
+  if (!Number.isFinite(delay) || delay <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error("aborted"));
+    };
+    const timer = setTimeout(() => {
+      req.signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delay);
+    if (req.signal?.aborted) {
+      onAbort();
+      return;
+    }
+    req.signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function mockJson(purpose: string, user: string, modelId: string): unknown {
