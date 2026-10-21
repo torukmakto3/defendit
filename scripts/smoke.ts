@@ -6,7 +6,8 @@
  *   npm run smoke          # BASE_URL defaults to http://localhost:3000
  *   BASE_URL=https://<preview>.vercel.app npm run smoke
  *
- * Needs dev sign-in links (local default, or AUTH_DEV_LINKS=1 on a test deploy).
+ * Needs dev sign-in links (local default, or AUTH_DEV_LINKS=1 on a preview deploy).
+ * Vercel production (VERCEL_ENV=production) never returns an on-screen link.
  * Covers: sign-in → upload → learn → defend → signed receipt → stamp, plus the
  * access-control and privacy checks that must hold on every deploy.
  */

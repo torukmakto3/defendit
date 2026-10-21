@@ -61,10 +61,29 @@ npm test               # hashing, signing, probe determinism
 npm run smoke          # end-to-end API flow in mock mode
 ```
 
-SQLite DB: `./data/defend-it.db`  
+SQLite DB: `./data/defend-it-v2.db`  
 Uploads: `./uploads/`  
 Signing key (auto-generated): `./data/signing-key.json`  
 Public key: `/.well-known/defend-it-pubkey.json`
+
+### Sign in
+
+Locally, the sign-in card shows an on-screen magic link (no email provider required). Production sign-in is Google.
+
+1. In Google Cloud Console, configure the OAuth consent screen. While it stays in **Testing**, add the Google account as a test user.
+2. Create an OAuth client ID of type **Web application**.
+3. Authorized JavaScript origins: `https://defendit-two.vercel.app` and `http://localhost:3000`.
+4. Authorized redirect URIs, exact:
+   - `https://defendit-two.vercel.app/api/auth/google/callback`
+   - `http://localhost:3000/api/auth/google/callback`
+5. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. Set `APP_URL=https://defendit-two.vercel.app` (or `NEXT_PUBLIC_APP_URL` to that same origin). The redirect URI is that origin plus `/api/auth/google/callback`. If both are unset on Vercel, the origin is `https://$VERCEL_PROJECT_PRODUCTION_URL`.
+6. Set `ADMIN_EMAILS` to the verified email, for this deployment `luisnunez1940@hotmail.com`.
+
+Admin access follows that verified email, compared case-insensitively. The Hotmail address has to be added and verified on the Google account (Google Account → Personal info → Email). Signing in with a different Gmail does not open `/admin`. The sign-in screen asks Google to show the account picker so the right account can be chosen.
+
+The Google button is hidden when `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` is missing. The email form is shown only when Resend is configured (`RESEND_API_KEY` and `EMAIL_FROM`) or an on-screen dev link is allowed. Otherwise the card says sign-in is not available, instead of failing with a 503.
+
+On-screen links are a local and preview convenience. `VERCEL_ENV=production` never returns one, even if `AUTH_DEV_LINKS=1`. Preview can opt in with `AUTH_DEV_LINKS=1` and `AUTH_DEV_LINK_ALLOW`. Admin addresses never get an on-screen link. Magic-link email stays in place for when Resend has a sending domain.
 
 ### Try the happy path
 
@@ -132,7 +151,7 @@ Score, difficulty, date, creator name/email, SHA-256 of exact bytes, rubric + mo
 
 1. Realtime **voice** viva (ElevenLabs Agents or OpenAI Realtime) behind the existing adapter  
 2. Google Picker / GitHub PR ingest  
-3. Deploy (Vercel + Postgres) and magic-link auth  
+3. Resend magic-link email (Google sign-in covers production accounts)  
 4. Transparency log / W3C VC issuance  
 5. Calibration gold-set tooling (Krippendorff α)  
 
