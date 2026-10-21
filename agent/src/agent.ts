@@ -6,15 +6,17 @@
  * back to the server, which grades exactly as for typed answers. No language
  * model runs here, so the document never reaches another model.
  *
- * Privacy: Deepgram STT and TTS run with mip_opt_out on every request, LiveKit
- * session recording is off, and logs are kept at error level so answers never
- * land in log storage.
+ * Privacy: with a Deepgram key, STT (and TTS, while TTS_PROVIDER is deepgram)
+ * sends mip_opt_out. TTS_PROVIDER=xai speaks through LiveKit Inference
+ * (xai/tts-1) and does not call xAI with our own key. Session recording is
+ * off, and logs stay at error level so answers never land in log storage.
  */
 import { type JobContext, type JobProcess, ServerOptions, cli, defineAgent, llm, voice } from "@livekit/agents";
 import * as deepgram from "@livekit/agents-plugin-deepgram";
 import * as silero from "@livekit/agents-plugin-silero";
 import { createHmac } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { selectTts, type TtsChoice } from "./tts.js";
 
 export const AGENT_NAME = "defend-it-interviewer";
 const API = (process.env.DEFEND_IT_API_URL || "").replace(/\/$/, "");
@@ -43,6 +45,21 @@ async function call<T>(path: string, body: unknown): Promise<T> {
   });
   if (!res.ok) throw Object.assign(new Error(`${path} failed (${res.status})`), { status: res.status });
   return (await res.json()) as T;
+}
+
+function interviewerTts(choice: TtsChoice): string | deepgram.TTS {
+  switch (choice.kind) {
+    case "deepgram-plugin":
+      return new deepgram.TTS({ model: choice.model, mipOptOut: choice.mipOptOut });
+    case "deepgram-inference":
+      return choice.descriptor;
+    case "xai-inference":
+      return choice.descriptor;
+    default: {
+      const _exhaustive: never = choice;
+      return _exhaustive;
+    }
+  }
 }
 
 const ACKS = ["Thanks.", "Got it.", "Okay.", "Understood.", "Thank you."];
@@ -155,13 +172,13 @@ export default defineAgent({
     const session = new voice.AgentSession({
       vad: ctx.proc.userData.vad as silero.VAD,
       // Our own Deepgram key with mip_opt_out on every request when configured;
-      // otherwise LiveKit Inference's Deepgram models (LiveKit states zero retention).
-      ...(process.env.DEEPGRAM_API_KEY
-        ? {
-            stt: new deepgram.STT({ model: "nova-3", smartFormat: true, punctuate: true, mipOptOut: true }),
-            tts: new deepgram.TTS({ model: "aura-2-thalia-en", mipOptOut: true }),
-          }
-        : { stt: "deepgram/nova-3" as const, tts: "deepgram/aura-2" as const }),
+      // otherwise LiveKit Inference's Deepgram Nova-3 (LiveKit states zero retention).
+      stt: process.env.DEEPGRAM_API_KEY
+        ? new deepgram.STT({ model: "nova-3", smartFormat: true, punctuate: true, mipOptOut: true })
+        : ("deepgram/nova-3" as const),
+      // deepgram (default): Aura-2 Thalia on our key, or LiveKit Inference.
+      // xai: Grok TTS through LiveKit Inference. See docs/voice-evaluation.md.
+      tts: interviewerTts(selectTts(process.env)),
       // Viva answers include thinking pauses: wait longer before ending a turn.
       turnHandling: { endpointing: { minDelay: 1800, maxDelay: 6000 } },
     });
