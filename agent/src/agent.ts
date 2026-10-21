@@ -3,8 +3,9 @@
  *
  * Scripted on purpose: it asks only the questions our server already wrote
  * for this deliverable, in order, and reports each spoken answer (with timing)
- * back to the server, which grades exactly as for typed answers. No language
- * model runs here, so the document never reaches another model.
+ * back to the server, which grades exactly as for typed answers. This process
+ * does not call a model. When SPEECH_REWRITE_LLM=1, the server may paraphrase
+ * a line before it is spoken; grading still uses the original question text.
  *
  * Privacy: with a Deepgram key, STT (and TTS, while TTS_PROVIDER is deepgram)
  * sends mip_opt_out. TTS_PROVIDER=xai speaks through LiveKit Inference
@@ -15,7 +16,9 @@ import { type JobContext, type JobProcess, ServerOptions, cli, defineAgent, llm,
 import * as deepgram from "@livekit/agents-plugin-deepgram";
 import * as silero from "@livekit/agents-plugin-silero";
 import { createHmac } from "node:crypto";
+import { ReadableStream } from "node:stream/web";
 import { fileURLToPath } from "node:url";
+import { SPEAKABLE_BUDGET_MS, toSpeakable, type SpeakableRewrite } from "./speech/speakable.js";
 import { selectTts, type TtsChoice } from "./tts.js";
 
 export const AGENT_NAME = "defend-it-interviewer";
@@ -33,7 +36,7 @@ interface Plan {
   answered: number;
 }
 
-async function call<T>(path: string, body: unknown): Promise<T> {
+async function call<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const json = JSON.stringify(body);
   const ts = Date.now();
   const signature = createHmac("sha256", SECRET).update(`${ts}.${json}`).digest("hex");
@@ -41,7 +44,7 @@ async function call<T>(path: string, body: unknown): Promise<T> {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-defend-timestamp": String(ts), "x-defend-signature": signature },
     body: json,
-    signal: AbortSignal.timeout(15_000),
+    signal: signal ?? AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw Object.assign(new Error(`${path} failed (${res.status})`), { status: res.status });
   return (await res.json()) as T;
@@ -64,6 +67,60 @@ function interviewerTts(choice: TtsChoice): string | deepgram.TTS {
 
 const ACKS = ["Thanks.", "Got it.", "Okay.", "Understood.", "Thank you."];
 const REPEAT = /\b(repeat|say (that|it) again|didn'?t (catch|hear)|pardon|come again)\b/i;
+
+/**
+ * Optional model paraphrase. The web app owns the model call (zero retention).
+ * A miss, a timeout, or a code-like answer falls back to the local rules pass.
+ */
+function speechRewrite(sessionId: string): SpeakableRewrite | undefined {
+  if (process.env.SPEECH_REWRITE_LLM !== "1") return undefined;
+  return async (text, signal) => {
+    const res = await call<{ spoken?: string }>("/api/voice/agent/speak", { text, sessionId }, signal);
+    if (typeof res.spoken !== "string" || !res.spoken.trim()) throw new Error("empty speech rewrite");
+    return res.spoken;
+  };
+}
+
+/** TTS-only transform. The transcript is the original text passed to say(). */
+function speakableTtsTransform(sessionId: string): (source: ReadableStream<string>) => ReadableStream<string> {
+  const rewrite = speechRewrite(sessionId);
+  return (source) => speakableTtsStream(source, rewrite);
+}
+
+function speakableTtsStream(
+  source: ReadableStream<string>,
+  rewrite: SpeakableRewrite | undefined,
+): ReadableStream<string> {
+  const reader = source.getReader();
+  return new ReadableStream<string>({
+    async start(controller) {
+      let raw = "";
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          raw += value;
+        }
+        const spoken = await toSpeakable(raw, { rewrite, timeoutMs: SPEAKABLE_BUDGET_MS });
+        if (spoken.latencyMs >= 500) {
+          console.error(`[interviewer] speech rewrite took ${Math.round(spoken.latencyMs)}ms`);
+        }
+        controller.enqueue(spoken.text || raw);
+        controller.close();
+      } catch {
+        try {
+          if (raw) controller.enqueue(raw);
+          controller.close();
+        } catch {
+          // The stream was already cancelled.
+        }
+      }
+    },
+    cancel() {
+      return reader.cancel();
+    },
+  });
+}
 
 class Interview {
   index = 0;
@@ -170,6 +227,9 @@ export default defineAgent({
 
     let interview: Interview | undefined;
     const session = new voice.AgentSession({
+      // Rewrite only the TTS input. say() still forwards the original line,
+      // so the live transcript and the on-screen question stay exact.
+      ttsTextTransforms: [speakableTtsTransform(sessionId), "filter_markdown", "filter_emoji"],
       vad: ctx.proc.userData.vad as silero.VAD,
       // Our own Deepgram key with mip_opt_out on every request when configured;
       // otherwise LiveKit Inference's Deepgram Nova-3 (LiveKit states zero retention).
