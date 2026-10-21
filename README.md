@@ -126,7 +126,12 @@ VOICE_PROVIDER=text              # default (ships today)
 # VOICE_PROVIDER=elevenlabs      # stub
 # VOICE_PROVIDER=openai-realtime # stub
 # Planned: cascaded OSS (Whisper/Parakeet → LLM → Kokoro/Orpheus)
+
+# LiveKit interviewer speech (agent/). Unset keeps Deepgram Aura-2 Thalia.
+# TTS_PROVIDER=xai               # Grok TTS, voice Ara, via LiveKit Inference
 ```
+
+`VOICE_PROVIDER` is the web modality. `TTS_PROVIDER` is only the spoken voice on the LiveKit agent. Comparison, cost, and the Muse Wonder finding: `docs/voice-evaluation.md`.
 
 Session orchestration stays on our server; the voice provider only carries the conversation.
 

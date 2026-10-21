@@ -32,6 +32,9 @@ chmod 600 "$SECRETS_FILE"
   echo "VOICE_AGENT_SECRET=$(cat .agent-secret)"
   echo "DEFEND_IT_API_URL=$API_URL"
   [ -n "$DG_KEY" ] && echo "DEEPGRAM_API_KEY=$DG_KEY"
+  # Unset keeps Deepgram Aura-2. Export TTS_PROVIDER=xai to opt in on this deploy.
+  [ -n "${TTS_PROVIDER:-}" ] && echo "TTS_PROVIDER=$TTS_PROVIDER"
+  [ -n "${TTS_VOICE:-}" ] && echo "TTS_VOICE=$TTS_VOICE"
 } > "$SECRETS_FILE"
 unset DG_KEY
 
