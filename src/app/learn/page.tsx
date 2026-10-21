@@ -21,7 +21,6 @@ interface Project {
 export default function LearnHubPage() {
   const { me } = useMe();
   const [projects, setProjects] = useState<Project[] | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -35,36 +34,17 @@ export default function LearnHubPage() {
     if (me) load().catch((e) => setError(e.message));
   }, [me, load]);
 
-  async function makeCards(token: string) {
-    setBusy(token);
-    setError(null);
-    try {
-      const res = await fetch("/api/learn/cards", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
-      });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j.error || "Could not make flashcards");
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not make flashcards");
-    } finally {
-      setBusy(null);
-    }
-  }
-
   const totalDue = projects?.reduce((n, p) => n + p.due, 0) ?? 0;
 
   return (
     <div className="shell grid gap-8">
       <section className="grid items-center gap-5 sm:grid-cols-[auto_1fr_auto]">
-        <Companion state={busy ? "thinking" : totalDue > 0 ? "listening" : "impressed"} size={72} />
+        <Companion state={totalDue > 0 ? "listening" : "impressed"} size={72} />
         <div className="min-w-0">
           <span className="eyebrow">Sheet 02 &middot; Learn</span>
           <h1 className="text-3xl font-bold sm:text-4xl">Your projects</h1>
           <p className="text-[var(--ink-2)]">
-            Practise with the coach, keep key reasoning fresh with flashcards, then defend when you&apos;re ready.
+            Flashcards come first, made from your file. The coach and a defense are there when you want them.
           </p>
         </div>
         {totalDue > 0 && (
@@ -104,19 +84,14 @@ export default function LearnHubPage() {
               </div>
               {p.purged && <p className="text-sm text-[var(--ink-2)]">This upload expired and its content was deleted.</p>}
               <div className="flex flex-wrap gap-2">
-                {p.documentAvailable && (
-                  <Link href={`/d/${p.token}/learn`} className="btn btn-ghost">
-                    Talk it through
+                {!p.purged && (
+                  <Link href={`/d/${p.token}/learn`} className="btn btn-primary">
+                    Flashcards{p.due > 0 ? ` · ${p.due} due` : ""}
                   </Link>
                 )}
-                {!p.purged && p.cards === 0 && (
-                  <button type="button" className="btn btn-ghost" disabled={busy === p.token} onClick={() => makeCards(p.token)}>
-                    {busy === p.token ? "Writing cards…" : "Make flashcards"}
-                  </button>
-                )}
-                {p.due > 0 && (
-                  <Link href={`/learn/review?project=${p.token}`} className="btn btn-primary">
-                    Review {p.due}
+                {p.documentAvailable && (
+                  <Link href={`/d/${p.token}/learn/coach`} className="btn btn-ghost">
+                    Talk it through
                   </Link>
                 )}
                 {p.status !== "defended" && !p.purged && (

@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS flashcards (
   claim_id TEXT,
   front_enc TEXT NOT NULL,
   back_enc TEXT NOT NULL,
+  source_enc TEXT,
   card_json TEXT NOT NULL,
   due TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -186,6 +187,7 @@ const ADDED_COLUMNS: [string, string, string][] = [
   ["sessions", "completion_tokens", "INTEGER NOT NULL DEFAULT 0"],
   ["sessions", "cost_usd", "DOUBLE PRECISION NOT NULL DEFAULT 0"],
   ["sessions", "over_budget", "INTEGER NOT NULL DEFAULT 0"],
+  ["flashcards", "source_enc", "TEXT"],
 ];
 
 let dbPromise: Promise<Db> | null = null;

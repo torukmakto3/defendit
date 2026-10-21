@@ -1111,7 +1111,13 @@ export async function loadOwnDeliverable(token: string, user: User) {
   if (!deliverable) throw new HttpError(400, "Upload a deliverable first");
   const claims = liveClaims(deliverable);
   if (!claims) throw new HttpError(410, "This upload has been purged. Upload the file again.");
-  return { request, deliverable, claims };
+  return {
+    request,
+    deliverable,
+    claims,
+    text: liveText(deliverable),
+    fileName: liveFileName(deliverable),
+  };
 }
 
 /** Learn hub: the creator's deliverables with what they can still do with each. */

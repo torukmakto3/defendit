@@ -1,3 +1,4 @@
+import { prepareCardFaces } from "../card-text";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./types";
 import { usageFromProviderBody } from "./usage";
 
@@ -58,13 +59,14 @@ function mockJson(purpose: string, user: string, modelId: string): unknown {
 
 function mockFlashcards(user: string): unknown {
   const match = user.match(/<claims>\n([\s\S]*?)\n<\/claims>/);
-  const claims = match ? (JSON.parse(match[1]) as { id: string; text: string; section: string }[]) : [];
+  const claims = match
+    ? (JSON.parse(match[1]) as { id: string; text: string; section: string; source?: string }[])
+    : [];
   return {
-    cards: claims.map((c) => ({
-      claimId: c.id,
-      front: `In "${c.section}", what does your deliverable claim, and why?`,
-      back: c.text.replace(/\s+/g, " ").slice(0, 300),
-    })),
+    cards: claims.map((c) => {
+      const faces = prepareCardFaces({ section: c.section, text: c.text, source: c.source || c.text });
+      return { claimId: c.id, front: faces.front, back: faces.back, source: faces.source };
+    }),
   };
 }
 
