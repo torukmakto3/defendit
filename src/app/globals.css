@@ -86,6 +86,34 @@ h3,
   text-wrap: balance;
 }
 
+/* DESIGN.md scale: 12, 14, 16, 19, 24, 32, 44. Page title, section, question. */
+.type-page {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+.type-section {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.type-question {
+  font-family: var(--font-display), system-ui, sans-serif;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.45;
+  letter-spacing: -0.015em;
+}
+@media (min-width: 640px) {
+  .type-page { font-size: 44px; }
+}
+
+::selection {
+  background: color-mix(in srgb, var(--blueprint) 28%, var(--card));
+  color: var(--ink);
+}
+
 .mono,
 code {
   font-family: var(--font-mono), ui-monospace, monospace;
@@ -138,7 +166,10 @@ label:focus-within {
 .panel::after { bottom: -6px; right: -6px; border-width: 0 1.5px 1.5px 0; }
 
 .btn {
-  @apply inline-flex items-center justify-center px-4 py-2.5 text-sm transition;
+  @apply inline-flex items-center justify-center px-4 text-sm transition;
+  min-height: 44px;
+  padding-top: 8px;
+  padding-bottom: 8px;
   font-family: var(--font-display), system-ui, sans-serif;
   font-weight: 600;
   border-radius: 2px;
@@ -158,13 +189,17 @@ label:focus-within {
 .btn-ghost:hover { background: color-mix(in srgb, var(--blueprint) 8%, var(--card)); }
 
 .field {
-  @apply w-full border px-3 py-2 text-sm outline-none;
+  @apply w-full border px-3 text-sm outline-none;
+  min-height: 44px;
+  padding-top: 8px;
+  padding-bottom: 8px;
   border-radius: 2px;
   border-color: var(--ink-2);
   background: var(--card);
   color: var(--ink);
+  caret-color: var(--blueprint);
 }
-.field::placeholder { color: color-mix(in srgb, var(--ink-2) 80%, transparent); }
+.field::placeholder { color: var(--ink-2); }
 .field:focus {
   border-color: var(--blueprint);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--blueprint) 20%, transparent);
@@ -204,7 +239,7 @@ label:focus-within {
 .titleblock small {
   display: block;
   font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 10.5px;
+  font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-2);
@@ -247,6 +282,29 @@ label:focus-within {
   background: var(--card);
 }
 .theme-toggle button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--card);
+}
+
+/* Pressed choice inside a set. Ink fill, so it is not a second primary button. */
+.segment {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.segment button {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1.5px solid var(--ink);
+  border-radius: 2px;
+  background: var(--card);
+  color: var(--ink);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.segment button[aria-pressed="true"] {
   background: var(--ink);
   color: var(--card);
 }
@@ -298,7 +356,8 @@ label:focus-within {
   .companion *,
   .animate-rise,
   .animate-rise-delay,
-  .animate-rise-delay-2 { animation: none !important; transition: none !important; }
+  .animate-rise-delay-2,
+  .animate-pulse { animation: none !important; transition: none !important; }
 }
 
 /* ---------- Plotter-print stamp (src/lib/stamp.ts) ---------- */
@@ -308,7 +367,7 @@ label:focus-within {
 .plotter.playing .pl-draw { animation: pl-draw var(--d, 0.5s) ease-in-out var(--at, 0s) both; }
 .plotter.playing .pl-fade { animation: pl-fade 0.3s ease-out var(--at, 0s) both; }
 .plotter .pl-stamp { transform-box: fill-box; transform-origin: center; }
-.plotter.playing .pl-stamp { animation: pl-thump 0.45s cubic-bezier(0.2, 1.6, 0.4, 1) var(--at, 0s) both; }
+.plotter.playing .pl-stamp { animation: pl-thump 0.45s cubic-bezier(0.16, 1, 0.3, 1) var(--at, 0s) both; }
 @keyframes pl-draw { from { stroke-dashoffset: var(--len); } to { stroke-dashoffset: 0; } }
 @keyframes pl-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes pl-thump { 0% { opacity: 0; transform: scale(1.8) rotate(-6deg); } 100% { opacity: 1; transform: scale(1); } }
@@ -323,7 +382,7 @@ label:focus-within {
 .metric .m-crack { stroke-dasharray: 40; stroke-dashoffset: 0; }
 .metric.playing .m-crack { animation: m-crack 0.4s ease-out 1.5s both; }
 .metric .m-mark { transform: translateX(var(--to)); }
-.metric.playing .m-mark { animation: m-slide 0.9s cubic-bezier(0.3, 1.3, 0.5, 1) var(--at, 0s) both; }
+.metric.playing .m-mark { animation: m-slide 0.9s cubic-bezier(0.16, 1, 0.3, 1) var(--at, 0s) both; }
 .metric.playing .m-late { animation: pl-fade 0.4s ease-out var(--at, 1.6s) both; }
 @keyframes m-rise { from { transform: scaleY(0); } to { transform: scaleY(1); } }
 @keyframes m-drop { from { transform: translateY(-40px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
