@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * The tab icon is the Defend It mark, and the header no longer carries a
- * revision label. File conventions in `src/app` are what emit the links.
+ * The tab icon is the placeholder D monogram, and the header no longer
+ * carries a revision label. File conventions in `src/app` emit the links.
  */
 test("the head links the brand icons and the header has no revision label", async ({ page }) => {
   await page.goto("/");

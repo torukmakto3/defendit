@@ -1,7 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img">
   <title>Defend It</title>
-  <!-- Ink disc and a white set-square. The white ring keeps the disc visible on a light or dark tab. -->
-  <circle cx="32" cy="32" r="31" fill="#ffffff"/>
-  <circle cx="32" cy="32" r="27" fill="#0e1726"/>
-  <path fill="#ffffff" d="M21 43 L21 11 L53 43 Z"/>
+  <!--
+    Placeholder monogram while the logo is on hold. Not the final mark.
+    Colours are the day tokens in src/app/globals.css: ink and blueprint.
+    To swap the icon, replace this file, then run `npm run brand-icon`.
+  -->
+  <rect width="64" height="64" fill="#0e1726"/>
+  <text x="31" y="33" text-anchor="middle" dominant-baseline="central" font-family="Sora" font-size="48" font-weight="700" fill="#1f4bd8">D</text>
 </svg>

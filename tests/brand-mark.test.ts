@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { renderBrandIcons } from "../scripts/brand-icon";
 
 function read(path: string) {
   return readFileSync(new URL(`../${path}`, import.meta.url));
@@ -34,6 +35,14 @@ function icoFrames(buf: Buffer) {
   return frames;
 }
 
+function dayToken(name: string): string {
+  const css = read("src/app/globals.css").toString("utf8");
+  const root = css.slice(css.indexOf(":root {"), css.indexOf("@media"));
+  const match = root.match(new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})`));
+  expect(match, name).toBeTruthy();
+  return match![1].toLowerCase();
+}
+
 describe("brand mark", () => {
   it("keeps the revision label out of the header", () => {
     const layout = read("src/app/layout.tsx").toString("utf8");
@@ -41,7 +50,15 @@ describe("brand mark", () => {
     expect(layout).not.toMatch(/rev\s*b/i);
   });
 
-  it("ships a multi-size favicon, a 512 icon, and an opaque apple icon", () => {
+  it("ships a D monogram from the day ink and blueprint tokens", () => {
+    const ink = dayToken("ink");
+    const blueprint = dayToken("blueprint");
+    const svg = read("src/app/icon.svg").toString("utf8");
+    expect(svg).toContain(`fill="${ink}"`);
+    expect(svg).toContain(`fill="${blueprint}"`);
+    expect(svg).toContain(">D<");
+    expect(svg).not.toMatch(/set-square|M21 43/i);
+
     const frames = icoFrames(read("src/app/favicon.ico"));
     expect(frames.map((frame) => frame.width)).toEqual([16, 32, 48]);
     expect(frames.every((frame) => frame.png && frame.width === frame.height)).toBe(true);
@@ -53,9 +70,9 @@ describe("brand mark", () => {
     // Color type 2 is truecolor with no alpha channel, so the home-screen tile stays opaque.
     expect(apple).toMatchObject({ width: 180, height: 180, bitDepth: 8, colorType: 2 });
 
-    const svg = read("src/app/icon.svg").toString("utf8");
-    expect(svg).toContain('fill="#0e1726"');
-    expect(svg).toContain('fill="#ffffff"');
-    expect(svg).toContain("M21 43 L21 11 L53 43 Z");
+    const rendered = renderBrandIcons(svg);
+    expect(rendered.iconPng.equals(read("src/app/icon.png"))).toBe(true);
+    expect(rendered.applePng.equals(read("src/app/apple-icon.png"))).toBe(true);
+    expect(rendered.favicon.equals(read("src/app/favicon.ico"))).toBe(true);
   });
 });
