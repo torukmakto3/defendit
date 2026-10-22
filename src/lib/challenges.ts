@@ -1,3 +1,4 @@
+import { trackChallenge } from "./analytics-store";
 import { normalizeEmail, type User } from "./auth";
 import { assertPaidChallengesOpen, billingEnabled } from "./billing";
 import { challengesEnabled, publicTierTitle, TIER_LEGEND, tierForScore, type ResultTier } from "./challenge-tier";
@@ -386,6 +387,51 @@ export interface CreateChallengeInput {
   note?: string;
   difficulty: Difficulty;
   sponsorType?: SponsorType;
+  /** Set only by a server caller. The public create route does not accept this. */
+  kind?: "self" | "third_party";
+  /** `/c/new?onward=defender` or `viewer`. Omitted when the link had neither. */
+  onward?: "defender" | "viewer";
+}
+
+function createdKind(kind: CreateChallengeInput["kind"]): "self" | "third_party" {
+  switch (kind) {
+    case "self":
+      return "self";
+    case "third_party":
+    case undefined:
+      return "third_party";
+    default: {
+      const unknown: never = kind;
+      return unknown;
+    }
+  }
+}
+
+function createdOnward(onward: CreateChallengeInput["onward"]): "defender" | "viewer" | undefined {
+  switch (onward) {
+    case "defender":
+    case "viewer":
+      return onward;
+    case undefined:
+      return undefined;
+    default: {
+      const unknown: never = onward;
+      return unknown;
+    }
+  }
+}
+
+function shareMethod(channel: "x" | "copy"): "share" | "copy" {
+  switch (channel) {
+    case "x":
+      return "share";
+    case "copy":
+      return "copy";
+    default: {
+      const unknown: never = channel;
+      return unknown;
+    }
+  }
 }
 
 export interface CreatedChallenge {
@@ -528,6 +574,15 @@ export async function createChallenge(input: CreateChallengeInput): Promise<Crea
     return { id, slug, expiresAt, sponsorType };
   });
 
+  const onward = createdOnward(input.onward);
+  await trackChallenge("challenge_created", {
+    props: {
+      kind: createdKind(input.kind),
+      sponsor: created.sponsorType,
+      ...(onward ? { onward } : {}),
+    },
+  });
+
   return {
     id: created.id,
     slug: created.slug,
@@ -584,7 +639,11 @@ export async function getPublicChallenge(
   await expireDueChallenges(db);
   const row = await loadBySlug(db, slug);
   if (!row) return null;
-  if (opts?.recordView) await recordEvent(db, row.id, "viewed", user?.id ?? null);
+  if (opts?.recordView) {
+    await recordEvent(db, row.id, "viewed", user?.id ?? null);
+    const creatorView = !!user && user.id === row.creator_user_id;
+    if (!creatorView) await trackChallenge("challenge_opened");
+  }
 
   const status = asStatus(row.status);
   const visibility = asVisibility(row.visibility);
@@ -751,6 +810,7 @@ export async function claimChallenge(opts: {
     return { token, challengeId: row.id, requestId, challengerUserId: row.creator_user_id };
   });
 
+  await trackChallenge("challenge_accepted");
   await linkChallengedDefense({
     challengeId: result.challengeId,
     challengerUserId: result.challengerUserId,
@@ -806,7 +866,7 @@ export async function declineChallenge(
   }
   await expireDueChallenges(db);
 
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     const row = await loadBySlug(tx, slug);
     if (!row) throw new HttpError(404, "Challenge not found.");
     if (row.creator_user_id === user.id) {
@@ -853,6 +913,8 @@ export async function declineChallenge(
     if (row.sponsor_type === "beta") await releaseChallengeDefenseBudget(row.id, tx);
     return { closed: true };
   });
+  if (result.closed) await trackChallenge("challenge_declined");
+  return result;
 }
 
 /** What a public page may say about a closed challenge. Never the word declined. */
@@ -920,6 +982,8 @@ export async function recordShareClick(slug: string, user: User | null, channel:
   if (!row) return;
   // A share click is only a funnel event. It does not change credits or visibility.
   await recordEvent(db, row.id, "share_clicked", user?.id ?? null, { channel });
+  if (asStatus(row.status) !== "defended") return;
+  await trackChallenge("challenge_shared_back", { props: { method: shareMethod(channel) } });
 }
 
 export async function reportChallenge(slug: string, ip: string, note?: string): Promise<void> {
@@ -1232,11 +1296,12 @@ export async function noteChallengeDefended(
   const row = await db.get<{
     id: string;
     status: string;
+    difficulty: Difficulty;
     claimed_by_user_id: string | null;
     creator_user_id: string;
     sponsor_type: string;
   }>(
-    `SELECT id, status, claimed_by_user_id, creator_user_id, sponsor_type
+    `SELECT id, status, difficulty, claimed_by_user_id, creator_user_id, sponsor_type
      FROM challenges WHERE request_id = ?`,
     [requestId],
   );
@@ -1246,7 +1311,7 @@ export async function noteChallengeDefended(
   // deadline updates the same row only while it is still claimed, so it
   // cannot refund a credit this transaction has already used. A retry finds
   // the row defended and consumes again; that key does not charge twice.
-  await db.transaction(async (tx) => {
+  const tracked = await db.transaction(async (tx) => {
     const won = await tx.run(
       `UPDATE challenges
        SET status = 'defended', session_id = ?, deliverable_id = ?, receipt_id = ?
@@ -1256,10 +1321,10 @@ export async function noteChallengeDefended(
     if (won.changes === 1) {
       await consumeChallengeHold(tx, row);
       await recordEvent(tx, row.id, "defended", row.claimed_by_user_id);
-      return;
+      return true;
     }
     const current = await tx.get<{ status: string }>(`SELECT status FROM challenges WHERE id = ?`, [row.id]);
-    if (current?.status !== "defended") return;
+    if (current?.status !== "defended") return false;
     await tx.run(
       `UPDATE challenges
        SET session_id = ?, deliverable_id = ?, receipt_id = ?
@@ -1267,7 +1332,11 @@ export async function noteChallengeDefended(
       [ids.sessionId, ids.deliverableId, ids.receiptId, row.id],
     );
     await consumeChallengeHold(tx, row);
+    return false;
   });
+  if (tracked) {
+    await trackChallenge("challenge_completed", { props: { tier: row.difficulty } });
+  }
   // The onward challenge credit is grantCredits inside finishDefenseCredit,
   // once this defense is linked. Sharing is not an input.
 }

@@ -3,7 +3,7 @@
  * module stays free of the database and can be type-imported from the client.
  *
  * Challenge events no-op unless `CHALLENGES_ENABLED` is `1` or `true`.
- * Call `trackChallenge` at `CHALLENGE_TRACK_SITES` in `src/lib/challenges.ts`.
+ * `src/lib/challenges.ts` calls `trackChallenge` at `CHALLENGE_TRACK_SITES`.
  */
 
 export const ANALYTICS_EVENTS = [
@@ -62,6 +62,15 @@ export function isChallengeEvent(name: string): name is ChallengeEventName {
 
 export function isClientAnalyticsEvent(name: string): name is ClientAnalyticsEvent {
   return (CLIENT_ANALYTICS_EVENTS as readonly string[]).includes(name);
+}
+
+/**
+ * Sample defenses use request kind `demo` (#49). That kind is not on this
+ * branch yet; matching the string keeps those defenses out of the event funnel
+ * once it lands. Email-suffix and receipt markers stay in the stats query.
+ */
+export function isDemoRequestKind(kind: string): boolean {
+  return kind === "demo";
 }
 
 /** On unless explicitly disabled. `false` and `0` turn recording off. */
@@ -336,8 +345,9 @@ export function buildFunnel(input: {
 }
 
 /**
- * Where `src/lib/challenges.ts` should call `trackChallenge`. Count the event
- * only. Do not pass an account id, session id, receipt id, or challenge id.
+ * Where `src/lib/challenges.ts` calls `trackChallenge`. Count the event only.
+ * Do not pass an account id, session id, receipt id, or challenge id.
+ * A tracking failure is swallowed and does not roll back the challenge.
  */
 export const CHALLENGE_TRACK_SITES = [
   {

@@ -260,7 +260,7 @@ export function PublishChoice({
   );
 }
 
-export function CreateChallengeForm() {
+export function CreateChallengeForm({ onward }: { onward?: "defender" | "viewer" }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [link, setLink] = useState<string | null>(null);
@@ -280,6 +280,7 @@ export function CreateChallengeForm() {
           targetHint: form.get("targetHint") || undefined,
           note: form.get("note") || undefined,
           difficulty: form.get("difficulty"),
+          onward,
         }),
       });
       const data = await res.json();

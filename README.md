@@ -129,7 +129,7 @@ The rest of the flags are in `.env.example`.
 | `ANALYTICS_ENABLED` | First-party funnel. On unless set to `false` or `0` |
 | `BETA_BUDGET_EUR` | Shared beta budget in euros. Default `150` |
 | `CHALLENGES_ENABLED` | Challenge links. Off unless `1` or `true` |
-| `STATS_TOKEN` | Bearer token for `GET /api/stats`. Unset answers 404. The body is counts only: sign-ups, defenses, pass rate by tier, receipts, Learn opens, beta budget, measured cost, and challenges |
+| `STATS_TOKEN` | Bearer token for `GET /api/stats`. Unset answers 404. A wrong token answers 401. The body is counts only: sign-ups, defenses, pass rate by tier, receipts, Learn opens, beta budget, measured cost, and challenges. The per-IP limit stores a hash of the address, not the address |
 
 ### Voice later
 

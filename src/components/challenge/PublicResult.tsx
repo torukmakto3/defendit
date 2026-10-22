@@ -49,7 +49,7 @@ export function PublicChallengeResult({ result }: { result: PublicResultProps })
             Verify receipt
           </Link>
         )}
-        <Link href="/c/new" className="btn btn-ghost">
+        <Link href="/c/new?onward=viewer" className="btn btn-ghost">
           Challenge someone
         </Link>
         <Link href="/" className="btn btn-ghost">

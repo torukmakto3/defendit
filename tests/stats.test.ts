@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { GET } from "../src/app/api/stats/route";
+import { sha256Hex } from "../src/lib/crypto";
 import type { Db, Param } from "../src/lib/db";
 import { getDb } from "../src/lib/db";
 import { statsBearerOk, statsReport, type StatsReport } from "../src/lib/stats";
@@ -430,20 +431,34 @@ describe("GET /api/stats", () => {
     expect(bad.status).toBe(400);
 
     const db = await getDb();
+    const ip = "203.0.113.50";
+    const key = `stats:${sha256Hex(ip)}`;
     await db.run(
       `INSERT INTO rate_limits (bucket_key, window_start, count) VALUES (?, ?, ?)
        ON CONFLICT (bucket_key) DO UPDATE SET window_start = excluded.window_start, count = excluded.count`,
-      ["stats:203.0.113.50", new Date().toISOString(), 60],
+      [key, new Date().toISOString(), 60],
     );
     const limited = await GET(
       new Request("http://localhost:3000/api/stats", {
         headers: {
           authorization: "Bearer stats-test-token",
-          "x-forwarded-for": "203.0.113.50",
+          "x-forwarded-for": ip,
         },
       }),
     );
     expect(limited.status).toBe(429);
     expect(limited.headers.get("cache-control")).toBe("no-store");
+    const stored = await db.get<{ bucket_key: string }>(
+      `SELECT bucket_key FROM rate_limits WHERE bucket_key = ?`,
+      [key],
+    );
+    expect(stored?.bucket_key).toBe(key);
+    for (const raw of [ip, "203.0.113.9"]) {
+      const leaked = await db.get<{ bucket_key: string }>(
+        `SELECT bucket_key FROM rate_limits WHERE bucket_key LIKE ?`,
+        [`%${raw}%`],
+      );
+      expect(leaked).toBeUndefined();
+    }
   });
 });

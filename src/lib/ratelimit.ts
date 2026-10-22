@@ -166,6 +166,6 @@ export const LIMITS = {
   analyticsBeacon: { limit: 120, windowSec: 60 },
   analyticsBeaconPerIp: { limit: 30, windowSec: 60 },
   analyticsBeaconPerIpDay: { limit: 300, windowSec: 24 * 60 * 60 },
-  // Daily traction dashboard. The bucket key includes the client IP, same as login limits.
+  // Daily traction dashboard. The bucket key is `stats:` plus hashedClientIp.
   statsRead: { limit: 60, windowSec: 60 * 60 },
 } as const;

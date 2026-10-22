@@ -1,3 +1,4 @@
+import { isDemoRequestKind } from "./analytics";
 import { purgeOldAnalyticsEvents, track } from "./analytics-store";
 import type { User } from "./auth";
 import { extractClaims } from "./claims";
@@ -628,11 +629,13 @@ export async function startSession(opts: {
   await refreshRequestUsage(request.id);
   if (opts.mode === "defend") {
     await noteChallengeSession(request.id, sessionId);
-    await track({
-      name: "defense_started",
-      props: { tier: request.difficulty },
-      headers: opts.analyticsHeaders,
-    });
+    if (!isDemoRequestKind(request.kind)) {
+      await track({
+        name: "defense_started",
+        props: { tier: request.difficulty },
+        headers: opts.analyticsHeaders,
+      });
+    }
   } else {
     await track({
       name: "learn_opened",
@@ -1305,11 +1308,13 @@ export async function completeDefendSession(opts: {
   }
 
   await finishDefenseCredit(opts.user.id, session.id);
-  await track({
-    name: "defense_completed",
-    props: { tier: request.difficulty },
-    headers: opts.analyticsHeaders,
-  });
+  if (!isDemoRequestKind(request.kind)) {
+    await track({
+      name: "defense_completed",
+      props: { tier: request.difficulty },
+      headers: opts.analyticsHeaders,
+    });
+  }
   return {
     receipt: signed,
     score: aggregateScore(grades, plan),

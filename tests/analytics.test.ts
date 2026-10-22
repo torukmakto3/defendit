@@ -522,6 +522,44 @@ describe("defense wiring", () => {
     expect(JSON.parse(done[0].props_json)).toEqual({ tier: "standard" });
     expect(done[0].props_json).not.toMatch(/score|Defended|Strong/);
   });
+
+  it("does not record a demo defense in the event funnel", async () => {
+    const db = await getDb();
+    await db.run(
+      `DELETE FROM analytics_events WHERE name IN ('defense_started', 'defense_completed')`,
+    );
+    const before = await funnelReport();
+    const user = await signIn("analytics-demo-kind@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "m.md", buffer: memo, difficulty: "standard" });
+    await db.run(`UPDATE defense_requests SET kind = 'demo' WHERE token = ?`, [ingest.token]);
+    const session = await startSession({
+      token: ingest.token,
+      user,
+      mode: "defend",
+      accommodation: true,
+    });
+    expect(await events("defense_started")).toHaveLength(0);
+    await answerAll(session, user);
+    const first = await completeDefendSession({ sessionId: session.sessionId, user });
+    if (first.followUp) {
+      await recordDefendAnswer({
+        sessionId: session.sessionId,
+        user,
+        probeId: first.followUp.probe.id,
+        answer: "The assumption that holds the case is the churn rate staying near 1.2%.",
+      });
+      await completeDefendSession({ sessionId: session.sessionId, user });
+    }
+    await completeDefendSession({ sessionId: session.sessionId, user });
+    expect(await events("defense_completed")).toHaveLength(0);
+    const after = await funnelReport();
+    expect(after.product.find((step) => step.event === "defense_started")?.count).toBe(
+      before.product.find((step) => step.event === "defense_started")?.count,
+    );
+    expect(after.product.find((step) => step.event === "defense_completed")?.count).toBe(
+      before.product.find((step) => step.event === "defense_completed")?.count,
+    );
+  });
 });
 
 describe("analytics_events columns", () => {
@@ -642,6 +680,35 @@ describe("beacon rate limits", () => {
       beaconRequest({ name: "receipt_shared", props: { method: "share" } }, { "x-forwarded-for": shareIp }),
     );
     expect((await events("receipt_shared")).length).toBe(beforeShare + 2);
+  });
+
+  it("does not charge the global bucket when the client minute or day cap is already full", async () => {
+    const db = await getDb();
+    async function bucketCount(key: string): Promise<number> {
+      const row = await db.get<{ count: number | string }>(
+        `SELECT count FROM rate_limits WHERE bucket_key = ?`,
+        [key],
+      );
+      return Number(row?.count ?? 0);
+    }
+
+    const minuteIp = "203.0.113.16";
+    await seedBucket(`analytics:ip:${sha256Hex(minuteIp)}:m`, 30);
+    const beforeEvents = (await events("receipt_shared")).length;
+    const globalBefore = await bucketCount("analytics:beacon");
+    await beacon(
+      beaconRequest({ name: "receipt_shared", props: { method: "copy" } }, { "x-forwarded-for": minuteIp }),
+    );
+    expect((await events("receipt_shared")).length).toBe(beforeEvents);
+    expect(await bucketCount("analytics:beacon")).toBe(globalBefore);
+
+    const dayIp = "203.0.113.17";
+    await seedBucket(`analytics:ip:${sha256Hex(dayIp)}:d`, 300);
+    const globalMid = await bucketCount("analytics:beacon");
+    await beacon(
+      beaconRequest({ name: "receipt_shared", props: { method: "share" } }, { "x-forwarded-for": dayIp }),
+    );
+    expect(await bucketCount("analytics:beacon")).toBe(globalMid);
   });
 
   it("drops a beacon once the global minute cap is full", async () => {

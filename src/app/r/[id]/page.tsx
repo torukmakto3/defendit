@@ -176,7 +176,7 @@ export default function ReceiptPage() {
               url={data.challengeResult.shareUrl}
               text={defenderShareText(data.challengeResult)}
             />
-            <Link href="/c/new" className="text-sm text-[var(--blueprint)]">
+            <Link href="/c/new?onward=defender" className="text-sm text-[var(--blueprint)]">
               Defended mine. Pass a challenge on.
             </Link>
           </div>

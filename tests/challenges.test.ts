@@ -26,6 +26,7 @@ import {
   publicResultLines,
   receiptGate,
   recordResultView,
+  recordShareClick,
   revokeChallenge,
   setOptOut,
 } from "../src/lib/challenges";
@@ -748,6 +749,7 @@ describe("challenge links", () => {
       expect(card.subtitle).toBe("Tier band subject");
       expect(card.subtitle).not.toBe(band.title);
       const html = renderToStaticMarkup(createElement(PublicChallengeResult, { result: gate.result! }));
+      expect(html).toContain('href="/c/new?onward=viewer"');
       expect(html).toContain(`>${band.title}<`);
       expect(html).not.toContain("uppercase");
       expect(html.match(new RegExp(`>${band.title}<`, "g"))).toHaveLength(1);
@@ -1118,3 +1120,145 @@ async function run(
   await chooseVisibility({ slug: created.slug, user: defender, visibility });
   return { created, creator, defender, receipt: receipt as SignedReceipt, ledgerBeforeChoice };
 }
+
+describe("challenge funnel events", () => {
+  const LEAK = /usr_|ses_|rcpt_|chg_/;
+
+  async function rows(name: string): Promise<{ props_json: string }[]> {
+    const db = await getDb();
+    return db.all<{ props_json: string }>(
+      `SELECT props_json FROM analytics_events WHERE name = ? ORDER BY id`,
+      [name],
+    );
+  }
+
+  async function clearAnalytics(): Promise<void> {
+    await (await getDb()).run(`DELETE FROM analytics_events`);
+  }
+
+  it("records each challenge step once, with no ids, and still creates when analytics is off", async () => {
+    await clearAnalytics();
+    const creator = await signIn(nextEmail("funnel-creator"));
+    await fund(creator);
+    const created = await createChallenge({
+      user: creator,
+      subject: SUBJECT,
+      difficulty: "standard",
+      onward: "defender",
+      kind: "third_party",
+    });
+    expect(created.slug).toMatch(/^[a-z0-9]{8}$/);
+    const firstCreated = await rows("challenge_created");
+    expect(firstCreated).toHaveLength(1);
+    expect(JSON.parse(firstCreated[0].props_json)).toEqual({
+      kind: "third_party",
+      sponsor: "beta",
+      onward: "defender",
+    });
+    expect(firstCreated[0].props_json).not.toMatch(LEAK);
+    expect(firstCreated[0].props_json).not.toContain(created.slug);
+    expect(firstCreated[0].props_json).not.toContain(creator.id);
+
+    const self = await createChallenge({
+      user: creator,
+      subject: "Own work",
+      difficulty: "standard",
+      kind: "self",
+    });
+    const createdProps = (await rows("challenge_created")).map(
+      (row) => JSON.parse(row.props_json) as { kind: string },
+    );
+    expect(createdProps).toContainEqual({ kind: "self", sponsor: "beta" });
+    for (const row of await rows("challenge_created")) {
+      expect(row.props_json).not.toContain(self.id);
+      expect(row.props_json).not.toContain(created.id);
+    }
+
+    await getPublicChallenge(created.slug, creator, { recordView: true });
+    expect(await rows("challenge_opened")).toHaveLength(0);
+    const viewer = await signIn(nextEmail("funnel-viewer"));
+    await getPublicChallenge(created.slug, viewer, { recordView: true });
+    await getPublicChallenge(created.slug, null, { recordView: true });
+    expect(await rows("challenge_opened")).toHaveLength(2);
+    expect((await rows("challenge_opened"))[0].props_json).toBe("{}");
+
+    const claimed = await claimChallenge({
+      slug: created.slug,
+      user: viewer,
+      ip: nextIp(),
+      adultConfirmed: true,
+    });
+    expect(await rows("challenge_accepted")).toHaveLength(1);
+    expect((await rows("challenge_accepted"))[0].props_json).toBe("{}");
+
+    await recordShareClick(created.slug, viewer, "copy");
+    expect(await rows("challenge_shared_back")).toHaveLength(0);
+
+    const receipt = await defend(viewer, claimed.token);
+    if (!receipt) throw new Error("expected a receipt");
+    const completed = await rows("challenge_completed");
+    expect(completed).toHaveLength(1);
+    expect(JSON.parse(completed[0].props_json)).toEqual({ tier: "standard" });
+    expect(completed[0].props_json).not.toMatch(/score|Defended|Strong|usr_|ses_|rcpt_|chg_/);
+    expect(completed[0].props_json).not.toContain(receipt.payload.id);
+
+    const db = await getDb();
+    const linked = await db.get<{
+      request_id: string;
+      session_id: string;
+      deliverable_id: string;
+      receipt_id: string;
+    }>(
+      `SELECT request_id, session_id, deliverable_id, receipt_id FROM challenges WHERE slug = ?`,
+      [created.slug],
+    );
+    await noteChallengeDefended(linked!.request_id, {
+      sessionId: linked!.session_id,
+      deliverableId: linked!.deliverable_id,
+      receiptId: linked!.receipt_id,
+    });
+    expect(await rows("challenge_completed")).toHaveLength(1);
+
+    await recordShareClick(created.slug, viewer, "x");
+    await recordShareClick(created.slug, null, "copy");
+    const shares = (await rows("challenge_shared_back")).map(
+      (row) => JSON.parse(row.props_json) as { method: string },
+    );
+    expect(shares).toHaveLength(2);
+    expect(shares.map((row) => row.method).sort()).toEqual(["copy", "share"]);
+
+    process.env.ANALYTICS_ENABLED = "0";
+    try {
+      const quiet = await createChallenge({
+        user: creator,
+        subject: "Analytics off",
+        difficulty: "standard",
+      });
+      expect(quiet.url).toContain(quiet.slug);
+      expect(await rows("challenge_created")).toHaveLength(2);
+    } finally {
+      delete process.env.ANALYTICS_ENABLED;
+    }
+  });
+
+  it("records a decline only when the challenge closes", async () => {
+    await clearAnalytics();
+    const creator = await signIn(nextEmail("funnel-decline-c"));
+    const target = await signIn(nextEmail("funnel-decline-t"));
+    const stranger = await signIn(nextEmail("funnel-decline-s"));
+    await fund(creator);
+    const created = await createChallenge({
+      user: creator,
+      subject: SUBJECT,
+      difficulty: "standard",
+      targetHint: target.email,
+    });
+    const hidden = await declineChallenge(created.slug, stranger, nextIp());
+    expect(hidden.closed).toBe(false);
+    expect(await rows("challenge_declined")).toHaveLength(0);
+    const closed = await declineChallenge(created.slug, target, nextIp());
+    expect(closed.closed).toBe(true);
+    expect(await rows("challenge_declined")).toHaveLength(1);
+    expect((await rows("challenge_declined"))[0].props_json).toBe("{}");
+  });
+});

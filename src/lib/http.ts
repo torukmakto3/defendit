@@ -29,8 +29,9 @@ export function ipLimitKey(scope: string, req: Request): string | null {
 }
 
 /**
- * Digest for a rate-limit bucket. Same `sha256Hex` as `login:email:${sha256Hex(email)}`,
- * so the `rate_limits` row stores a hash and not the address.
+ * The only exported hash of a client address. Rate-limit keys use this so
+ * `rate_limits` never stores the raw IP. #48 replaces this body with
+ * HMAC-SHA256 keyed by `IP_HASH_SALT`; call sites stay on this function.
  */
 export function hashedClientIp(req: Request): string {
   return sha256Hex(clientIp(req));

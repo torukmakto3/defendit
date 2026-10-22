@@ -17,19 +17,14 @@ function noStore() {
 /**
  * Anonymous beacon for landing views and receipt share clicks.
  * No cookies are read. DNT and Sec-GPC skip the write before any rate-limit
- * bucket is touched. Per-client buckets are keyed on a hash of the IP.
+ * bucket is touched. Per-client buckets are keyed on a hash of the IP and
+ * are checked before the global bucket, so a blocked client does not consume it.
  */
 export async function POST(req: Request) {
   try {
     if (!sameOrigin(req)) return noStore();
     if (trackingOptOut(req.headers)) return noStore();
     const hash = hashedClientIp(req);
-    const global = await rateLimit(
-      "analytics:beacon",
-      LIMITS.analyticsBeacon.limit,
-      LIMITS.analyticsBeacon.windowSec,
-    );
-    if (!global.ok) return noStore();
     const perMinute = await rateLimit(
       `analytics:ip:${hash}:m`,
       LIMITS.analyticsBeaconPerIp.limit,
@@ -42,6 +37,12 @@ export async function POST(req: Request) {
       LIMITS.analyticsBeaconPerIpDay.windowSec,
     );
     if (!perDay.ok) return noStore();
+    const global = await rateLimit(
+      "analytics:beacon",
+      LIMITS.analyticsBeacon.limit,
+      LIMITS.analyticsBeacon.windowSec,
+    );
+    if (!global.ok) return noStore();
     const raw = await req.text();
     if (raw.length === 0 || raw.length > MAX_BODY) return noStore();
     const body = JSON.parse(raw) as {
