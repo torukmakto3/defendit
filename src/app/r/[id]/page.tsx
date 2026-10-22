@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { beaconReceiptShared } from "@/components/analytics-beacon";
 import { Companion } from "@/components/companion/Companion";
 import { ShareBar } from "@/components/challenge/actions";
 import { PublicChallengeResult } from "@/components/challenge/PublicResult";
@@ -28,6 +29,18 @@ interface ChallengeResultView {
   shareUrl: string;
 }
 
+function subscribeShare() {
+  return () => {};
+}
+
+function shareAvailable() {
+  return typeof navigator.share === "function";
+}
+
+function shareUnavailable() {
+  return false;
+}
+
 interface ReceiptView {
   receipt: SignedReceipt | null;
   signatureValid: boolean | null;
@@ -39,6 +52,8 @@ export default function ReceiptPage() {
   const [data, setData] = useState<ReceiptView | null>(null);
   const [labels, setLabels] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const canShare = useSyncExternalStore(subscribeShare, shareAvailable, shareUnavailable);
 
   useEffect(() => {
     fetch(`/api/receipts/${id}?view=1`)
@@ -187,6 +202,35 @@ export default function ReceiptPage() {
           <Link href={`/verify/${p.id}`} className="btn btn-ghost">
             Verify file hash
           </Link>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => {
+              void navigator.clipboard
+                .writeText(window.location.href)
+                .then(() => {
+                  setCopied(true);
+                  beaconReceiptShared(p.id, "copy");
+                })
+                .catch(() => {});
+            }}
+          >
+            {copied ? "Copied" : "Copy link"}
+          </button>
+          {canShare && (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => {
+                void navigator
+                  .share({ title: "Defend It receipt", url: window.location.href })
+                  .then(() => beaconReceiptShared(p.id, "share"))
+                  .catch(() => {});
+              }}
+            >
+              Share
+            </button>
+          )}
         </div>
       </div>
       <p className="text-xs text-[var(--ink-2)]">{gradedWithLine(p)}</p>

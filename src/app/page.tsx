@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
+import { LandingBeacon } from "@/components/analytics-beacon";
 import { saveDisplayName, SignInCard, useMe } from "@/components/auth";
 import { Companion, type CompanionState } from "@/components/companion/Companion";
 
@@ -85,6 +86,11 @@ export default function HomePage() {
           Drop the memo, write-up or README. Practise privately with the coach, take a short defense
           grounded in your file, and send it with a signed receipt anyone can verify.
         </p>
+        <p className="max-w-2xl text-xs text-[var(--ink-2)]">
+          Visit counts stay on this server: no analytics cookies, no third-party tracker, and nothing
+          from your file. Do Not Track and Global Privacy Control skip the visit count.
+        </p>
+        <LandingBeacon />
       </section>
 
       {me === null && <SignInCard title="Sign in to drop a deliverable" />}

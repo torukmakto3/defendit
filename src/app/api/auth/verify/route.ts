@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { track } from "@/lib/analytics-store";
 import { consumeMagicLink, SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth";
 import { handleError, ipLimitKey, jsonError, limitOr429, sameOrigin } from "@/lib/http";
 import { LIMITS } from "@/lib/ratelimit";
@@ -16,6 +17,12 @@ export async function POST(req: Request) {
     const { token } = schema.parse(await req.json());
     const result = await consumeMagicLink(token);
     if (!result) return jsonError(400, "This sign-in link is invalid, used, or expired.");
+    await track({
+      name: "sign_in_completed",
+      userId: result.user.id,
+      props: { method: "email" },
+      headers: req.headers,
+    });
     const res = NextResponse.json({ ok: true, next: result.nextPath });
     res.cookies.set(SESSION_COOKIE, result.sessionToken, sessionCookieOptions());
     return res;

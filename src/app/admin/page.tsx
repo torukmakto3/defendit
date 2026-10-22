@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import type { FunnelReport, FunnelStep } from "@/lib/analytics";
 
 interface SessionRow {
   id: string;
@@ -40,9 +41,43 @@ function formatUsd(amount: number): string {
   return `$${n.toFixed(digits)}`;
 }
 
+function formatPercent(value: number | null): string {
+  if (value == null) return "—";
+  return `${Math.round(value * 1000) / 10}%`;
+}
+
+function formatK(value: number | null): string {
+  if (value == null) return "—";
+  return value.toFixed(2);
+}
+
+function FunnelTable({ steps }: { steps: FunnelStep[] }) {
+  return (
+    <table className="w-full text-left text-sm">
+      <thead className="mono border-b-[1.5px] border-[var(--ink)] text-[11px] uppercase tracking-[0.08em] text-[var(--ink-2)]">
+        <tr>
+          <th className="px-4 py-3">Step</th>
+          <th className="px-4 py-3">Count</th>
+          <th className="px-4 py-3">From previous</th>
+        </tr>
+      </thead>
+      <tbody>
+        {steps.map((step) => (
+          <tr key={step.event} className="border-t border-[var(--line)]">
+            <td className="px-4 py-3">{step.label}</td>
+            <td className="px-4 py-3">{step.count}</td>
+            <td className="px-4 py-3">{formatPercent(step.conversion)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 export default function AdminPage() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [summary, setSummary] = useState<CostSummary | null>(null);
+  const [funnel, setFunnel] = useState<FunnelReport | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -54,6 +89,13 @@ export default function AdminPage() {
         setSummary(d.summary ?? null);
       })
       .catch((e) => setError(e.message));
+    fetch("/api/admin/funnel")
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || "Failed");
+        setFunnel(d);
+      })
+      .catch((e) => setError((prev) => prev ?? e.message));
   }, []);
 
   return (
@@ -64,6 +106,34 @@ export default function AdminPage() {
         AI council.
       </p>
       {error && <p className="mt-6 text-danger">{error} — admins are listed in ADMIN_EMAILS.</p>}
+      <section className="mt-8">
+        <h2 className="text-2xl font-bold">Funnel · last {funnel?.days ?? 7} days</h2>
+        <p className="mt-2 text-sm text-[var(--ink-2)]">
+          Event counts, not people. Acceptance is accepted ÷ opened. Completion is completed ÷
+          accepted. Share-back is shared ÷ completed. Onward k is new challenges from a defender or
+          a viewer of a shared card ÷ completions.
+        </p>
+        {!funnel && !error ? (
+          <p className="mt-4 text-sm text-[var(--ink-2)]">Loading funnel…</p>
+        ) : funnel ? (
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <div className="overflow-x-auto panel">
+              <h3 className="px-4 pt-4 text-sm font-semibold">Product</h3>
+              <FunnelTable steps={funnel.product} />
+            </div>
+            <div className="overflow-x-auto panel">
+              <h3 className="px-4 pt-4 text-sm font-semibold">Challenges</h3>
+              <FunnelTable steps={funnel.challenge} />
+              <p className="px-4 py-3 text-sm text-[var(--ink-2)]">
+                Declined {funnel.declined.count} ({formatPercent(funnel.declined.conversion)} of opens).
+                Onward k {formatK(funnel.onwardK)} ({funnel.onwardCount} onward). Self{" "}
+                {funnel.selfChallenges} · third-party {funnel.thirdPartyChallenges}
+                {funnel.unspecifiedChallenges > 0 ? ` · unspecified ${funnel.unspecifiedChallenges}` : ""}.
+              </p>
+            </div>
+          </div>
+        ) : null}
+      </section>
       {summary && (
         <div className="mt-8 grid gap-3 sm:grid-cols-4">
           <div className="panel p-4">

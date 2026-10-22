@@ -364,6 +364,21 @@ CREATE INDEX IF NOT EXISTS idx_challenges_request ON challenges(request_id);
 CREATE INDEX IF NOT EXISTS idx_challenges_receipt ON challenges(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_challenges_created ON challenges(created_at);
 CREATE INDEX IF NOT EXISTS idx_challenge_events_challenge ON challenge_events(challenge_id, event);
+
+-- First-party funnel counts. No IP, user agent, cookie, or document content.
+-- occurred_at is UTC, rounded to the minute. user_id is set only for signed-in
+-- server events. subject_id is an opaque session or challenge id.
+CREATE TABLE IF NOT EXISTS analytics_events (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  user_id TEXT,
+  subject_id TEXT,
+  referrer_domain TEXT,
+  props_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_analytics_events_name_time ON analytics_events(name, occurred_at);
 `;
 
 /** Columns added after a table first shipped: [table, column, definition]. */

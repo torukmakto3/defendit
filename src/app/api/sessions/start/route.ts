@@ -36,9 +36,9 @@ export async function POST(req: Request) {
       creditKey = reserved.idempotencyKey;
     }
     if (body.mode === "defend" && creditKey && (req.headers.get("accept") || "").includes("application/x-ndjson")) {
-      return streamDefendStart(body, guard.user, creditKey);
+      return streamDefendStart(body, guard.user, creditKey, req.headers);
     }
-    const session = await startSession({ ...body, user: guard.user });
+    const session = await startSession({ ...body, user: guard.user, analyticsHeaders: req.headers });
     sessionId = session.sessionId;
     if (creditKey) await attachDefenseCredit(guard.user.id, creditKey, session.sessionId);
     const voice = getVoiceProvider();
@@ -94,7 +94,12 @@ export async function POST(req: Request) {
  * session row exists. If that attach throws, the hold is refunded. A later
  * failure, after the hold is attached, keeps that one unfinished defense.
  */
-function streamDefendStart(body: z.infer<typeof schema>, user: User, creditKey: string) {
+function streamDefendStart(
+  body: z.infer<typeof schema>,
+  user: User,
+  creditKey: string,
+  headers: Headers,
+) {
   const encoder = new TextEncoder();
   let voiceMeta: { provider: string; modality: string; sessionHandle: string } | null = null;
   let sessionId: string | null = null;
@@ -108,6 +113,7 @@ function streamDefendStart(body: z.infer<typeof schema>, user: User, creditKey: 
         const session = await startSession({
           ...body,
           user,
+          analyticsHeaders: headers,
           onFirstQuestion: async (info) => {
             sessionId = info.sessionId;
             await attachDefenseCredit(user.id, creditKey, info.sessionId);

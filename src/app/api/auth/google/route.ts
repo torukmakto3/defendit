@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { track } from "@/lib/analytics-store";
 import { googleAuthConfigured } from "@/lib/auth";
 import {
   beginGoogleOAuth,
@@ -36,6 +37,7 @@ export async function GET(req: Request) {
       return res;
     }
     const started = beginGoogleOAuth(next);
+    await track({ name: "sign_in_started", props: { method: "google" }, headers: req.headers });
     const res = NextResponse.redirect(started.authorizationUrl);
     res.cookies.set(GOOGLE_OAUTH_COOKIE, started.cookieValue, googleOAuthCookieOptions());
     res.headers.set("Cache-Control", "no-store");
