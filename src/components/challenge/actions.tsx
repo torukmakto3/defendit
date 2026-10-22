@@ -3,6 +3,66 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+const SHARE_DRAFTS = [
+  {
+    label: "Launches",
+    text: "Bold launch. Want to defend it? 8 min, your own README, a receipt either way. Totally optional",
+  },
+  {
+    label: "Claims",
+    text: "Strong claim, and I think you might be right. Want to defend it against a file-grounded grill? Receipt either way",
+  },
+  {
+    label: "Built with AI",
+    text: "Built with AI, understood by you? Show it. 8-min defense of your own doc, receipt either way",
+  },
+];
+
+/** Suggested reply the challenger posts from their own account. Editable. The product never posts it. */
+export function SuggestedShares({ url }: { url: string }) {
+  const [index, setIndex] = useState(0);
+  const [text, setText] = useState(SHARE_DRAFTS[0].text);
+  const [copied, setCopied] = useState(false);
+
+  function pick(next: number) {
+    setIndex(next);
+    setText(SHARE_DRAFTS[next].text);
+    setCopied(false);
+  }
+
+  return (
+    <div className="panel grid gap-3 p-5">
+      <p className="text-sm font-semibold">Suggested reply</p>
+      <p className="text-sm text-[var(--ink-2)]">
+        Edit it, then post it from your own account. It stays optional for them, and they control what is public.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {SHARE_DRAFTS.map((draft, i) => (
+          <button
+            key={draft.label}
+            type="button"
+            className={i === index ? "btn btn-primary" : "btn btn-ghost"}
+            onClick={() => pick(i)}
+          >
+            {draft.label}
+          </button>
+        ))}
+      </div>
+      <textarea className="field min-h-24" value={text} onChange={(e) => setText(e.target.value)} />
+      <button
+        type="button"
+        className="btn btn-ghost justify-self-start"
+        onClick={() => {
+          void navigator.clipboard.writeText(`${text}\n${url}`);
+          setCopied(true);
+        }}
+      >
+        {copied ? "Copied" : "Copy reply"}
+      </button>
+    </div>
+  );
+}
+
 export function ShareBar({ slug, url, text }: { slug: string; url: string; text: string }) {
   const [copied, setCopied] = useState(false);
   const intent = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(url)}`;
@@ -73,7 +133,7 @@ export function ClaimPanel({ slug }: { slug: string }) {
           checked={adult}
           onChange={(e) => setAdult(e.target.checked)}
         />
-        <span>I confirm I am 18 or older.</span>
+        <span>I confirm I am 18 or older. Challenges are for adults.</span>
       </label>
       {error && <p className="text-sm text-danger">{error}</p>}
       <button type="button" className="btn btn-primary justify-self-start" disabled={!adult || busy} onClick={() => void accept()}>
@@ -153,14 +213,15 @@ export function PublishChoice({
   return (
     <div className="grid gap-3">
       <p className="text-sm text-[var(--ink-2)]">
-        Your score is {score}/100, tier {tier}. Sharing is optional and does not change this result.
+        Your score is {score}/100, tier {tier}. Show the score, show the tier only, or keep it private. Nothing
+        is posted unless you share it, and the choice does not change your credit.
       </p>
       {error && <p className="text-sm text-danger">{error}</p>}
       <button type="button" className="btn btn-primary justify-self-start" disabled={!!busy} onClick={() => void choose("public")}>
-        {busy === "public" ? "Saving…" : "Publish the score"}
+        {busy === "public" ? "Saving…" : "Show the score"}
       </button>
       <button type="button" className="btn btn-ghost justify-self-start" disabled={!!busy} onClick={() => void choose("score_hidden")}>
-        {busy === "score_hidden" ? "Saving…" : "Publish the tier only"}
+        {busy === "score_hidden" ? "Saving…" : "Show the tier, hide the score"}
       </button>
       <button type="button" className="btn btn-ghost justify-self-start" disabled={!!busy} onClick={() => void choose("private")}>
         {busy === "private" ? "Saving…" : "Keep it private"}
@@ -206,9 +267,15 @@ export function CreateChallengeForm() {
       <div className="panel mt-8 p-6">
         <p className="eyebrow">Link ready</p>
         <p className="mt-3 break-all font-mono text-sm">{link}</p>
+        <p className="mt-3 text-sm text-[var(--ink-2)]">
+          Post it from your own account. They opt in or ignore it. You are not posting for them.
+        </p>
         <button type="button" className="btn btn-primary mt-6" onClick={() => void navigator.clipboard.writeText(link)}>
           Copy link
         </button>
+        <div className="mt-4">
+          <SuggestedShares url={link} />
+        </div>
       </div>
     );
   }
@@ -295,11 +362,11 @@ export function OptOutForm({ initialOptedOut, initialHandles }: { initialOptedOu
     <form onSubmit={save} className="panel mt-8 grid gap-4 p-6">
       <label className="flex items-start gap-3">
         <input type="checkbox" className="mt-1" checked={optedOut} onChange={(e) => setOptedOut(e.target.checked)} />
-        <span>Don&apos;t challenge me.</span>
+        <span>Don&apos;t challenge me again.</span>
       </label>
       <p className="text-sm text-[var(--ink-2)]">
-        While this is on, Defend It blocks challenges aimed at your email or the handles you list, and you
-        can&apos;t accept a challenge.
+        While this is on, you&apos;re on the do-not-challenge list. Challenges aimed at your email or the
+        handles you list are blocked, and you can&apos;t accept one.
       </p>
       <div>
         <label className="label" htmlFor="handles">
@@ -314,7 +381,7 @@ export function OptOutForm({ initialOptedOut, initialHandles }: { initialOptedOu
         />
       </div>
       {error && <p className="text-sm text-danger">{error}</p>}
-      {saved && <p className="text-sm text-[var(--ok)]">Saved.</p>}
+      {saved && <p className="text-sm text-[var(--ok)]">Saved. You&apos;re on the do-not-challenge list.</p>}
       <button type="submit" className="btn btn-primary justify-self-start" disabled={busy}>
         {busy ? "Saving…" : "Save"}
       </button>

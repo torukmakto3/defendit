@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { cookies } from "next/headers";
 import { SignInCard } from "@/components/auth";
-import { ClaimPanel, RevokeButton, ShareBar } from "@/components/challenge/actions";
+import { ClaimPanel, RevokeButton, ShareBar, SuggestedShares } from "@/components/challenge/actions";
 import { SESSION_COOKIE, getUserFromRequest } from "@/lib/auth";
 import { appUrl } from "@/lib/config";
 import { getPublicChallenge } from "@/lib/challenges";
@@ -24,7 +24,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   if (!view) return { title: "Challenge" };
   return {
     title: view.subject.slice(0, 80),
-    description: `${view.challengerName} challenged you to defend this. ${view.sponsorLabel}.`,
+    description: `${view.challengerName} challenged you to defend this. Totally optional. ${view.sponsorLabel}.`,
   };
 }
 
@@ -37,9 +37,9 @@ function statusCopy(status: string): string | null {
     case "defended":
       return "This challenge is closed.";
     case "expired":
-      return "This challenge has expired.";
+      return "This challenge has expired. Nothing was posted.";
     case "revoked":
-      return "This challenge was revoked.";
+      return "The challenger closed this link. Nothing was posted.";
     default:
       return "This challenge is closed.";
   }
@@ -59,8 +59,19 @@ export default async function ChallengePage({ params }: { params: Promise<{ slug
       <p className="eyebrow">{view.sponsorLabel}</p>
       <h1 className="mt-2 text-3xl font-bold sm:text-4xl">{view.subject}</h1>
       <p className="mt-3 text-[var(--ink-2)]">
-        Challenged by {view.challengerName}. Difficulty: {view.difficulty}.
+        {view.challengerName} challenged you to defend this. Totally optional. Nothing is posted unless you
+        opt in and choose to share.
       </p>
+      <p className="mt-3 text-[var(--ink-2)]">
+        You pick the file. You can practice in Learn first, then take a short text interview grounded in that
+        file. You choose public, public without the score, or private.
+      </p>
+      <p className="mt-3 text-sm text-[var(--ink-2)]">
+        {view.sponsorLabel === "Sponsored by DefendIT"
+          ? "Free in beta, sponsored by DefendIT. No one is paid to accept or share."
+          : `${view.sponsorLabel}. A held credit comes back to the challenger if the result stays private, or if the link expires.`}
+      </p>
+      <p className="mt-3 text-sm text-[var(--ink-2)]">Difficulty: {view.difficulty}.</p>
       {view.note && <p className="mt-4">{view.note}</p>}
       {view.sourceUrl && (
         <p className="mt-3">
@@ -71,7 +82,7 @@ export default async function ChallengePage({ params }: { params: Promise<{ slug
       )}
       {view.targetHint && (
         <p className="mt-3 text-sm text-[var(--ink-2)]">
-          Named for {view.targetHint}. Anyone signed in can accept it.
+          Named for {view.targetHint}. That is a hint, not a lock. Anyone signed in can accept.
         </p>
       )}
       {view.status === "open" && (
@@ -111,14 +122,16 @@ export default async function ChallengePage({ params }: { params: Promise<{ slug
           <p>{closed}</p>
         )}
         {view.canRevoke && <RevokeButton slug={view.slug} />}
+        {view.status === "open" && <SuggestedShares url={shareUrl} />}
         <ShareBar
           slug={view.slug}
           url={shareUrl}
-          text={`Defend this on DefendIT: ${view.subject.slice(0, 140)}`}
+          text="Bold launch. Want to defend it? 8 min, your own file, a receipt either way. Totally optional"
         />
-        <Link href={`/c/${view.slug}/report`} className="text-sm text-[var(--ink-2)]">
-          Report this challenge
-        </Link>
+        <p className="flex flex-wrap gap-4 text-sm text-[var(--ink-2)]">
+          <Link href={`/c/${view.slug}/report`}>Report this challenge</Link>
+          <Link href="/c/opt-out">Don&apos;t challenge me again</Link>
+        </p>
       </div>
     </div>
   );

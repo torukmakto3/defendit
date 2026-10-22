@@ -14,7 +14,9 @@ export default async function ReportPage({ params }: { params: Promise<{ slug: s
     <div className="shell max-w-2xl">
       <p className="eyebrow">Report</p>
       <h1 className="mt-2 text-3xl font-bold">Report this challenge</h1>
-      <p className="mt-3 text-[var(--ink-2)]">{view.subject}</p>
+      <p className="mt-3 text-[var(--ink-2)]">
+        If this challenge is harassing or unwanted, tell us. {view.subject}
+      </p>
       <ReportForm slug={view.slug} />
     </div>
   );

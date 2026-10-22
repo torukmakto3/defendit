@@ -409,7 +409,7 @@ export async function createChallenge(input: CreateChallengeInput): Promise<Crea
     throw new HttpError(403, "This account is too new to create a challenge.");
   }
   if (await targetBlocked(db, targetHint ?? undefined)) {
-    throw new HttpError(403, "That person has opted out of challenges.");
+    throw new HttpError(403, "That person has opted out of challenges. They're on the do-not-challenge list.");
   }
 
   await expireDueChallenges(db);
@@ -548,7 +548,9 @@ export async function getPublicChallenge(
   if (!user) claimBlock = "Sign in to accept this challenge.";
   else if (isCreator) claimBlock = "You created this challenge. Send the link to someone else.";
   else if (status !== "open") claimBlock = null;
-  else if (await optedOut(db, user.id)) claimBlock = "You opted out of challenges.";
+  else if (await optedOut(db, user.id)) {
+    claimBlock = "You opted out of challenges. You're on the do-not-challenge list.";
+  }
   else {
     const held = await db.get<{ n: number | string }>(
       `SELECT COUNT(*) AS n FROM challenges WHERE claimed_by_user_id = ? AND status = 'claimed'`,
@@ -608,7 +610,9 @@ export async function claimChallenge(opts: {
   if (!ipLimited.ok) throw new HttpError(429, "Too many attempts. Try again later.");
 
   const db = await getDb();
-  if (await optedOut(db, opts.user.id)) throw new HttpError(403, "You opted out of challenges.");
+  if (await optedOut(db, opts.user.id)) {
+    throw new HttpError(403, "You opted out of challenges. You're on the do-not-challenge list.");
+  }
   await expireDueChallenges(db);
 
   const now = new Date().toISOString();
@@ -967,8 +971,11 @@ export async function challengeCardCopy(slug: string): Promise<{
   return {
     kicker: view.sponsorLabel,
     title: view.subject.slice(0, 90),
-    subtitle: `${view.challengerName} challenged you to defend this.`,
-    foot: "Defend It",
+    subtitle: "Optional. Your own file, a short text interview. You choose whether the result is public.",
+    foot:
+      view.sponsorLabel === "Sponsored by DefendIT"
+        ? "Free in beta, sponsored by DefendIT"
+        : "You choose what is public.",
   };
 }
 
@@ -985,9 +992,9 @@ export async function resultCardCopy(receiptId: string): Promise<{
     const show = gate.result.showScore && gate.result.score != null;
     return {
       kicker: gate.result.sponsorLabel,
-      title: gate.result.visibility === "score_hidden" ? "Defended" : gate.result.headline,
-      subtitle: gate.result.tier ?? "",
-      foot: "Defend It",
+      title: show ? `Defended · ${gate.result.tier ?? "Defended"}` : "Defended",
+      subtitle: show ? gate.result.subject.slice(0, 80) : (gate.result.tier ?? ""),
+      foot: show ? "Signed receipt" : "Score not shown",
       score: show ? String(gate.result.score) : null,
     };
   }

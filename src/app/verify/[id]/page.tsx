@@ -86,7 +86,7 @@ export default function VerifyPage() {
       {!expected && outcome && (
         <div className="panel mt-8 p-6">
           <p>{outcome}</p>
-          <p className="mt-2 text-sm text-[var(--ink-2)]">The numeric score for this result is not published.</p>
+          <p className="mt-2 text-sm text-[var(--ink-2)]">The score is not shown.</p>
         </div>
       )}
 

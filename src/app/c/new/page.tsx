@@ -23,12 +23,20 @@ export default async function NewChallengePage() {
       <p className="eyebrow">Sponsored by DefendIT</p>
       <h1 className="mt-2 text-3xl font-bold sm:text-4xl">Challenge someone to defend it</h1>
       <p className="mt-3 text-[var(--ink-2)]">
-        You get a link. The first person to accept uploads and defends, at no cost to them. They choose
-        whether the result is public.
+        See a launch, repo, or bold claim you respect? Make a link and post it from your own account, under
+        their post.
+      </p>
+      <p className="mt-3 text-[var(--ink-2)]">
+        Nothing happens unless they open it and opt in. They pick the file, can practice privately in Learn,
+        then take a short text interview. They choose whether the result is public, public without the score,
+        or private. If they keep it private, nothing is posted.
+      </p>
+      <p className="mt-3 text-sm text-[var(--ink-2)]">
+        Free in beta, sponsored by DefendIT. No one is paid to accept or share.
       </p>
       <p className="mt-3 text-sm">
         <Link href="/c/opt-out" className="text-[var(--blueprint)]">
-          Don&apos;t challenge me
+          Don&apos;t challenge me again
         </Link>
       </p>
       {user ? <CreateChallengeForm /> : (

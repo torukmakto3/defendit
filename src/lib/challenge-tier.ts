@@ -25,7 +25,7 @@ export function tierForScore(score: number): ResultTier {
 }
 
 export const TIER_LEGEND =
-  "Strong is 85 or higher. Defended is 70 to 84. Under 70 is still sharpening.";
+  "Strong is the top band, 85 or higher. Defended is 70 to 84. Under 70 is still sharpening, framed as progress.";
 
 /** Free beta challenges. Default off. */
 export function challengesEnabled(): boolean {
