@@ -289,6 +289,10 @@ export default function PrivacyPage() {
           sign-in and returns the verified email.
         </p>
         <p>
+          Card payments are processed by Stripe. We store the Stripe customer id and, to stop someone
+          claiming a challenge they paid for, a card fingerprint. We do not store the card number.
+        </p>
+        <p>
           Typed answers are the web default (<span className="mono">VOICE_PROVIDER</span> defaults to
           text). Hard and Expert defenses are marked as a voice channel unless you choose to type. A
           spoken interview starts only when LiveKit is configured (

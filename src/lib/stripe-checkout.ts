@@ -8,6 +8,7 @@
 
 import { randomBytes } from "crypto";
 import Stripe from "stripe";
+import { appUrl } from "./config";
 import { HttpError } from "./errors";
 import { stripeTaxEnabled } from "./stripe-config";
 import { stripeSdk } from "./stripe-client";
@@ -50,6 +51,12 @@ export function checkoutSessionParams(input: StripeCheckoutRequest): Stripe.Chec
     tax_id_collection: { enabled: true },
     automatic_tax: { enabled: stripeTaxEnabled() },
     allow_promotion_codes: true,
+    consent_collection: { terms_of_service: "required" },
+    custom_text: {
+      terms_of_service_acceptance: {
+        message: withdrawalWaiver(input.sku),
+      },
+    },
     integration_identifier: integrationIdentifier(),
   };
   if (input.customerId) {
@@ -67,6 +74,12 @@ export function checkoutSessionParams(input: StripeCheckoutRequest): Stripe.Chec
     params.payment_intent_data = { metadata };
   }
   return params;
+}
+
+/** EU 14-day withdrawal waiver. The terms page is owned by the legal pages pull request. */
+function withdrawalWaiver(sku: string): string {
+  const terms = appUrl("/terms");
+  return `I agree to the Terms at ${terms} and I ask Defend It to provide ${sku} immediately. I waive the 14-day right of withdrawal once a credit is delivered.`;
 }
 
 function integrationIdentifier(): string {

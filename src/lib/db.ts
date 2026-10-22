@@ -422,6 +422,7 @@ CREATE TABLE IF NOT EXISTS stripe_grants (
   payment_intent_id TEXT,
   charge_id TEXT,
   refunded_at TEXT,
+  clawed_credits INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -429,6 +430,17 @@ CREATE INDEX IF NOT EXISTS idx_stripe_grants_event ON stripe_grants(event_id);
 CREATE INDEX IF NOT EXISTS idx_stripe_grants_payment_intent ON stripe_grants(payment_intent_id);
 CREATE INDEX IF NOT EXISTS idx_stripe_grants_charge ON stripe_grants(charge_id);
 CREATE INDEX IF NOT EXISTS idx_stripe_grants_invoice ON stripe_grants(invoice_id);
+
+-- Last Stripe event time for a subscription. terminal = 1 after delete or cancel,
+-- and a later invoice or checkout must not set the plan active again.
+-- refills_stopped = 1 after a full refund or a dispute. It does not cancel
+-- the subscription. A later paid invoice clears it and grants.
+CREATE TABLE IF NOT EXISTS stripe_subscription_state (
+  subscription_id TEXT PRIMARY KEY,
+  last_event_created INTEGER NOT NULL,
+  terminal INTEGER NOT NULL DEFAULT 0,
+  refills_stopped INTEGER NOT NULL DEFAULT 0
+);
 `;
 
 /** Stats filters on these session columns. Skip when an older table lacks them. */
@@ -491,6 +503,8 @@ const ADDED_COLUMNS: [string, string, string][] = [
   ["sessions", "focus_blur_events", "INTEGER NOT NULL DEFAULT 0"],
   // Set on a sample-demo receipt. Null on a normal receipt, which is kept.
   ["receipts", "purge_after", "TEXT"],
+  ["stripe_grants", "clawed_credits", "INTEGER NOT NULL DEFAULT 0"],
+  ["stripe_subscription_state", "refills_stopped", "INTEGER NOT NULL DEFAULT 0"],
 ];
 
 let dbPromise: Promise<Db> | null = null;

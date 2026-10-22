@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { handleError, jsonError, requireUser } from "@/lib/http";
+import { handleError, ipLimitKey, jsonError, limitOr429, requireUser } from "@/lib/http";
 import { createCheckout } from "@/lib/payments";
 import { billingEnabled, isSku } from "@/lib/plans";
+import { LIMITS } from "@/lib/ratelimit";
 import { liveStripeRefused } from "@/lib/stripe-config";
 
 export const runtime = "nodejs";
@@ -17,6 +18,10 @@ export async function POST(req: Request) {
   if (liveStripeRefused()) return jsonError(403, "Live Stripe keys are refused.");
   const guard = await requireUser(req);
   if (guard.response) return guard.response;
+  const limited =
+    (await limitOr429(`checkout:${guard.user.id}`, LIMITS.checkoutPerUser)) ||
+    (await limitOr429(ipLimitKey("checkout", req), LIMITS.checkoutPerIp));
+  if (limited) return limited;
   try {
     const body = schema.parse(await req.json());
     if (!isSku(body.sku)) return handleError(new Error("unreachable"));

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { handleError, jsonError, requireUser } from "@/lib/http";
+import { handleError, ipLimitKey, jsonError, limitOr429, requireUser } from "@/lib/http";
 import { createBillingPortal } from "@/lib/payments";
 import { billingEnabled } from "@/lib/plans";
+import { LIMITS } from "@/lib/ratelimit";
 import { liveStripeRefused } from "@/lib/stripe-config";
 
 export const runtime = "nodejs";
@@ -12,6 +13,10 @@ export async function POST(req: Request) {
   if (liveStripeRefused()) return jsonError(403, "Live Stripe keys are refused.");
   const guard = await requireUser(req);
   if (guard.response) return guard.response;
+  const limited =
+    (await limitOr429(`portal:${guard.user.id}`, LIMITS.portalPerUser)) ||
+    (await limitOr429(ipLimitKey("portal", req), LIMITS.portalPerIp));
+  if (limited) return limited;
   try {
     const portal = await createBillingPortal(guard.user.id);
     return NextResponse.json(portal);

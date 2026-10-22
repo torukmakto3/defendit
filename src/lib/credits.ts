@@ -1136,9 +1136,12 @@ export async function renewPlan(input: {
   interval: BillingInterval;
   periodId: string;
   subscriptionId?: string | null;
+  /** False keeps a newer canceled or past_due status. The grant still lands. */
+  activate?: boolean;
 }): Promise<void> {
   const plan = getPlan(input.planId);
   const periods = periodsForInterval(input.interval);
+  const activateStatus = input.activate === false ? null : "active";
   await withTx(undefined, async (tx) => {
     await lockWallet(tx, input.userId);
     const current = await tx.get<{ period_id: string | null }>(
@@ -1168,24 +1171,27 @@ export async function renewPlan(input: {
     const now = new Date().toISOString();
     await tx.run(
       `INSERT INTO user_plans (user_id, plan_id, interval, status, period_id, current_period_end, updated_at)
-       VALUES (?, ?, ?, 'active', ?, ?, ?)
+       VALUES (?, ?, ?, COALESCE(?, 'active'), ?, ?, ?)
        ON CONFLICT (user_id) DO UPDATE SET
          plan_id = excluded.plan_id,
          interval = excluded.interval,
-         status = 'active',
+         status = COALESCE(?, user_plans.status),
          period_id = excluded.period_id,
          current_period_end = excluded.current_period_end,
          stripe_subscription_id = COALESCE(?, user_plans.stripe_subscription_id),
-         cancel_at_period_end = 0,
+         cancel_at_period_end = CASE WHEN ? IS NULL THEN user_plans.cancel_at_period_end ELSE 0 END,
          updated_at = excluded.updated_at`,
       [
         input.userId,
         input.planId,
         input.interval,
+        activateStatus,
         input.periodId,
         periodEnd(input.interval),
         now,
+        activateStatus,
         input.subscriptionId ?? null,
+        activateStatus,
       ],
     );
   });
@@ -1254,12 +1260,18 @@ export async function markPlanPastDue(userId: string): Promise<void> {
  * Subscription ended. Unused subscription defenses and challenges expire.
  * Purchased, pack, and beta credits stay. The plan returns to pay as you go.
  */
-export async function endPaidPlan(userId: string, subscriptionId: string): Promise<void> {
+export async function endPaidPlan(
+  userId: string,
+  subscriptionId: string,
+  opts?: { keepCredits?: boolean },
+): Promise<void> {
   const periodId = `end:${subscriptionId}`;
   await withTx(undefined, async (tx) => {
     await lockWallet(tx, userId);
-    await expireSource(tx, userId, "defense", periodId);
-    await expireSource(tx, userId, "challenge", periodId);
+    if (!opts?.keepCredits) {
+      await expireSource(tx, userId, "defense", periodId);
+      await expireSource(tx, userId, "challenge", periodId);
+    }
     const now = new Date().toISOString();
     await tx.run(
       `INSERT INTO user_plans

@@ -174,6 +174,10 @@ describe("rate limit configuration", () => {
     expect(LIMITS.challengeSharePerIp).toMatchObject({ limit: 30, windowSec: 60 * 60 });
     expect(LIMITS.challengeResultViewPerIp).toMatchObject({ limit: 60, windowSec: 60 * 60 });
     expect(LIMITS.challengeReportPerIp).toMatchObject({ limit: 10, windowSec: 60 * 60 });
+    expect(LIMITS.checkoutPerUser).toMatchObject({ limit: 10, windowSec: 60 * 60 });
+    expect(LIMITS.checkoutPerIp).toMatchObject({ limit: 20, windowSec: 60 * 60 });
+    expect(LIMITS.portalPerUser).toMatchObject({ limit: 20, windowSec: 60 * 60 });
+    expect(LIMITS.portalPerIp).toMatchObject({ limit: 30, windowSec: 60 * 60 });
   });
 
   it("reads a positive integer from the environment", () => {

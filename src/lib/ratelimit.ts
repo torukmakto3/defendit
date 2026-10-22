@@ -186,4 +186,12 @@ export const LIMITS = {
   ),
   /** Daily traction dashboard, per keyed IP hash. Skipped when `ipHash` returns null. */
   statsRead: budget("RATE_LIMIT_STATS_READ", 60, "RATE_LIMIT_STATS_READ_WINDOW_SEC", 60 * 60),
+  /** Hosted Checkout sessions, per account. */
+  checkoutPerUser: budget("RATE_LIMIT_CHECKOUT_USER", 10, "RATE_LIMIT_CHECKOUT_USER_WINDOW_SEC", 60 * 60),
+  /** Hosted Checkout sessions, per hashed IP. */
+  checkoutPerIp: budget("RATE_LIMIT_CHECKOUT_IP", 20, "RATE_LIMIT_CHECKOUT_IP_WINDOW_SEC", 60 * 60),
+  /** Customer Portal sessions, per account. */
+  portalPerUser: budget("RATE_LIMIT_PORTAL_USER", 20, "RATE_LIMIT_PORTAL_USER_WINDOW_SEC", 60 * 60),
+  /** Customer Portal sessions, per hashed IP. */
+  portalPerIp: budget("RATE_LIMIT_PORTAL_IP", 30, "RATE_LIMIT_PORTAL_IP_WINDOW_SEC", 60 * 60),
 } as const;

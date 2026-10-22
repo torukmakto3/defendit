@@ -19,9 +19,16 @@ import {
 } from "../src/lib/credits";
 import { getDb } from "../src/lib/db";
 import { billingEnabled } from "../src/lib/plans";
+import { POST as portal } from "../src/app/api/billing/portal/route";
 import { checkoutSessionParams, setStripeCheckoutApiForTests, type StripeCheckoutRequest } from "../src/lib/stripe-checkout";
-import { setInvoiceItemWriterForTests, STRIPE_API_VERSION } from "../src/lib/stripe-client";
-import { assertStripeReady, checkoutCatalog } from "../src/lib/stripe-config";
+import {
+  setCardFingerprintLoaderForTests,
+  setInvoiceItemWriterForTests,
+  setInvoicePaymentLoaderForTests,
+  STRIPE_API_VERSION,
+} from "../src/lib/stripe-client";
+import { assertStripeReady, checkoutCatalog, liveStripeRefused } from "../src/lib/stripe-config";
+import { grantDueSubscriptionRefills } from "../src/lib/subscription-refill";
 import {
   checkoutLookupKey,
   expireStripePriceCacheForTests,
@@ -53,6 +60,11 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  setInvoicePaymentLoaderForTests(async (invoiceId) => ({
+    paymentIntentId: `pi_${invoiceId}`,
+    chargeId: `ch_${invoiceId}`,
+  }));
+  setCardFingerprintLoaderForTests(async () => null);
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     calls.push(url);
@@ -66,6 +78,8 @@ afterEach(() => {
   calls.length = 0;
   setStripeCheckoutApiForTests(null);
   setInvoiceItemWriterForTests(null);
+  setInvoicePaymentLoaderForTests(null);
+  setCardFingerprintLoaderForTests(null);
   delete process.env.BILLING_ENABLED;
   delete process.env.STRIPE_SECRET_KEY;
   delete process.env.STRIPE_WEBHOOK_SECRET;
@@ -193,8 +207,6 @@ function invoiceEvent(input: {
         amount_paid: input.amount,
         currency: "eur",
         billing_reason: input.reason ?? "subscription_cycle",
-        payment_intent: `pi_${input.invoiceId}`,
-        charge: `ch_${input.invoiceId}`,
         customer: input.customer,
         period_start: input.periodStart,
         period_end: input.periodEnd,
@@ -239,24 +251,29 @@ describe("payments flags", () => {
     expect((await getBalance(user.id)).defense).toBe(3);
   });
 
-  it("refuses to start when billing is on with a live key", () => {
+  it("keeps the server up when billing is on with a live key", () => {
     process.env.BILLING_ENABLED = "true";
     process.env.STRIPE_SECRET_KEY = "sk_live_disabled";
-    expect(() => assertStripeReady()).toThrow(/live Stripe/i);
-    expect(() => registerNode()).toThrow(/live Stripe/i);
+    expect(liveStripeRefused()).toBe(true);
+    expect(() => assertStripeReady()).not.toThrow();
+    expect(() => registerNode()).not.toThrow();
     process.env.STRIPE_SECRET_KEY = "rk_live_disabled";
-    expect(() => assertStripeReady()).toThrow(/live Stripe/i);
+    expect(liveStripeRefused()).toBe(true);
+    expect(() => registerNode()).not.toThrow();
     process.env.STRIPE_ALLOW_LIVE = "true";
+    expect(liveStripeRefused()).toBe(false);
     expect(() => registerNode()).not.toThrow();
     delete process.env.STRIPE_ALLOW_LIVE;
     delete process.env.STRIPE_SECRET_KEY;
     process.env.STRIPE_MODE = "live";
-    expect(() => assertStripeReady()).toThrow(/live Stripe/i);
+    expect(liveStripeRefused()).toBe(true);
+    expect(() => assertStripeReady()).not.toThrow();
     delete process.env.BILLING_ENABLED;
     process.env.STRIPE_SECRET_KEY = "sk_live_disabled";
-    expect(() => assertStripeReady()).not.toThrow();
+    expect(liveStripeRefused()).toBe(false);
     process.env.STRIPE_SECRET_KEY = "rk_live_disabled";
     expect(() => assertStripeReady()).not.toThrow();
+    expect(() => registerNode()).not.toThrow();
   });
 });
 
@@ -562,6 +579,290 @@ describe("webhook", () => {
     ).rejects.toMatchObject({ status: 403 });
   });
 
+  it("reads the card fingerprint from the PaymentIntent when checkout completes", async () => {
+    setCardFingerprintLoaderForTests(async () => "fp_checkout");
+    const buyer = await signIn("fp-checkout@pay.example");
+    const res = await postWebhook(
+      checkoutEvent({
+        id: "evt_fp_checkout",
+        userId: buyer.user.id,
+        sku: "defense",
+        amount: 400,
+        paymentIntent: "pi_fp_checkout",
+      }),
+    );
+    expect(res.status).toBe(200);
+    const row = await (await getDb()).get<{ card_fingerprint: string }>(
+      `SELECT card_fingerprint FROM billing_profiles WHERE user_id = ?`,
+      [buyer.user.id],
+    );
+    expect(row?.card_fingerprint).toBe("fp_checkout");
+  });
+
+  it("stores the invoice payment from InvoicePayment and ignores invoice.charge", async () => {
+    const { user } = await signIn("inv-pay@pay.example");
+    const event = invoiceEvent({
+      id: "evt_inv_pay",
+      invoiceId: "in_inv_pay",
+      userId: user.id,
+      sku: "subscription_month",
+      amount: 1100,
+      reason: "subscription_create",
+    });
+    expect(event.data.object).not.toHaveProperty("charge");
+    expect(event.data.object).not.toHaveProperty("payment_intent");
+    expect((await postWebhook(event)).status).toBe(200);
+    const grant = await (await getDb()).get<{ payment_intent_id: string; charge_id: string }>(
+      `SELECT payment_intent_id, charge_id FROM stripe_grants WHERE invoice_id = ? LIMIT 1`,
+      ["in_inv_pay"],
+    );
+    expect(grant).toMatchObject({ payment_intent_id: "pi_in_inv_pay", charge_id: "ch_in_inv_pay" });
+  });
+
+  it("claws only the refunded purchase, and a partial refund floors the credits", async () => {
+    const { user } = await signIn("scoped-refund@pay.example");
+    await postWebhook(
+      checkoutEvent({
+        id: "evt_scope_defense",
+        userId: user.id,
+        sku: "defense",
+        amount: 400,
+        paymentIntent: "pi_scope_defense",
+      }),
+    );
+    await postWebhook(
+      checkoutEvent({
+        id: "evt_scope_pack",
+        userId: user.id,
+        sku: "pack8",
+        amount: 2000,
+        paymentIntent: "pi_scope_pack",
+      }),
+    );
+    expect(await getBalance(user.id)).toMatchObject({ defenseOnly: 1, flex: 8 });
+    const half = await postWebhook({
+      id: "evt_scope_pack_half",
+      type: "charge.refunded",
+      data: {
+        object: { id: "ch_scope_pack", payment_intent: "pi_scope_pack", amount: 2000, amount_refunded: 1000 },
+      },
+    });
+    expect(half.status).toBe(200);
+    expect(await getBalance(user.id)).toMatchObject({ defenseOnly: 1, flex: 4 });
+    const pack = await (await getDb()).get<{ refunded_at: string | null; clawed_credits: number }>(
+      `SELECT refunded_at, clawed_credits FROM stripe_grants WHERE payment_intent_id = ?`,
+      ["pi_scope_pack"],
+    );
+    expect(pack?.refunded_at).toBeNull();
+    expect(Number(pack?.clawed_credits)).toBe(4);
+    const defense = await (await getDb()).get<{ refunded_at: string | null }>(
+      `SELECT refunded_at FROM stripe_grants WHERE payment_intent_id = ?`,
+      ["pi_scope_defense"],
+    );
+    expect(defense?.refunded_at).toBeNull();
+    const rest = await postWebhook({
+      id: "evt_scope_pack_rest",
+      type: "charge.refunded",
+      data: {
+        object: { id: "ch_scope_pack", payment_intent: "pi_scope_pack", amount: 2000, amount_refunded: 2000 },
+      },
+    });
+    expect(rest.status).toBe(200);
+    expect(await getBalance(user.id)).toMatchObject({ defenseOnly: 1, flex: 0 });
+  });
+
+  it("grants a portal switch from the line lookup key and ignores the proration line", async () => {
+    const { user } = await signIn("switch-year@pay.example");
+    const event = invoiceEvent({
+      id: "evt_switch_year",
+      invoiceId: "in_switch_year",
+      userId: user.id,
+      sku: "subscription_month",
+      amount: 9900,
+      reason: "subscription_update",
+      subscription: "sub_switch_year",
+    });
+    const lines = event.data.object.lines as { data: Record<string, unknown>[] };
+    lines.data = [
+      {
+        proration: true,
+        pricing: { price_details: { price: { id: "price_dit_pro_monthly", lookup_key: "dit_pro_monthly" } } },
+      },
+      {
+        proration: false,
+        period: { start: Math.floor(Date.UTC(2026, 0, 31) / 1000), end: Math.floor(Date.UTC(2027, 0, 31) / 1000) },
+        pricing: { price_details: { price: { id: "price_dit_pro_yearly", lookup_key: "dit_pro_yearly" } } },
+      },
+    ];
+    const res = await postWebhook(event);
+    expect(res.status).toBe(200);
+    expect(await getBalance(user.id)).toMatchObject({ defense: 10, challenge: 5, learnSlots: 10 });
+    expect(await getUserPlan(user.id)).toMatchObject({ interval: "year", status: "active" });
+
+    const updated = await postWebhook({
+      id: "evt_switch_updated",
+      type: "customer.subscription.updated",
+      created: 20,
+      data: {
+        object: {
+          id: "sub_switch_year",
+          status: "active",
+          metadata: { user_id: user.id, sku: "subscription_month" },
+          items: {
+            data: [{ price: { id: "price_dit_pro_yearly", lookup_key: "dit_pro_yearly" } }],
+          },
+        },
+      },
+    });
+    expect(updated.status).toBe(200);
+    expect((await getUserPlan(user.id)).interval).toBe("year");
+  });
+
+  it("does not treat paused or an unknown status as active", async () => {
+    const { user } = await signIn("paused-plan@pay.example");
+    await postWebhook(
+      invoiceEvent({
+        id: "evt_paused_inv",
+        invoiceId: "in_paused",
+        userId: user.id,
+        sku: "subscription_month",
+        amount: 1100,
+        reason: "subscription_create",
+        subscription: "sub_paused",
+      }),
+    );
+    const paused = await postWebhook({
+      id: "evt_paused_sub",
+      type: "customer.subscription.updated",
+      created: 30,
+      data: {
+        object: {
+          id: "sub_paused",
+          status: "paused",
+          metadata: { user_id: user.id, sku: "subscription_month" },
+        },
+      },
+    });
+    expect(paused.status).toBe(200);
+    expect((await getUserPlan(user.id)).status).toBe("unpaid");
+    const unknown = await postWebhook({
+      id: "evt_unknown_sub",
+      type: "customer.subscription.updated",
+      created: 40,
+      data: {
+        object: {
+          id: "sub_paused",
+          status: "weird",
+          metadata: { user_id: user.id, sku: "subscription_month" },
+        },
+      },
+    });
+    expect(unknown.status).toBe(200);
+    expect((await getUserPlan(user.id)).status).toBe("unpaid");
+  });
+
+  it("does not reactivate a subscription after it was deleted", async () => {
+    const { user } = await signIn("order-sub@pay.example");
+    const deleted = await postWebhook({
+      id: "evt_order_deleted",
+      type: "customer.subscription.deleted",
+      created: 200,
+      data: {
+        object: {
+          id: "sub_order",
+          status: "canceled",
+          metadata: { user_id: user.id, sku: "subscription_month" },
+        },
+      },
+    });
+    expect(deleted.status).toBe(200);
+    const lateInvoice = await postWebhook({
+      ...invoiceEvent({
+        id: "evt_order_invoice",
+        invoiceId: "in_order",
+        userId: user.id,
+        sku: "subscription_month",
+        amount: 1100,
+        reason: "subscription_create",
+        subscription: "sub_order",
+      }),
+      created: 100,
+    });
+    expect(lateInvoice.status).toBe(200);
+    expect(await lateInvoice.json()).toMatchObject({ ignored: true });
+    expect((await getBalance(user.id)).defense).toBe(0);
+    expect((await getUserPlan(user.id)).status).toBe("canceled");
+    const lateCheckout = await postWebhook({
+      ...checkoutEvent({
+        id: "evt_order_checkout",
+        userId: user.id,
+        sku: "subscription_month",
+        amount: 1100,
+        paymentIntent: "pi_order_checkout",
+        mode: "subscription",
+        subscription: "sub_order",
+      }),
+      created: 150,
+    });
+    expect(lateCheckout.status).toBe(200);
+    expect((await getUserPlan(user.id)).plan.id).toBe("payg");
+  });
+
+  it("links each yearly refill to the invoice payment and a refund stops later months", async () => {
+    const { user } = await signIn("year-claw@pay.example");
+    const anchor = Math.floor(Date.UTC(2026, 0, 31) / 1000);
+    const periodEnd = Math.floor(Date.UTC(2027, 0, 31) / 1000);
+    const paid = await postWebhook(
+      invoiceEvent({
+        id: "evt_year_claw",
+        invoiceId: "in_year_claw",
+        userId: user.id,
+        sku: "subscription_year",
+        amount: 9900,
+        reason: "subscription_create",
+        subscription: "sub_year_claw",
+        periodStart: anchor,
+        periodEnd,
+        anchor,
+      }),
+    );
+    expect(paid.status).toBe(200);
+    const due = await grantDueSubscriptionRefills({
+      userId: user.id,
+      now: new Date(Date.UTC(2026, 1, 28, 12)),
+    });
+    expect(due.granted).toBe(1);
+    const rows = await (await getDb()).all<{ id: string; payment_intent_id: string; charge_id: string; invoice_id: string }>(
+      `SELECT id, payment_intent_id, charge_id, invoice_id FROM stripe_grants
+       WHERE user_id = ? AND kind = 'defense' ORDER BY id`,
+      [user.id],
+    );
+    expect(rows.map((row) => row.id)).toEqual([
+      "refill:sub_year_claw:0:defense",
+      "refill:sub_year_claw:1:defense",
+    ]);
+    expect(rows.every((row) => row.payment_intent_id === "pi_in_year_claw" && row.charge_id === "ch_in_year_claw")).toBe(
+      true,
+    );
+    expect(rows.every((row) => row.invoice_id === "in_year_claw")).toBe(true);
+    const refund = await postWebhook({
+      id: "evt_year_claw_refund",
+      type: "charge.refunded",
+      data: {
+        object: { id: "ch_in_year_claw", payment_intent: "pi_in_year_claw", amount: 9900, amount_refunded: 9900 },
+      },
+    });
+    expect(refund.status).toBe(200);
+    expect(await getBalance(user.id)).toMatchObject({ defense: 0, challenge: 0 });
+    expect((await getUserPlan(user.id)).status).toBe("canceled");
+    const again = await grantDueSubscriptionRefills({
+      userId: user.id,
+      now: new Date(Date.UTC(2026, 2, 31, 12)),
+    });
+    expect(again.granted).toBe(0);
+    expect((await getBalance(user.id)).defense).toBe(0);
+  });
+
   it("rejects a checkout whose lookup key does not match the product", async () => {
     const { user } = await signIn("bad-price@pay.example");
     const res = await postWebhook(
@@ -685,6 +986,11 @@ describe("checkout session", () => {
     expect(params.client_reference_id).toBe(user.id);
     expect(Object.prototype.hasOwnProperty.call(params, "payment_method_types")).toBe(false);
     expect(params.adaptive_pricing).toEqual({ enabled: false });
+    expect(params.consent_collection).toEqual({ terms_of_service: "required" });
+    const waiver = params.custom_text?.terms_of_service_acceptance;
+    const waiverMessage = waiver && typeof waiver === "object" ? waiver.message : "";
+    expect(waiverMessage).toMatch(/\/terms/);
+    expect(waiverMessage).toMatch(/14-day/);
     expect(params.automatic_tax).toEqual({ enabled: false });
     expect(params.tax_id_collection).toEqual({ enabled: true });
     expect(params.integration_identifier).toMatch(/^dit_checkout_[a-z]{8}$/);
@@ -735,7 +1041,7 @@ describe("checkout session", () => {
     const footer = readFileSync("src/components/site-footer.tsx", "utf8");
     expect(pricing).toMatch(/<a href="\/terms"/);
     expect(dashboard).toMatch(/<a href="\/terms"/);
-    expect(footer).toMatch(/<a href="\/terms"/);
+    expect(footer).not.toMatch(/href="\/terms"/);
     expect(existsSync("src/app/terms/page.tsx")).toBe(false);
   });
 
@@ -766,6 +1072,9 @@ describe("checkout session", () => {
     expect(Object.prototype.hasOwnProperty.call(params, "payment_method_types")).toBe(false);
     expect(params.adaptive_pricing).toEqual({ enabled: false });
     expect(params.subscription_data?.metadata).toMatchObject({ user_id: user.id, sku: "subscription_month" });
+    expect(params.consent_collection).toEqual({ terms_of_service: "required" });
+    const waiver = params.custom_text?.terms_of_service_acceptance;
+    expect(waiver && typeof waiver === "object" ? waiver.message : "").toMatch(/14-day/);
     expect(params.subscription_data?.billing_mode).toEqual({ type: "flexible" });
     expect(params.payment_intent_data).toBeUndefined();
     const enterprise = await checkout(
@@ -777,6 +1086,48 @@ describe("checkout session", () => {
     );
     expect(enterprise.status).toBe(400);
     expect(await enterprise.json()).toEqual({ error: "That price is not for sale." });
+  });
+
+  it("rate limits checkout and the portal per account", async () => {
+    process.env.BILLING_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_dummy";
+    process.env.RATE_LIMIT_CHECKOUT_USER = "1";
+    process.env.RATE_LIMIT_PORTAL_USER = "1";
+    const prices = catalogClient();
+    setStripePriceClientForTests(prices.client);
+    setStripeCheckoutApiForTests({
+      async createSession() {
+        return { id: "cs_limit", url: "https://checkout.stripe.com/c/pay/cs_limit" };
+      },
+    });
+    const { cookie } = await signIn("limit-checkout@pay.example");
+    const headers = { cookie, "content-type": "application/json" };
+    const first = await checkout(
+      new Request("http://localhost/api/billing/checkout", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ sku: "defense" }),
+      }),
+    );
+    expect(first.status).toBe(200);
+    const second = await checkout(
+      new Request("http://localhost/api/billing/checkout", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ sku: "defense" }),
+      }),
+    );
+    expect(second.status).toBe(429);
+    const opened = await portal(
+      new Request("http://localhost/api/billing/portal", { method: "POST", headers }),
+    );
+    expect(opened.status).toBe(400);
+    const limited = await portal(
+      new Request("http://localhost/api/billing/portal", { method: "POST", headers }),
+    );
+    expect(limited.status).toBe(429);
+    delete process.env.RATE_LIMIT_CHECKOUT_USER;
+    delete process.env.RATE_LIMIT_PORTAL_USER;
   });
 
   it("fails closed when a lookup key is missing and caches a complete catalog", async () => {

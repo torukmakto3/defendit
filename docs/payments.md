@@ -27,7 +27,8 @@ The test-mode catalog (account `acct_1UNDfOBIumCL91iA`, all `livemode: false`) i
 `POST /api/billing/checkout` with `{ "sku" }` from a signed-in user. The server creates a hosted Session:
 
 - No `payment_method_types` (dynamic payment methods).
-- `adaptive_pricing.enabled` is false (EUR only).
+- `adaptive_pricing.enabled` is false (EUR only, for this beta).
+- `consent_collection.terms_of_service` is `required`. `custom_text.terms_of_service_acceptance` states the EU 14-day withdrawal waiver and links to `/terms`.
 - `metadata` `{ user_id, sku }` on the Session, on `subscription_data`, and on `payment_intent_data`.
 - `client_reference_id` is the user id.
 - `subscription_data.billing_mode.type` is `flexible` for Pro and Team.
@@ -35,7 +36,7 @@ The test-mode catalog (account `acct_1UNDfOBIumCL91iA`, all `livemode: false`) i
 - `tax_id_collection` is on.
 - An existing `cus_…` is reused. Otherwise payment mode sets `customer_email` and `customer_creation: always`.
 - Success URL is `/dashboard?checkout={CHECKOUT_SESSION_ID}`. Cancel is `/billing/cancel`.
-- Pricing and the wallet checkout link to `/terms` with `<a href="/terms">`. This repo does not define that page.
+- Pricing and the wallet checkout link to `/terms` with `<a href="/terms">`. This repo does not define that page, and it does not add the footer link.
 
 `POST /api/billing/portal` opens the Customer Portal for the stored customer. Return URL is `/dashboard`. Set `STRIPE_PORTAL_CONFIGURATION_ID` to pin a configuration. The sandbox default `bpc_1UTNuQBIumCL91iAG7sGZYLQ` is not hard-coded. The portal can show invoices, update the payment method, email, address, and tax id, cancel at period end, and switch Pro monthly and yearly. Team and Enterprise are not switchable there.
 
@@ -47,22 +48,22 @@ The same Stripe event id is acknowledged once. Credits are keyed on the Checkout
 
 | Event | Effect |
 |---|---|
-| `checkout.session.completed` | Store the customer. One-time sku, `payment_status=paid`: grant from the line’s lookup key. Subscription mode: store the subscription and grant nothing. |
+| `checkout.session.completed` | Store the customer. One-time sku, `payment_status=paid`: grant from the line’s lookup key. Subscription mode: store the subscription and grant nothing. The card fingerprint is read from the PaymentIntent's latest charge. A deleted subscription is not set active again. |
 | `checkout.session.async_payment_succeeded` | Same grant as completed, same session id. |
 | `checkout.session.async_payment_failed` | No grant. A notice on the dashboard. |
-| `invoice.paid` | `subscription_create`, `subscription_cycle`, or `subscription_update`. The sku comes from `parent.subscription_details.metadata` or the line lookup key, not `invoice.metadata`. A monthly plan grants its allowance once (Pro 10 defenses, 5 challenges, 10 Learn slots; Team 50; Enterprise 200). Yearly Pro grants month 0 only, keyed `refill:<subscription id>:<period index>`. |
+| `invoice.paid` | `subscription_create`, `subscription_cycle`, or `subscription_update`. The sku comes from the non-proration line's `lookup_key`, then `parent.subscription_details.metadata`. `invoice.metadata` is ignored. Proration lines are not granted. The payment intent and charge are read from `invoicePayments.list({ invoice })`, not from `invoice.charge` or `invoice.payment_intent`. A monthly plan grants its allowance once (Pro 10 defenses, 5 challenges, 10 Learn slots; Team 50; Enterprise 200). Yearly Pro grants month 0 only, keyed `refill:<subscription id>:<period index>`, and stores that payment on the grant row. |
 | `invoice.payment_failed` | `past_due` and a portal notice. Credits stay. |
-| `customer.subscription.updated` | Sync plan, interval, status, `cancel_at_period_end`. No grant. |
+| `customer.subscription.updated` | Sync plan, interval, status, `cancel_at_period_end`. The price `lookup_key` wins over metadata, so a portal switch from monthly to yearly sticks. No grant. An older event does not overwrite a newer one. `paused`, `incomplete`, and any unknown status are stored as non-active. |
 | `customer.subscription.deleted` | Plan returns to pay as you go. Unused subscription defenses and challenges expire. Purchased, pack, and beta credits stay. |
-| `charge.refunded` | Claw back unspent credits from that purchase. Never below zero. Flag the account if some were already spent. |
-| `charge.dispute.created` | Same clawback, and flag the account. |
+| `charge.refunded` | Claw back unspent credits from the grants with that charge or payment intent. Another purchase is left alone. A partial refund removes `floor(credits × amount_refunded / amount)`. A refund with no charge amount removes the whole grant. Never below zero. Flag the account if the latest month, or the purchase, was already spent. A yearly Pro refund also marks every refill month and stops later refills. |
+| `charge.dispute.created` | Same clawback for the whole grant, and flag the account. A yearly dispute stops later refills. |
 | `invoice.created` | If the customer has unbilled Enterprise overage rows, add `dit_enterprise_extra_unit` × that count. |
 | `invoice.finalized` | Ignored. `invoice.paid` is the grant. |
 | `credit_note.created` | Logged. No ledger change. |
 | `cash_balance.funds_available` | Logged. `invoice.paid` is the settlement. |
 | `customer_cash_balance_transaction.created` | Logged. |
 | `payment_method.attached` / `payment_method.detached` | Logged. |
-| `charge.succeeded` | Stores the card fingerprint used to block a self-claim. |
+| `charge.succeeded` | Stores the card fingerprint when it arrives. Checkout does not wait for this event. |
 
 The line check compares lookup key, or the catalog price id when the line has no lookup key. It does not compare `amount_total`.
 
@@ -73,6 +74,8 @@ The line check compares lookup key, or the catalog price id when the line has no
 Each subscription stores `current_period_start`, `current_period_end`, `grant_anchor` (the subscription start, or `billing_cycle_anchor`), and `last_granted_period_index`. The period index is the number of UTC monthly anniversaries of that anchor, clamped to the last day of a short month (31 January lands on 28 February, or 29 in a leap year). The ledger key is `refill:<subscription id>:<period index>`, so the invoice and the job cannot both credit the same month. A paid year gets at most 12 grants. The next yearly invoice starts the next run of 12.
 
 A refill tops up to the allowance. Unused subscription defenses and challenges expire, then the month's 10 and 5 are granted. Learn slots top up to 10. Purchased, pack, and beta credits stay. Nothing rolls over.
+
+Each month is also a `stripe_grants` row linked to the yearly invoice's payment intent and charge. A refund or dispute of that payment claws every recorded month and stops further refills. Months that were already topped up (expired) do not, by themselves, flag the account. A shortfall on the latest month does.
 
 The job grants a subscription only when its status is `active` or `trialing`, it is not past `current_period_end`, and it has not been deleted. `customer.subscription.deleted`, status `unpaid`, and status `canceled` stop further refills. `cancel_at_period_end` does not, while the status is still active and the period has not ended. A missed run catches up the months in between and does not grant them twice.
 
@@ -92,9 +95,9 @@ The job grants a subscription only when its status is `active` or `trialing`, it
 
 `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` is not used.
 
-The restricted key needs permission to write Checkout Sessions, Customers, Subscriptions, the customer portal, Invoices, and Invoice Items, and to read Products, Prices, Charges, Refunds, and Events.
+The restricted key needs permission to write Checkout Sessions, Customers, Subscriptions, the customer portal, Invoices, and Invoice Items, and to read Products, Prices, Charges, Refunds, Events, Invoice Payments, and PaymentIntents.
 
-A live key while billing is off does not block the beta. With billing on, the process refuses to start unless `STRIPE_ALLOW_LIVE=true`.
+A live key while billing is off does not block the beta. With billing on, checkout and the portal answer 403 unless `STRIPE_ALLOW_LIVE=true`. That misconfiguration does not stop the rest of the site.
 
 ## Local listener
 
@@ -103,4 +106,4 @@ stripe listen --forward-to localhost:3000/api/billing/webhook \
   --events checkout.session.completed,checkout.session.async_payment_succeeded,checkout.session.async_payment_failed,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted,charge.refunded,charge.dispute.created,invoice.created,invoice.finalized,credit_note.created,cash_balance.funds_available,customer_cash_balance_transaction.created,payment_method.attached,payment_method.detached
 ```
 
-Put the printed `whsec_…` in `STRIPE_WEBHOOK_SECRET`. Set `BILLING_ENABLED=true` and the sandbox restricted key. The dev server must restart so the startup check sees the key.
+Put the printed `whsec_…` in `STRIPE_WEBHOOK_SECRET`. Set `BILLING_ENABLED=true` and the sandbox restricted key. The dev server must restart so it reads the new environment. A live key does not stop that process; the checkout and portal routes refuse it.

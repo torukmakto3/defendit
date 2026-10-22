@@ -22,13 +22,13 @@ export function liveStripeRefused(): boolean {
 }
 
 /**
- * Called when the server starts. A deployment with billing on and a live
- * key does not become ready unless `STRIPE_ALLOW_LIVE=true`.
+ * Kept so a caller can log a live-key misconfiguration. It does not throw:
+ * checkout and the portal refuse the request, and the rest of the site stays up.
  */
 export function assertStripeReady(): void {
   if (!liveStripeRefused()) return;
-  throw new Error(
-    "Refusing to start: BILLING_ENABLED is true with a live Stripe key or STRIPE_MODE=live, and STRIPE_ALLOW_LIVE is not true.",
+  console.error(
+    "[stripe] BILLING_ENABLED is true with a live Stripe key or STRIPE_MODE=live, and STRIPE_ALLOW_LIVE is not true. Checkout and the portal will refuse.",
   );
 }
 

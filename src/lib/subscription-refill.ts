@@ -62,6 +62,8 @@ export async function grantYearlyInvoiceMonth(input: {
   anchor: Date;
   periodStart: Date;
   periodEnd: Date;
+  /** False when a newer event already canceled the subscription. */
+  activate?: boolean;
 }) {
   const db = await getDb();
   const existing = await db.get<{ grant_anchor: string | null; stripe_subscription_id: string | null }>(
@@ -83,7 +85,7 @@ export async function grantYearlyInvoiceMonth(input: {
     periodStart: input.periodStart.toISOString(),
     periodEnd: input.periodEnd.toISOString(),
     grantAnchor: anchor.toISOString(),
-    activate: true,
+    activate: input.activate !== false,
   });
   return { ...result, periodIndex };
 }
@@ -206,7 +208,62 @@ async function refillRow(row: YearlyRow, now: Date): Promise<number> {
       grantAnchor: anchor.toISOString(),
       activate: false,
     });
+    await recordRefillGrants(row.user_id, row.stripe_subscription_id, index, result.grants);
     if (result.granted) granted += 1;
   }
   return granted;
+}
+
+/**
+ * Each refill month is a stripe_grants row tied to the yearly invoice payment,
+ * so a refund of that payment matches every month. Month 0 is written by the
+ * webhook; later months copy its invoice, payment intent, and charge.
+ */
+async function recordRefillGrants(
+  userId: string,
+  subscriptionId: string,
+  periodIndex: number,
+  grants: { kind: string; source: string; credits: number }[],
+): Promise<void> {
+  const rows = grants.filter((grant) => grant.credits > 0);
+  if (rows.length === 0) return;
+  const db = await getDb();
+  const prior = await db.get<{
+    invoice_id: string | null;
+    payment_intent_id: string | null;
+    charge_id: string | null;
+    sku: string;
+    event_id: string;
+  }>(
+    `SELECT invoice_id, payment_intent_id, charge_id, sku, event_id
+     FROM stripe_grants
+     WHERE user_id = ? AND id LIKE ?
+     ORDER BY created_at
+     LIMIT 1`,
+    [userId, `refill:${subscriptionId}:%`],
+  );
+  const now = new Date().toISOString();
+  const grantKey = `refill:${subscriptionId}:${periodIndex}`;
+  for (const grant of rows) {
+    await db.run(
+      `INSERT INTO stripe_grants
+        (id, user_id, event_id, sku, kind, source, credits, checkout_session_id, invoice_id,
+         payment_intent_id, charge_id, refunded_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)
+       ON CONFLICT (id) DO NOTHING`,
+      [
+        `${grantKey}:${grant.kind}`,
+        userId,
+        prior?.event_id ?? grantKey,
+        prior?.sku ?? "subscription_year",
+        grant.kind,
+        grant.source,
+        grant.credits,
+        prior?.invoice_id ?? null,
+        prior?.payment_intent_id ?? null,
+        prior?.charge_id ?? null,
+        now,
+      ],
+    );
+  }
 }

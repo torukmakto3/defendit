@@ -7,8 +7,9 @@
  * one-time purchases and does not credit a subscription. Monthly plans use
  * the invoice id as the ledger key. Yearly Pro grants month 0 from that
  * invoice and later months from the refill job, both keyed
- * `refill:<subscription id>:<period index>`. A second event for the same
- * invoice or the same month does not credit again.
+ * `refill:<subscription id>:<period index>`. Each month is a stripe_grants
+ * row linked to that invoice's payment, so a refund claws every month.
+ * A second event for the same invoice or the same month does not credit again.
  * Customers are classic Stripe Customers (`cus_…`). See `stripe-client.ts`.
  */
 
@@ -36,7 +37,7 @@ import {
   stripePortalConfigurationId,
   stripeSecretKey,
 } from "./stripe-config";
-import { addInvoiceItem, openBillingPortal } from "./stripe-client";
+import { addInvoiceItem, loadCardFingerprint, openBillingPortal, resolveInvoicePayment } from "./stripe-client";
 import { lookupKeyForSku, resolveCheckoutPrice, resolvePrices, skuForLookupKey, STRIPE_LOOKUP_KEYS } from "./stripe-prices";
 import { addUtcMonths, grantYearlyInvoiceMonth, syncYearlySubscriptionWindow } from "./subscription-refill";
 
@@ -94,11 +95,13 @@ const checkoutEventSchema = z.object({
     "checkout.session.async_payment_succeeded",
     "checkout.session.async_payment_failed",
   ]),
+  created: z.number().int().optional(),
   data: z.object({ object: sessionObject }),
 });
 
 const invoiceLine = z
   .object({
+    proration: z.boolean().nullish(),
     price: priceValue,
     pricing: z
       .object({
@@ -106,6 +109,13 @@ const invoiceLine = z
       })
       .nullish(),
     period: z.object({ start: z.number().int(), end: z.number().int() }).nullish(),
+    parent: z
+      .object({
+        subscription_item_details: z.object({ proration: z.boolean().nullish() }).passthrough().nullish(),
+        invoice_item_details: z.object({ proration: z.boolean().nullish() }).passthrough().nullish(),
+      })
+      .passthrough()
+      .nullish(),
   })
   .passthrough();
 
@@ -113,8 +123,6 @@ const invoiceObject = z.object({
   id: z.string().min(1),
   customer: idOrObject,
   billing_reason: z.string().nullish(),
-  charge: idOrObject,
-  payment_intent: idOrObject,
   period_start: z.number().int().nullish(),
   period_end: z.number().int().nullish(),
   // Subscription invoices leave this empty. The sku is read from
@@ -140,6 +148,7 @@ const invoiceObject = z.object({
 const invoiceEventSchema = z.object({
   id: z.string().min(1).max(200),
   type: z.enum(["invoice.paid", "invoice.payment_failed", "invoice.created", "invoice.finalized"]),
+  created: z.number().int().optional(),
   data: z.object({ object: invoiceObject }),
 });
 
@@ -150,6 +159,7 @@ const refundEventSchema = z.object({
     object: z.object({
       id: z.string().min(1),
       payment_intent: z.string().nullish(),
+      amount: z.number().int().optional(),
       amount_refunded: z.number().int().optional(),
     }),
   }),
@@ -188,6 +198,7 @@ const chargeEventSchema = z.object({
 const subscriptionEventSchema = z.object({
   id: z.string().min(1).max(200),
   type: z.enum(["customer.subscription.deleted", "customer.subscription.updated"]),
+  created: z.number().int().optional(),
   data: z.object({
     object: z.object({
       id: z.string().min(1),
@@ -203,6 +214,7 @@ const subscriptionEventSchema = z.object({
         .object({
           data: z.array(
             z.object({
+              price: priceValue,
               current_period_start: z.number().int().nullish(),
               current_period_end: z.number().int().nullish(),
             }).passthrough(),
@@ -390,15 +402,19 @@ async function applyCheckout(event: z.infer<typeof checkoutEventSchema>): Promis
     if (session.mode === "payment") throw new HttpError(400, "Subscription checkout has the wrong mode.");
     const subscriptionId = stripeId(session.subscription);
     if (subscriptionId) {
-      await attachSubscription({
-        userId,
-        planId: plan.planId,
-        interval: plan.interval,
-        subscriptionId,
-        status: "active",
-        cancelAtPeriodEnd: false,
-      });
+      const decision = await decideSubscriptionWrite(subscriptionId, event.created ?? 0, false);
+      if (decision === "apply") {
+        await attachSubscription({
+          userId,
+          planId: plan.planId,
+          interval: plan.interval,
+          subscriptionId,
+          status: "active",
+          cancelAtPeriodEnd: false,
+        });
+      }
     }
+    await rememberCard(userId, stripeId(session.payment_intent));
     await logEvent(event.id, event.type);
     return { duplicate: false };
   }
@@ -408,6 +424,7 @@ async function applyCheckout(event: z.infer<typeof checkoutEventSchema>): Promis
   }
   const grantKey = `stripe:${session.id}`;
   const grants = await applyCreditSku(userId, sku, grantKey);
+  await rememberCard(userId, stripeId(session.payment_intent));
   await rememberGrants({
     userId,
     eventId: event.id,
@@ -447,7 +464,8 @@ async function applyInvoicePaid(event: z.infer<typeof invoiceEventSchema>): Prom
   const sku = resolved.sku;
   const plan = planForSku(sku);
   if (!plan) throw new HttpError(400, "Invoice is not a subscription.");
-  await assertLinePrice(sku, invoiceLineRefs(invoice));
+  const grantingLines = grantLineRefs(invoice);
+  await assertLinePrice(sku, grantingLines.length > 0 ? grantingLines : invoiceLineRefs(invoice));
   await requireUser(resolved.userId);
   await rememberCustomer(resolved.userId, stripeId(invoice.customer));
   if (await grantExists("invoice_id", invoice.id)) {
@@ -455,6 +473,17 @@ async function applyInvoicePaid(event: z.infer<typeof invoiceEventSchema>): Prom
     return { duplicate: true };
   }
   const subscriptionId = stripeId(invoice.parent?.subscription_details?.subscription) ?? null;
+  const created = event.created ?? 0;
+  let activate = true;
+  if (subscriptionId) {
+    const decision = await decideSubscriptionWrite(subscriptionId, created, false);
+    if (decision === "skip") {
+      await logEvent(event.id, event.type);
+      return { duplicate: false, ignored: true };
+    }
+    activate = decision === "apply";
+  }
+  const payment = await resolveInvoicePayment(invoice.id);
   if (plan.interval === "year") {
     if (!subscriptionId) throw new HttpError(400, "Invoice is missing a subscription.");
     const window = yearlyWindow(invoice);
@@ -465,6 +494,7 @@ async function applyInvoicePaid(event: z.infer<typeof invoiceEventSchema>): Prom
       anchor: window.anchor,
       periodStart: window.periodStart,
       periodEnd: window.periodEnd,
+      activate,
     });
     await rememberGrants({
       userId: resolved.userId,
@@ -473,8 +503,8 @@ async function applyInvoicePaid(event: z.infer<typeof invoiceEventSchema>): Prom
       grants: granted.grants,
       grantKey: `refill:${subscriptionId}:${granted.periodIndex}`,
       invoiceId: invoice.id,
-      paymentIntentId: stripeId(invoice.payment_intent),
-      chargeId: stripeId(invoice.charge),
+      paymentIntentId: payment?.paymentIntentId ?? null,
+      chargeId: payment?.chargeId ?? null,
     });
     await setPaymentNotice(resolved.userId, null);
     return logEvent(event.id, event.type);
@@ -486,6 +516,7 @@ async function applyInvoicePaid(event: z.infer<typeof invoiceEventSchema>): Prom
     interval: plan.interval,
     periodId,
     subscriptionId,
+    activate,
   });
   await rememberGrants({
     userId: resolved.userId,
@@ -494,8 +525,8 @@ async function applyInvoicePaid(event: z.infer<typeof invoiceEventSchema>): Prom
     grants: await grantsFromRenewal(resolved.userId, periodId),
     grantKey: periodId,
     invoiceId: invoice.id,
-    paymentIntentId: stripeId(invoice.payment_intent),
-    chargeId: stripeId(invoice.charge),
+    paymentIntentId: payment?.paymentIntentId ?? null,
+    chargeId: payment?.chargeId ?? null,
   });
   await setPaymentNotice(resolved.userId, null);
   return logEvent(event.id, event.type);
@@ -552,10 +583,12 @@ async function applyInvoiceCreated(event: z.infer<typeof invoiceEventSchema>): P
 interface GrantRow {
   id: string;
   user_id: string;
+  sku: string;
   kind: string;
   source: string;
   credits: number | string;
   refunded_at: string | null;
+  clawed_credits: number | string | null;
 }
 
 async function applyRefund(event: z.infer<typeof refundEventSchema>): Promise<BillingResult> {
@@ -565,9 +598,12 @@ async function applyRefund(event: z.infer<typeof refundEventSchema>): Promise<Bi
     eventType: event.type,
     chargeId: charge.id,
     paymentIntentId: charge.payment_intent?.trim() || null,
+    amount: charge.amount ?? null,
+    amountRefunded: charge.amount_refunded ?? null,
     flagReason: "refund_credits_already_spent",
     flagOnShortfallOnly: true,
-    clawKey: (grantId) => `clawback:${grantId}`,
+    clawKey: (grantId) => `clawback:${event.id}:${grantId}`,
+    eventCreated: 0,
   });
 }
 
@@ -578,9 +614,12 @@ async function applyDispute(event: z.infer<typeof disputeEventSchema>): Promise<
     eventType: event.type,
     chargeId: stripeId(dispute.charge),
     paymentIntentId: stripeId(dispute.payment_intent),
+    amount: null,
+    amountRefunded: null,
     flagReason: "dispute_opened",
     flagOnShortfallOnly: false,
     clawKey: (grantId) => `stripe:${dispute.id}:${grantId}`,
+    eventCreated: 0,
   });
 }
 
@@ -589,13 +628,17 @@ async function clawGrants(input: {
   eventType: string;
   chargeId: string | null;
   paymentIntentId: string | null;
+  amount: number | null;
+  amountRefunded: number | null;
   flagReason: string;
   flagOnShortfallOnly: boolean;
   clawKey: (grantId: string) => string;
+  eventCreated: number;
 }): Promise<BillingResult> {
   const db = await getDb();
   let duplicate = false;
   let unmatched = false;
+  const stopped: { userId: string; subscriptionId: string }[] = [];
   await db.transaction(async (tx) => {
     const inserted = await tx.run(
       `INSERT INTO stripe_events (event_id, event_type, created_at) VALUES (?, ?, ?)
@@ -607,7 +650,7 @@ async function clawGrants(input: {
       return;
     }
     const grants = await tx.all<GrantRow>(
-      `SELECT id, user_id, kind, source, credits, refunded_at FROM stripe_grants
+      `SELECT id, user_id, sku, kind, source, credits, refunded_at, clawed_credits FROM stripe_grants
        WHERE (? IS NOT NULL AND charge_id = ?) OR (? IS NOT NULL AND payment_intent_id = ?)`,
       [input.chargeId, input.chargeId, input.paymentIntentId, input.paymentIntentId],
     );
@@ -615,29 +658,86 @@ async function clawGrants(input: {
       unmatched = true;
       return;
     }
+    grants.sort((a, b) => periodIndexOf(b.id) - periodIndexOf(a.id));
+    const newest = newestPeriodByKind(grants);
     let shortfall = false;
     const now = new Date().toISOString();
     for (const grant of grants) {
       if (grant.refunded_at) continue;
-      const result = await clawbackCredits({
-        userId: grant.user_id,
-        kind: grant.kind as LedgerKind,
-        source: grant.source as CreditSource,
-        amount: Number(grant.credits),
-        idempotencyKey: input.clawKey(grant.id),
-        refType: "stripe_refund",
-        refId: input.eventId,
-        db: tx,
-      });
-      if (result.shortfall > 0) shortfall = true;
-      await tx.run(`UPDATE stripe_grants SET refunded_at = ? WHERE id = ? AND refunded_at IS NULL`, [
-        now,
-        grant.id,
-      ]);
+      const credits = Number(grant.credits);
+      const already = Number(grant.clawed_credits ?? 0);
+      const target = Math.max(already, refundTarget(credits, input.amount, input.amountRefunded));
+      const delta = target - already;
+      if (delta > 0) {
+        const result = await clawbackCredits({
+          userId: grant.user_id,
+          kind: grant.kind as LedgerKind,
+          source: grant.source as CreditSource,
+          amount: delta,
+          idempotencyKey: input.clawKey(grant.id),
+          refType: "stripe_refund",
+          refId: input.eventId,
+          db: tx,
+        });
+        const index = periodIndexOf(grant.id);
+        const olderRefill = index >= 0 && index < (newest.get(grant.kind) ?? -1);
+        if (result.shortfall > 0 && !olderRefill) shortfall = true;
+      }
+      await tx.run(
+        `UPDATE stripe_grants
+         SET clawed_credits = ?, refunded_at = CASE WHEN ? >= credits THEN ? ELSE refunded_at END
+         WHERE id = ?`,
+        [target, target, now, grant.id],
+      );
+      const subscriptionId = subscriptionIdFromGrant(grant.id);
+      if (grant.sku === "subscription_year" && subscriptionId) {
+        stopped.push({ userId: grant.user_id, subscriptionId });
+      }
     }
     if (shortfall || !input.flagOnShortfallOnly) await flagAccount(tx, grants[0].user_id, input.flagReason, now);
   });
+  for (const stop of uniqueStops(stopped)) {
+    await writeSubscriptionState(stop.subscriptionId, input.eventCreated, true);
+    await endPaidPlan(stop.userId, stop.subscriptionId, { keepCredits: true });
+  }
   return { duplicate, unmatched };
+}
+
+function refundTarget(credits: number, amount: number | null, amountRefunded: number | null): number {
+  if (!Number.isFinite(credits) || credits <= 0) return 0;
+  if (amount == null || amountRefunded == null || amount <= 0 || amountRefunded >= amount) return credits;
+  return Math.floor((credits * amountRefunded) / amount);
+}
+
+function periodIndexOf(grantId: string): number {
+  const match = /^refill:[^:]+:(\d+):/.exec(grantId);
+  return match ? Number(match[1]) : -1;
+}
+
+function subscriptionIdFromGrant(grantId: string): string | null {
+  const match = /^refill:([^:]+):\d+:/.exec(grantId);
+  return match?.[1] ?? null;
+}
+
+function newestPeriodByKind(grants: GrantRow[]): Map<string, number> {
+  const newest = new Map<string, number>();
+  for (const grant of grants) {
+    const index = periodIndexOf(grant.id);
+    newest.set(grant.kind, Math.max(newest.get(grant.kind) ?? -1, index));
+  }
+  return newest;
+}
+
+function uniqueStops(stops: { userId: string; subscriptionId: string }[]): { userId: string; subscriptionId: string }[] {
+  const seen = new Set<string>();
+  const out: { userId: string; subscriptionId: string }[] = [];
+  for (const stop of stops) {
+    const key = `${stop.userId}:${stop.subscriptionId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(stop);
+  }
+  return out;
 }
 
 async function applyCharge(event: z.infer<typeof chargeEventSchema>): Promise<BillingResult> {
@@ -669,12 +769,18 @@ async function applySubscription(event: z.infer<typeof subscriptionEventSchema>)
     await logEvent(event.id, event.type);
     return { duplicate: false, unmatched: true };
   }
+  const mapped = subscriptionStatus(sub.status);
+  const terminal = event.type === "customer.subscription.deleted" || mapped === "canceled";
+  const decision = await decideSubscriptionWrite(sub.id, event.created ?? 0, terminal);
   if (event.type === "customer.subscription.deleted") {
-    await endPaidPlan(userId, sub.id);
-    await setPaymentNotice(userId, null);
+    if (decision === "apply") {
+      await endPaidPlan(userId, sub.id);
+      await setPaymentNotice(userId, null);
+    }
     return logEvent(event.id, event.type);
   }
-  const skuRaw = sub.metadata?.sku?.trim() ?? "";
+  if (decision !== "apply") return logEvent(event.id, event.type);
+  const skuRaw = subscriptionSku(sub) ?? "";
   const plan = isSku(skuRaw) ? planForSku(skuRaw) : null;
   if (plan) {
     const bounds = subscriptionBounds(sub);
@@ -683,7 +789,7 @@ async function applySubscription(event: z.infer<typeof subscriptionEventSchema>)
       planId: plan.planId,
       interval: plan.interval,
       subscriptionId: sub.id,
-      status: subscriptionStatus(sub.status),
+      status: mapped,
       cancelAtPeriodEnd: sub.cancel_at_period_end === true,
       periodEnd: bounds.end?.toISOString() ?? null,
     });
@@ -696,12 +802,24 @@ async function applySubscription(event: z.infer<typeof subscriptionEventSchema>)
         periodEnd: bounds.end,
       });
     }
-  } else if (sub.status === "past_due" || sub.status === "unpaid") {
+  } else if (mapped === "past_due" || mapped === "unpaid" || mapped === "canceled") {
     await markPlanPastDue(userId);
   }
   return logEvent(event.id, event.type);
 }
 
+function subscriptionSku(sub: z.infer<typeof subscriptionEventSchema>["data"]["object"]): string | null {
+  for (const item of sub.items?.data ?? []) {
+    const ref = readPrice(item.price);
+    if (!ref?.lookupKey) continue;
+    const sku = skuForLookupKey(ref.lookupKey);
+    if (sku) return sku;
+  }
+  const fromMeta = sub.metadata?.sku?.trim() ?? "";
+  return fromMeta || null;
+}
+
+/** Unknown Stripe statuses, including paused and incomplete, are not active. */
 function subscriptionStatus(status: string): "active" | "trialing" | "past_due" | "unpaid" | "canceled" {
   switch (status) {
     case "active":
@@ -709,15 +827,16 @@ function subscriptionStatus(status: string): "active" | "trialing" | "past_due" 
     case "trialing":
       return "trialing";
     case "past_due":
-    case "incomplete":
       return "past_due";
     case "unpaid":
+    case "incomplete":
+    case "paused":
       return "unpaid";
     case "canceled":
     case "incomplete_expired":
       return "canceled";
     default:
-      return "active";
+      return "unpaid";
   }
 }
 
@@ -734,7 +853,10 @@ function yearlyWindow(invoice: z.infer<typeof invoiceObject>): {
   periodEnd: Date;
 } {
   const details = invoice.parent?.subscription_details;
-  const linePeriod = invoice.lines?.data.find((line) => line.period)?.period;
+  const lines = invoice.lines?.data ?? [];
+  const linePeriod =
+    lines.find((line) => !isProrationLine(line) && line.period)?.period ??
+    lines.find((line) => line.period)?.period;
   const periodStart =
     unixDate(linePeriod?.start) ??
     unixDate(invoice.period_start) ??
@@ -768,13 +890,13 @@ function resolveInvoiceIdentity(invoice: z.infer<typeof invoiceObject>): { sku: 
   const meta = invoice.parent?.subscription_details?.metadata;
   const userId = meta?.user_id?.trim() ?? "";
   if (!userId) throw new HttpError(400, "Invoice is missing an account.");
-  const fromParent = meta?.sku?.trim() ?? "";
-  if (fromParent) return { sku: fromParent, userId };
-  for (const ref of invoiceLineRefs(invoice)) {
+  for (const ref of grantLineRefs(invoice)) {
     if (!ref.lookupKey) continue;
     const sku = skuForLookupKey(ref.lookupKey);
     if (sku) return { sku, userId };
   }
+  const fromParent = meta?.sku?.trim() ?? "";
+  if (fromParent) return { sku: fromParent, userId };
   throw new HttpError(400, "Invoice is missing a price.");
 }
 
@@ -812,14 +934,36 @@ async function sessionLinePrices(session: z.infer<typeof sessionObject>): Promis
 }
 
 function invoiceLineRefs(invoice: z.infer<typeof invoiceObject>): PriceRef[] {
+  return lineRefs(invoice.lines?.data ?? []);
+}
+
+/** Proration lines are the old price on a portal switch. Grants use the rest. */
+function grantLineRefs(invoice: z.infer<typeof invoiceObject>): PriceRef[] {
+  return lineRefs((invoice.lines?.data ?? []).filter((line) => !isProrationLine(line)));
+}
+
+function lineRefs(lines: z.infer<typeof invoiceLine>[]): PriceRef[] {
   const refs: PriceRef[] = [];
-  for (const line of invoice.lines?.data ?? []) {
+  for (const line of lines) {
     const fromPricing = readPrice(line.pricing?.price_details?.price);
     const fromPrice = readPrice(line.price);
     if (fromPricing) refs.push(fromPricing);
     else if (fromPrice) refs.push(fromPrice);
   }
   return refs;
+}
+
+function isProrationLine(line: {
+  proration?: boolean | null;
+  parent?: {
+    subscription_item_details?: { proration?: boolean | null } | null;
+    invoice_item_details?: { proration?: boolean | null } | null;
+  } | null;
+}): boolean {
+  if (line.proration === true) return true;
+  if (line.parent?.subscription_item_details?.proration === true) return true;
+  if (line.parent?.invoice_item_details?.proration === true) return true;
+  return false;
 }
 
 function readPrice(value: string | { id: string; lookup_key?: string | null } | null | undefined): PriceRef | null {
@@ -975,6 +1119,59 @@ async function grantExists(column: "checkout_session_id" | "invoice_id", id: str
     [id],
   );
   return !!row;
+}
+
+async function rememberCard(userId: string, paymentIntentId: string | null): Promise<void> {
+  if (!paymentIntentId) return;
+  try {
+    const fingerprint = await loadCardFingerprint(paymentIntentId);
+    if (fingerprint) await setCardFingerprint(userId, fingerprint);
+  } catch (e) {
+    console.error("[stripe]", e instanceof Error ? e.message : e);
+  }
+}
+
+/**
+ * Ignore an older subscription event. A deleted or canceled subscription
+ * stays that way: checkout and invoice.paid must not set it active again.
+ */
+async function decideSubscriptionWrite(
+  subscriptionId: string,
+  created: number,
+  proposedTerminal: boolean,
+): Promise<"apply" | "grant-only" | "skip"> {
+  const db = await getDb();
+  const row = await db.get<{ last_event_created: number | string; terminal: number | string }>(
+    `SELECT last_event_created, terminal FROM stripe_subscription_state WHERE subscription_id = ?`,
+    [subscriptionId],
+  );
+  const last = row ? Number(row.last_event_created) : null;
+  const terminal = row != null && Number(row.terminal) === 1;
+  if (last != null && created < last) return terminal ? "skip" : "grant-only";
+  if (terminal && !proposedTerminal) {
+    await writeSubscriptionState(subscriptionId, created, true);
+    return "skip";
+  }
+  await writeSubscriptionState(subscriptionId, created, terminal || proposedTerminal);
+  return "apply";
+}
+
+async function writeSubscriptionState(subscriptionId: string, created: number, terminal: boolean): Promise<void> {
+  const db = await getDb();
+  await db.run(
+    `INSERT INTO stripe_subscription_state (subscription_id, last_event_created, terminal)
+     VALUES (?, ?, ?)
+     ON CONFLICT (subscription_id) DO UPDATE SET
+       last_event_created = CASE
+         WHEN excluded.last_event_created > stripe_subscription_state.last_event_created THEN excluded.last_event_created
+         ELSE stripe_subscription_state.last_event_created
+       END,
+       terminal = CASE
+         WHEN stripe_subscription_state.terminal = 1 OR excluded.terminal = 1 THEN 1
+         ELSE 0
+       END`,
+    [subscriptionId, created, terminal ? 1 : 0],
+  );
 }
 
 async function rememberCustomer(userId: string, customerId: string | null): Promise<void> {
