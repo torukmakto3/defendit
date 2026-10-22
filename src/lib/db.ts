@@ -188,6 +188,18 @@ CREATE TABLE IF NOT EXISTS stage_timings (
 
 CREATE INDEX IF NOT EXISTS idx_stage_timings_session ON stage_timings(session_id);
 CREATE INDEX IF NOT EXISTS idx_stage_timings_request ON stage_timings(request_id);
+
+-- One row per in-flight model call. The cap sums rows newer than the hold
+-- window, so a killed request stops blocking the defense after that window.
+CREATE TABLE IF NOT EXISTS budget_holds (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  usd DOUBLE PRECISION NOT NULL,
+  grades INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_budget_holds_session ON budget_holds(session_id, created_at);
 `;
 
 /** Columns added after a table first shipped: [table, column, definition]. */
@@ -207,12 +219,9 @@ const ADDED_COLUMNS: [string, string, string][] = [
   ["sessions", "budget_usd", "DOUBLE PRECISION"],
   // 1 when a call was skipped or moved to the cheap model so the cap would hold.
   ["sessions", "budget_capped", "INTEGER NOT NULL DEFAULT 0"],
-  // In-flight model calls. A conditional UPDATE adds the reserve only when
-  // spent + voice + reserved + this call still fits, so two requests cannot
-  // both pass the cap. Released when the call is stored or abandoned.
+  // Live total of budget_holds newer than the hold window. The gate reads the
+  // rows, then refreshes these columns. A killed request ages out of both.
   ["sessions", "reserved_usd", "DOUBLE PRECISION NOT NULL DEFAULT 0"],
-  // Grade reservations held in reserved_usd. Lets one over-cap grade through
-  // and stops a second request from taking that same exception.
   ["sessions", "reserved_grades", "INTEGER NOT NULL DEFAULT 0"],
   // LiveKit interviewer usage, reported by the agent. Dollars are seconds × env rates.
   ["sessions", "voice_agent_sec", "DOUBLE PRECISION NOT NULL DEFAULT 0"],

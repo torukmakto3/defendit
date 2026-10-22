@@ -397,4 +397,85 @@ describe("defense cost cap", () => {
       process.env.CHEAP_LLM_RESERVE_USD = cheap;
     }
   });
+
+  it("ignores a grade hold older than two minutes so the defense can still be graded", async () => {
+    const user = await signIn("stale-hold@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "stale.md", buffer: memo, difficulty: "standard" });
+    const session = await startSession({ token: ingest.token, user, mode: "defend" });
+    const db = await getDb();
+    await db.run(`DELETE FROM llm_calls WHERE request_id = ?`, [ingest.requestId]);
+    await db.run(`DELETE FROM budget_holds WHERE session_id = ?`, [session.sessionId]);
+    const now = new Date().toISOString();
+    await db.run(
+      `INSERT INTO llm_calls
+        (id, session_id, request_id, purpose, provider, model_id, prompt_tokens, completion_tokens, cost_usd, cost_source, created_at)
+       VALUES (?, ?, ?, 'seed', 'liquid', 'gpt-oss-120b', 1, 1, 0.75, 'provider', ?)`,
+      [newId("llm"), session.sessionId, ingest.requestId, now],
+    );
+    await db.run(
+      `INSERT INTO budget_holds (id, session_id, usd, grades, created_at) VALUES (?, ?, 0.05, 1, ?)`,
+      [newId("llm"), session.sessionId, new Date(Date.now() - 3 * 60 * 1000).toISOString()],
+    );
+    await db.run(
+      `UPDATE sessions SET cost_usd = 0.75, budget_usd = 0.75, voice_cost_usd = 0, reserved_usd = 0.05, reserved_grades = 1 WHERE id = ?`,
+      [session.sessionId],
+    );
+
+    await withLlmScope({ sessionId: session.sessionId, requestId: ingest.requestId, user }, async () => {
+      const decision = await beginBudget({
+        purpose: "grade",
+        modelId: "mock-council-strict",
+        promptText: "Grade the answer",
+      });
+      expect(decision.allow).toBe(true);
+      expect(decision.useCheap).toBe(true);
+      const live = await db.get<{ grades: number }>(
+        `SELECT COALESCE(SUM(grades), 0) AS grades FROM budget_holds
+         WHERE session_id = ? AND created_at > ?`,
+        [session.sessionId, new Date(Date.now() - 2 * 60 * 1000).toISOString()],
+      );
+      expect(Number(live?.grades ?? 0)).toBe(1);
+      await releaseBudget(decision.reservationId);
+    });
+  });
+
+  it("reserves the one over-cap grade when the cheap hold fits in memory but the database refuses it", async () => {
+    const user = await signIn("cheap-race@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "cheap.md", buffer: memo, difficulty: "standard" });
+    const session = await startSession({ token: ingest.token, user, mode: "defend" });
+    const db = await getDb();
+    await db.run(`DELETE FROM llm_calls WHERE request_id = ?`, [ingest.requestId]);
+    await db.run(`DELETE FROM budget_holds WHERE session_id = ?`, [session.sessionId]);
+    const now = new Date().toISOString();
+    await db.run(
+      `INSERT INTO llm_calls
+        (id, session_id, request_id, purpose, provider, model_id, prompt_tokens, completion_tokens, cost_usd, cost_source, created_at)
+       VALUES (?, ?, ?, 'seed', 'liquid', 'gpt-oss-120b', 1, 1, 0.71, 'provider', ?)`,
+      [newId("llm"), session.sessionId, ingest.requestId, now],
+    );
+    await db.run(
+      `INSERT INTO budget_holds (id, session_id, usd, grades, created_at) VALUES (?, ?, 0.04, 0, ?)`,
+      [newId("llm"), session.sessionId, now],
+    );
+    await db.run(
+      `UPDATE sessions SET cost_usd = 0.71, budget_usd = 0.75, voice_cost_usd = 0, reserved_usd = 0.04, reserved_grades = 0 WHERE id = ?`,
+      [session.sessionId],
+    );
+
+    await withLlmScope({ sessionId: session.sessionId, requestId: ingest.requestId, user }, async () => {
+      const decision = await beginBudget({
+        purpose: "grade",
+        modelId: "mock-council-strict",
+        promptText: "Grade the answer",
+      });
+      expect(decision.allow).toBe(true);
+      expect(decision.useCheap).toBe(true);
+      const grades = await db.get<{ grades: number }>(
+        `SELECT COALESCE(SUM(grades), 0) AS grades FROM budget_holds WHERE session_id = ? AND created_at > ?`,
+        [session.sessionId, new Date(Date.now() - 2 * 60 * 1000).toISOString()],
+      );
+      expect(Number(grades?.grades ?? 0)).toBe(1);
+      await releaseBudget(decision.reservationId);
+    });
+  });
 });

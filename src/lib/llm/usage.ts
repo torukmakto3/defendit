@@ -23,10 +23,11 @@ import type { LlmUsage } from "./types";
  *
  * Calls are stored while a scope is active (a defense request and, once it
  * exists, a session). The defend session's stored total is every call on
- * that defense. Before each call the scope reserves the estimate with a
- * conditional update of `sessions.reserved_usd`: spent calls, reported voice
- * dollars, and reservations already held, plus this call, must still fit.
- * Two requests on the same session cannot both pass that update. Optional
+ * that defense. Before each call the scope inserts a `budget_holds` row. The
+ * insert lands only when spent calls, reported voice dollars, and holds newer
+ * than two minutes, plus this call, still fit. A hold older than that is
+ * ignored, so a killed request cannot block the defense. Two requests on the
+ * same session cannot both pass that insert. Optional
  * work is skipped when the reservation does not land. Required work moves to
  * the cheap model, and a defense with no grade yet still gets one grader so
  * it can finish. Until the session row exists, the same check is in-memory
@@ -63,10 +64,12 @@ interface PendingCall {
   createdAt: string;
   /** True until the provider returns. Flushed rows are real calls only. */
   reserved: boolean;
-  /** Dollars added to sessions.reserved_usd. 0 when no session row existed yet. */
+  /** Dollars added to budget_holds. 0 when no session row existed yet. */
   heldUsd: number;
   heldGrades: number;
   heldSessionId: string | null;
+  /** budget_holds.id, set once the row is inserted. */
+  holdId: string | null;
 }
 
 export interface LlmScopeIds {
@@ -240,15 +243,24 @@ export async function beginBudget(input: {
   if (!call) return local;
   const roomBefore = committedUsd(scope) - call.usage.costUsd;
   const overCap = call.usage.costUsd > scope.budgetUsd - roomBefore + 1e-9;
-  const claimed = await claimReserve(sessionId, call.usage.costUsd, purpose === "grade" ? 1 : 0, overCap ? 1 : 0, scope.budgetUsd);
+  const claimed = await claimReserve(
+    sessionId,
+    call.id,
+    call.usage.costUsd,
+    purpose === "grade" ? 1 : 0,
+    overCap ? 1 : 0,
+    scope.budgetUsd,
+  );
   if (claimed) {
     call.heldUsd = call.usage.costUsd;
     call.heldGrades = purpose === "grade" ? 1 : 0;
     call.heldSessionId = sessionId;
+    call.holdId = call.id;
     return local;
   }
 
   dropPending(scope, local.reservationId);
+  // The in-memory choice was already the one over-cap grade, and the database refused it.
   if (local.useCheap && overCap) {
     noteCap(scope, purpose, "skip", committedUsd(scope));
     return { allow: false, reservationId: null, useCheap: false };
@@ -260,10 +272,12 @@ export async function beginBudget(input: {
   if (!local.useCheap) {
     const cheapHold = await holdOnSession(scope, sessionId, purpose, input.modelId, cheap, false, "cheap");
     if (cheapHold) return cheapHold;
-    if (purpose === "grade" && !hasGrade(scope)) {
-      const minimum = await holdOnSession(scope, sessionId, purpose, input.modelId, cheap, true, "minimum");
-      if (minimum) return minimum;
-    }
+  }
+  // Cheap can fit in this process and still lose the row to another request.
+  // The first grade still goes through once, over the cap.
+  if (purpose === "grade" && !hasGrade(scope)) {
+    const minimum = await holdOnSession(scope, sessionId, purpose, input.modelId, cheap, true, "minimum");
+    if (minimum) return minimum;
   }
   noteCap(scope, purpose, "skip", committedUsd(scope));
   return { allow: false, reservationId: null, useCheap: false };
@@ -329,6 +343,7 @@ export async function recordLlmCall(input: {
     heldUsd: 0,
     heldGrades: 0,
     heldSessionId: null,
+    holdId: null,
   });
 }
 
@@ -507,29 +522,48 @@ function budgetInMemory(
   return { allow: false, reservationId: null, useCheap: false };
 }
 
-const RESERVE_SQL = `UPDATE sessions SET
-  reserved_usd = COALESCE(reserved_usd, 0) + ?,
-  reserved_grades = COALESCE(reserved_grades, 0) + ?
-WHERE id = ?
-AND (
+/** A killed function's hold stops counting after this. Grading's own budget is shorter. */
+const HOLD_TTL_MS = 2 * 60 * 1000;
+
+function holdCutoffIso(): string {
+  return new Date(Date.now() - HOLD_TTL_MS).toISOString();
+}
+
+function claimSql(dialect: "sqlite" | "postgres"): string {
+  const lock = dialect === "postgres" ? " FOR UPDATE" : "";
+  return `WITH locked AS (
+  SELECT id, mode, request_id, voice_cost_usd, budget_usd
+  FROM sessions WHERE id = ?${lock}
+)
+INSERT INTO budget_holds (id, session_id, usd, grades, created_at)
+SELECT ?, locked.id, ?, ?, ?
+FROM locked
+WHERE (
   (
     (SELECT COALESCE(SUM(c.cost_usd), 0) FROM llm_calls c
-      WHERE (sessions.mode = 'defend' AND c.request_id = sessions.request_id)
-         OR (sessions.mode <> 'defend' AND c.session_id = sessions.id))
-    + COALESCE(sessions.voice_cost_usd, 0)
-    + COALESCE(sessions.reserved_usd, 0)
+      WHERE (locked.mode = 'defend' AND c.request_id = locked.request_id)
+         OR (locked.mode <> 'defend' AND c.session_id = locked.id))
+    + COALESCE(locked.voice_cost_usd, 0)
+    + COALESCE((
+        SELECT SUM(h.usd) FROM budget_holds h
+        WHERE h.session_id = locked.id AND h.created_at > ?
+      ), 0)
     + ?
-  ) <= COALESCE(sessions.budget_usd, ?) + 0.000001
+  ) <= COALESCE(locked.budget_usd, ?) + 0.000001
   OR (
     ? = 1
-    AND COALESCE(sessions.reserved_grades, 0) = 0
+    AND COALESCE((
+      SELECT SUM(h.grades) FROM budget_holds h
+      WHERE h.session_id = locked.id AND h.created_at > ?
+    ), 0) = 0
     AND NOT EXISTS (
       SELECT 1 FROM llm_calls g
       WHERE g.purpose = 'grade'
-        AND (g.session_id = sessions.id OR g.request_id = sessions.request_id)
+        AND (g.session_id = locked.id OR g.request_id = locked.request_id)
     )
   )
 )`;
+}
 
 async function lookupSession(scope: Scope): Promise<string | null> {
   if (scope.reserveSessionId) return scope.reserveSessionId;
@@ -548,23 +582,32 @@ async function lookupSession(scope: Scope): Promise<string | null> {
   return row.id;
 }
 
-/** One statement. `changes === 0` means the cap would not hold. */
+/** One insert. `changes === 0` means the cap would not hold. Holds older than two minutes do not count. */
 async function claimReserve(
   sessionId: string,
+  holdId: string,
   estimate: number,
   gradeDelta: number,
   allowOver: number,
   budgetFallback: number,
 ): Promise<boolean> {
   const db = await getDb();
-  const result = await db.run(RESERVE_SQL, [
+  const cutoff = holdCutoffIso();
+  const now = new Date().toISOString();
+  await db.run(`DELETE FROM budget_holds WHERE session_id = ? AND created_at <= ?`, [sessionId, cutoff]);
+  const result = await db.run(claimSql(db.dialect), [
+    sessionId,
+    holdId,
     estimate,
     gradeDelta,
-    sessionId,
+    now,
+    cutoff,
     estimate,
     budgetFallback,
     allowOver,
+    cutoff,
   ]);
+  await refreshReserveTotals(db, sessionId, cutoff);
   return result.changes === 1;
 }
 
@@ -577,16 +620,18 @@ async function holdOnSession(
   allowOver: boolean,
   action: "cheap" | "minimum",
 ): Promise<BudgetBegin | null> {
+  const id = newId("llm");
   const gradeDelta = purpose === "grade" ? 1 : 0;
-  const claimed = await claimReserve(sessionId, estimate, gradeDelta, allowOver ? 1 : 0, scope.budgetUsd);
+  const claimed = await claimReserve(sessionId, id, estimate, gradeDelta, allowOver ? 1 : 0, scope.budgetUsd);
   if (!claimed) return null;
   noteCap(scope, purpose, action, committedUsd(scope));
-  const decision = reserve(scope, purpose, modelId, estimate, true);
+  const decision = reserve(scope, purpose, modelId, estimate, true, id);
   const call = scope.pending.find((row) => row.id === decision.reservationId);
   if (call) {
     call.heldUsd = estimate;
     call.heldGrades = gradeDelta;
     call.heldSessionId = sessionId;
+    call.holdId = id;
   }
   return decision;
 }
@@ -596,29 +641,28 @@ function dropPending(scope: Scope, reservationId: string): void {
   if (index >= 0) scope.pending.splice(index, 1);
 }
 
-const RELEASE_SQL = `UPDATE sessions SET
-  reserved_usd = CASE
-    WHEN COALESCE(reserved_usd, 0) - ? < 0 THEN 0
-    ELSE COALESCE(reserved_usd, 0) - ?
-  END,
-  reserved_grades = CASE
-    WHEN COALESCE(reserved_grades, 0) - ? < 0 THEN 0
-    ELSE COALESCE(reserved_grades, 0) - ?
-  END
-WHERE id = ?`;
+async function refreshReserveTotals(db: Db, sessionId: string, cutoff = holdCutoffIso()): Promise<void> {
+  await db.run(
+    `UPDATE sessions SET
+      reserved_usd = COALESCE((
+        SELECT SUM(usd) FROM budget_holds WHERE session_id = sessions.id AND created_at > ?
+      ), 0),
+      reserved_grades = COALESCE((
+        SELECT SUM(grades) FROM budget_holds WHERE session_id = sessions.id AND created_at > ?
+      ), 0)
+    WHERE id = ?`,
+    [cutoff, cutoff, sessionId],
+  );
+}
 
 async function releaseHolds(db: Db, calls: PendingCall[]): Promise<void> {
-  const bySession = new Map<string, { usd: number; grades: number }>();
+  const sessions = new Set<string>();
   for (const call of calls) {
-    if (!call.heldSessionId || (call.heldUsd <= 0 && call.heldGrades <= 0)) continue;
-    const current = bySession.get(call.heldSessionId) ?? { usd: 0, grades: 0 };
-    current.usd += call.heldUsd;
-    current.grades += call.heldGrades;
-    bySession.set(call.heldSessionId, current);
+    if (!call.holdId || !call.heldSessionId) continue;
+    await db.run(`DELETE FROM budget_holds WHERE id = ?`, [call.holdId]);
+    sessions.add(call.heldSessionId);
   }
-  for (const [sessionId, hold] of bySession) {
-    await db.run(RELEASE_SQL, [hold.usd, hold.usd, hold.grades, hold.grades, sessionId]);
-  }
+  for (const sessionId of sessions) await refreshReserveTotals(db, sessionId);
 }
 
 function reserve(
@@ -627,8 +671,8 @@ function reserve(
   requestedModelId: string,
   estimate: number,
   useCheap: boolean,
+  id = newId("llm"),
 ): BudgetBegin {
-  const id = newId("llm");
   scope.pending.push({
     id,
     purpose,
@@ -641,6 +685,7 @@ function reserve(
     heldUsd: 0,
     heldGrades: 0,
     heldSessionId: null,
+    holdId: null,
   });
   return { allow: true, reservationId: id, useCheap };
 }

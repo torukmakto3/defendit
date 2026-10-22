@@ -226,6 +226,10 @@ describe("session totals", () => {
         ["ses_old"],
       );
       expect(row).toMatchObject({ cost_usd: 0, over_budget: 0, prompt_tokens: 0 });
+      const holds = await db.get<{ name: string }>(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'budget_holds'`,
+      );
+      expect(holds?.name).toBe("budget_holds");
       await db.run(
         `INSERT INTO llm_calls
           (id, session_id, request_id, purpose, provider, model_id, prompt_tokens, completion_tokens, cost_usd, cost_source, created_at)
