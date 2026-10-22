@@ -27,12 +27,21 @@ export const COST_CAP_USD: Record<CostCapTier, number> = {
   enterprise: 3,
 };
 
-/** One-time grant on the first Google sign-in. */
+/** Defaults for the one-time beta grant. Defense count is overridable. */
 export const BETA_GRANT = {
   defense: 3,
   challenge: 2,
   learnSlots: 3,
 } as const;
+
+/** Free defenses granted once per account. `BETA_DEFENSE_CREDITS`, default 3. */
+export function betaDefenseCredits(): number {
+  const raw = process.env.BETA_DEFENSE_CREDITS;
+  if (raw == null || raw.trim() === "") return BETA_GRANT.defense;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0 || n > 10_000) return BETA_GRANT.defense;
+  return n;
+}
 
 /** Challenge credit granted when someone finishes a defense they were challenged into. */
 export const ONWARD_CHALLENGE_CREDITS = 1;

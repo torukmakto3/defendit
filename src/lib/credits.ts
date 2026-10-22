@@ -28,10 +28,10 @@
  * Draw order for a defense: subscription, purchase, overage, admin, then
  * flexible packs, then sponsored beta credits. Sponsored defense holds
  * count `BETA_DEFENSE_EUR` (default 0.30) against `BETA_BUDGET_EUR`
- * (default 150). Challenge holds do not. While `BILLING_ENABLED` is off,
- * a signed-in user is never refused a defense for an empty wallet: the
- * one-time beta grant is applied on first need, and a further defense
- * still runs until that global budget is spent.
+ * (default 150). Challenge holds do not. Each account is granted
+ * `BETA_DEFENSE_CREDITS` free defenses once (default 3). While billing is
+ * off, the next defense after those are spent is a 402. The global budget
+ * can stop a sponsored defense sooner.
  *
  * #42 reads the cost-cap tier from `costTierForUser(userId)` or
  * `costTierForUserPlan(planId)`. `consumer` is $0.75 and `enterprise` is
@@ -43,6 +43,7 @@ import { HttpError } from "./errors";
 import { newId } from "./ids";
 import {
   BETA_GRANT,
+  betaDefenseCredits,
   billingEnabled,
   costTierForPlan,
   formatEur,
@@ -569,23 +570,10 @@ export async function holdCredit(input: HoldCreditInput): Promise<LedgerEntry> {
       return mapRow(existing);
     }
     let slot = pickBucket(await loadBuckets(tx, input.userId), input.kind, amount);
-    // Billing off: an empty defense wallet still spends, and the only stop is the global budget.
     if (!slot && input.kind === "defense" && !billingEnabled()) {
-      await insertEntry(tx, {
-        userId: input.userId,
-        kind: "defense",
-        reason: "grant",
-        amount: 1,
-        idempotencyKey: `beta-extend:${input.idempotencyKey}`,
-        source: "beta",
-        purpose: null,
-        refType: "beta_extend",
-        refId: input.idempotencyKey,
-        sponsored: true,
-        budgetCents: null,
-        periodId: null,
-      });
-      slot = pickBucket(await loadBuckets(tx, input.userId), input.kind, amount);
+      const n = betaDefenseCredits();
+      const noun = n === 1 ? "defense" : "defenses";
+      throw new HttpError(402, `You've used your ${n} free beta ${noun}`);
     }
     if (!slot && input.kind === "defense") {
       slot = await maybeOverage(tx, input.userId, input.idempotencyKey);
@@ -803,12 +791,15 @@ export async function ensureBetaGrant(userId: string): Promise<{ granted: boolea
       budgetCents: null,
       periodId: null,
     };
-    await insertEntry(tx, {
-      ...base,
-      kind: "defense",
-      amount: BETA_GRANT.defense,
-      idempotencyKey: `beta:${userId}:defense`,
-    });
+    const defenses = betaDefenseCredits();
+    if (defenses > 0) {
+      await insertEntry(tx, {
+        ...base,
+        kind: "defense",
+        amount: defenses,
+        idempotencyKey: `beta:${userId}:defense`,
+      });
+    }
     await insertEntry(tx, {
       ...base,
       kind: "challenge",
@@ -1043,8 +1034,8 @@ export async function linkChallengedDefense(input: {
 
 /**
  * Hold one defense credit. Applies the beta grant first, for whichever way
- * the user signed in. While billing is off, an empty wallet is topped up
- * inside `holdCredit` and the only refusal is the global beta budget.
+ * the user signed in. The grant is the whole free allowance. The global
+ * budget can still refuse a sponsored defense before that allowance is gone.
  */
 export async function beginDefenseCredit(
   userId: string,

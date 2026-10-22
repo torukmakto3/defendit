@@ -70,6 +70,7 @@ beforeAll(() => {
   delete process.env.BILLING_ENABLED;
   delete process.env.BETA_BUDGET_EUR;
   delete process.env.BETA_DEFENSE_EUR;
+  delete process.env.BETA_DEFENSE_CREDITS;
   delete process.env.SUBSCRIPTION_CHALLENGE_CREDITS;
 });
 
@@ -489,6 +490,9 @@ describe("beta budget and sponsorship", () => {
         holdCredit({ userId: user.id, kind: "defense", idempotencyKey: "budget-hold-2" }),
       ).rejects.toThrow(/beta budget/);
       expect((await getBalance(user.id)).defense).toBe(1);
+      await expect(
+        holdCredit({ userId: user.id, kind: "defense", idempotencyKey: "budget-hold-2b" }),
+      ).rejects.toThrow(/beta budget/);
 
       await refundCredit({
         userId: user.id,
@@ -819,51 +823,55 @@ describe("defense gate", () => {
     }
   });
 
-  it("keeps defending while billing is off after the grant is spent, and stops only for the beta budget", async () => {
+  it("blocks the defense after the free allowance, and lets the budget stop one sooner", async () => {
+    delete process.env.BILLING_ENABLED;
+    const { user, cookie } = await signIn("allowance@fund.example");
+    await ensureBetaGrant(user.id);
+    expect((await getBalance(user.id)).defense).toBe(3);
+    for (let i = 1; i <= 3; i++) {
+      await holdCredit({ userId: user.id, kind: "defense", idempotencyKey: `allowance-hold-${i}` });
+    }
+    expect((await getBalance(user.id)).defense).toBe(0);
+    const fourth = await startDefend(
+      new Request("http://localhost/api/sessions/start", {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ token: "missing", mode: "defend", accommodation: true }),
+      }),
+    );
+    expect(fourth.status).toBe(402);
+    expect(await fourth.json()).toEqual({ error: "You've used your 3 free beta defenses" });
+    expect((await getBalance(user.id)).defense).toBe(0);
+    const extended = await (await getDb()).get(
+      `SELECT id FROM credit_ledger WHERE user_id = ? AND ref_type = 'beta_extend'`,
+      [user.id],
+    );
+    expect(extended).toBeUndefined();
+
     const previousBudget = process.env.BETA_BUDGET_EUR;
     const previousDefense = process.env.BETA_DEFENSE_EUR;
-    delete process.env.BILLING_ENABLED;
+    const previousCredits = process.env.BETA_DEFENSE_CREDITS;
+    process.env.BETA_DEFENSE_EUR = "0.30";
+    process.env.BETA_DEFENSE_CREDITS = "4";
     try {
-      const { user, cookie } = await signIn("extend-beta@fund.example");
-      await ensureBetaGrant(user.id);
-      await grantCredits({
-        userId: user.id,
-        kind: "defense",
-        amount: -3,
-        reason: "admin_adjust",
-        source: "beta",
-        idempotencyKey: "drain-extend",
-      });
-      const ingest = await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" });
-      const continued = await startDefend(
-        new Request("http://localhost/api/sessions/start", {
-          method: "POST",
-          headers: { cookie, "content-type": "application/json" },
-          body: JSON.stringify({ token: ingest.token, mode: "defend", accommodation: true }),
-        }),
-      );
-      expect(continued.status).toBe(200);
-      expect((await getBalance(user.id)).defense).toBe(0);
-      expect((await getBalance(user.id)).held.defense).toBe(1);
-
-      process.env.BETA_DEFENSE_EUR = "0.30";
+      const early = await signIn("budget-before-allowance@fund.example");
+      await ensureBetaGrant(early.user.id);
+      expect((await getBalance(early.user.id)).defense).toBe(4);
       const db = await getDb();
       const spent = await db.get<{ n: number }>(`SELECT COALESCE(SUM(budget_cents), 0) AS n FROM credit_ledger`);
-      process.env.BETA_BUDGET_EUR = (Number(spent?.n ?? 0) / 100).toFixed(2);
-      const paused = await startDefend(
-        new Request("http://localhost/api/sessions/start", {
-          method: "POST",
-          headers: { cookie, "content-type": "application/json" },
-          body: JSON.stringify({ token: "missing", mode: "defend", accommodation: true }),
-        }),
-      );
-      expect(paused.status).toBe(402);
-      expect(await paused.json()).toMatchObject({ error: expect.stringMatching(/beta budget/) });
+      process.env.BETA_BUDGET_EUR = ((Number(spent?.n ?? 0) + 30) / 100).toFixed(2);
+      await holdCredit({ userId: early.user.id, kind: "defense", idempotencyKey: "early-budget-1" });
+      await expect(
+        holdCredit({ userId: early.user.id, kind: "defense", idempotencyKey: "early-budget-2" }),
+      ).rejects.toThrow(/beta budget/);
+      expect((await getBalance(early.user.id)).defense).toBe(3);
     } finally {
       if (previousBudget === undefined) delete process.env.BETA_BUDGET_EUR;
       else process.env.BETA_BUDGET_EUR = previousBudget;
       if (previousDefense === undefined) delete process.env.BETA_DEFENSE_EUR;
       else process.env.BETA_DEFENSE_EUR = previousDefense;
+      if (previousCredits === undefined) delete process.env.BETA_DEFENSE_CREDITS;
+      else process.env.BETA_DEFENSE_CREDITS = previousCredits;
     }
   });
 
