@@ -9,6 +9,7 @@ YYYY-MM-DD BLOCKED — what stopped the work · what the next agent needs
 
 ## Log
 
+2026-10-22 DONE — Rebased Stripe Checkout onto main. 2d14afd (#52) is in that base; main's tip is 4ad3ca6 (#48), and the Stripe commits sit on that tip so the pull request stays mergeable. Yearly Pro still tops up each month with no rollover. /terms stays a plain link. · PR #47 · tsc, eslint, vitest (361)
 2026-10-22 DONE — Terms, how it works, and FAQ, plus the #48 footer links and the out-of-credits terms line. Card refunds, disputes, subscription-end expiry, and the customer portal are future tense. Yearly credits are “as shown at checkout”. Voice follows channelFor. The operator is DefendIT, and /privacy’s contact name uses OPERATOR_NAME. · cursor/legal-pages-terms-faq-68db · tsc, eslint, vitest (351)
 2026-10-22 DONE — The operator on the terms, the FAQ, and `operator.ts` is DefendIT. The placeholder contact email and its legal-review comment stay. /privacy was not edited. · cursor/legal-pages-terms-faq-68db · tsc, eslint, vitest (351)
 2026-10-22 DONE — Terms, how it works, and FAQ, plus the #48 footer links and the out-of-credits terms line. Card refunds, disputes, subscription-end expiry, and the customer portal are future tense. Yearly credits are “as shown at checkout”. Voice follows channelFor. /privacy was not edited. · cursor/legal-pages-terms-faq-68db · tsc, eslint, vitest (351)
