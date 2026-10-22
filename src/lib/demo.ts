@@ -1,4 +1,3 @@
-import { createHmac } from "crypto";
 import { NextResponse } from "next/server";
 import { readRequestCookie, type User } from "./auth";
 import { betaDefenseCents, demoBudgetCanAfford } from "./credits";
@@ -15,19 +14,18 @@ import {
   isDemoKind,
 } from "./demo-policy";
 import { jsonError, requireUser, sameOrigin } from "./http";
+import { ipHash } from "./ip-hash";
 import { rateLimit } from "./ratelimit";
 import { getRequestByToken } from "./services";
-import { isDeployed, keysRequired, load32ByteSecret } from "./secrets";
+import { isDeployed } from "./secrets";
 
 /**
- * Hash of the client address, keyed with a server-side salt. The raw address
- * is not stored. One function so a shared HMAC helper (IP_HASH_SALT) can
- * replace this body later. The rate-limit row that holds the hash is deleted
- * when its window ends, and that cleanup only removes demo-prefixed keys.
+ * Keyed hash of the client address. Uses the shared helper: `IP_HASH_SALT`,
+ * or `DEMO_IP_SALT` when that name is unset. Null when neither salt is usable.
+ * The raw address is not stored, and a sample never starts on a null hash.
  */
-export function hashDemoIp(ip: string): string {
-  const salt = load32ByteSecret("DEMO_IP_SALT", "demo-ip-salt.json");
-  return createHmac("sha256", salt).update(ip).digest("hex");
+export function hashDemoIp(ip: string): string | null {
+  return ipHash(ip);
 }
 
 export function demoCookieOptions() {
@@ -45,32 +43,16 @@ export type DemoAdmission =
   | { ok: false; status: number; message: string; retryAfterSec?: number };
 
 /**
- * Kill switch, budget preview, then per-IP and global counters. The preview
- * does not consume a slot. The counters use the shared rate limiter. The
- * budget charge happens later, in the same transaction as the sample rows.
+ * Kill switch, keyed hash, budget preview, then per-IP and global counters.
+ * No usable salt is a 503: a sample does not run without a keyed hash, and it
+ * does not skip the IP limit the way other routes do. The preview does not
+ * consume a slot. The budget charge happens later, with the sample rows.
+ * Expired demo counters are the only rate-limit rows this deletes.
  */
-/**
- * Production must set DEMO_IP_SALT before a sample can hash an address.
- * A missing or malformed salt is a configuration failure, not a visitor error,
- * so the route answers 503 instead of letting the secret loader throw a 500.
- */
-function productionSaltProblem(): string | null {
-  if (!keysRequired()) return null;
-  const raw = process.env["DEMO_IP_SALT"];
-  if (!raw) return "DEMO_IP_SALT is not set. Generate one with: openssl rand -hex 32";
-  if (!/^[0-9a-fA-F]{64}$/.test(raw)) {
-    return "DEMO_IP_SALT must be exactly 64 hex characters (32 bytes).";
-  }
-  return null;
-}
-
 export async function admitDemo(ip: string): Promise<DemoAdmission> {
   if (!demoEnabled()) return { ok: false, status: 403, message: DEMO_COPY.disabled };
-  const saltProblem = productionSaltProblem();
-  if (saltProblem) {
-    console.error(`[demo] ${saltProblem}`);
-    return { ok: false, status: 503, message: DEMO_COPY.unavailable };
-  }
+  const hashed = hashDemoIp(ip);
+  if (!hashed) return { ok: false, status: 503, message: DEMO_COPY.unavailable };
   if (!(await demoBudgetCanAfford(betaDefenseCents()))) {
     return { ok: false, status: 503, message: DEMO_COPY.budget };
   }
@@ -79,7 +61,7 @@ export async function admitDemo(ip: string): Promise<DemoAdmission> {
     `DELETE FROM rate_limits WHERE bucket_key LIKE 'demo:%' AND window_start < ?`,
     [new Date(Date.now() - DEMO_WINDOW_SEC * 1000).toISOString()],
   );
-  const ipHit = await rateLimit(`demo:ip:${hashDemoIp(ip)}`, demoPerIpPerDay(), DEMO_WINDOW_SEC);
+  const ipHit = await rateLimit(`demo:ip:${hashed}`, demoPerIpPerDay(), DEMO_WINDOW_SEC);
   if (!ipHit.ok) {
     return { ok: false, status: 429, message: DEMO_COPY.ip, retryAfterSec: ipHit.retryAfterSec };
   }

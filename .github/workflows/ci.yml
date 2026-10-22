@@ -38,7 +38,9 @@ jobs:
         env:
           MOCK_LLM: "1"
           # The sample path is off unless this is exactly 1 or true.
+          # A sample does not start without a keyed IP hash.
           DEMO_ENABLED: "1"
+          DEMO_IP_SALT: "abababababababababababababababababababababababababababababababab"
         run: |
           set -euo pipefail
           npm run dev -- --hostname 127.0.0.1 --port 3000 > /tmp/next-dev.log 2>&1 &

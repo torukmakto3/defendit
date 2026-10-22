@@ -17,6 +17,7 @@ import { consumeMagicLink, requestMagicLink } from "../src/lib/auth";
 import { beginDefenseCredit, betaDefenseCents } from "../src/lib/credits";
 import { getDb } from "../src/lib/db";
 import { hashDemoIp } from "../src/lib/demo";
+import { resetIpHashNotices } from "../src/lib/ip-hash";
 import { resultCardCopy } from "../src/lib/share-card";
 import { DEMO_SAMPLE_TEXT, demoSampleBundle } from "../src/lib/demo-bundle";
 import { DEMO_COPY, demoBudgetEur, demoDailyCap, demoEnabled, demoPerIpPerDay } from "../src/lib/demo-policy";
@@ -137,11 +138,14 @@ describe("sample demo admission", () => {
     expect(Number(users?.n)).toBe(0);
   });
 
-  it("returns 503 when production has no IP salt", async () => {
+  it("returns 503 when no usable salt can key the IP hash", async () => {
     const salt = process.env.DEMO_IP_SALT;
+    const named = process.env.IP_HASH_SALT;
     process.env.VERCEL = "1";
     process.env.DEMO_ENABLED = "1";
     delete process.env.DEMO_IP_SALT;
+    delete process.env.IP_HASH_SALT;
+    resetIpHashNotices();
     const logged: unknown[] = [];
     const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
       logged.push(args);
@@ -150,12 +154,18 @@ describe("sample demo admission", () => {
       const opened = await openDemo("203.0.113.90");
       expect(opened.status).toBe(503);
       expect(opened.json.error).toBe(DEMO_COPY.unavailable);
-      expect(JSON.stringify(logged)).toContain("DEMO_IP_SALT");
+      expect(JSON.stringify(logged)).toContain("IP_HASH_SALT");
       expect(JSON.stringify(opened.json)).not.toContain("openssl");
+      process.env.IP_HASH_SALT = "cd".repeat(32);
+      const withShared = await openDemo("203.0.113.91");
+      expect(withShared.status).toBe(200);
     } finally {
       spy.mockRestore();
       delete process.env.VERCEL;
-      process.env.DEMO_IP_SALT = salt;
+      if (salt === undefined) delete process.env.DEMO_IP_SALT;
+      else process.env.DEMO_IP_SALT = salt;
+      if (named === undefined) delete process.env.IP_HASH_SALT;
+      else process.env.IP_HASH_SALT = named;
       process.env.DEMO_ENABLED = "1";
     }
   });
@@ -584,14 +594,14 @@ describe("sample demo defense", () => {
       [old],
     );
     await db.run(
-      `INSERT INTO rate_limits (bucket_key, window_start, count) VALUES ('session:keepme', ?, 1)`,
+      `INSERT INTO rate_limits (bucket_key, window_start, count) VALUES ('start:ip:keepme', ?, 1)`,
       [old],
     );
     await purgeExpired();
     const keys = await db.all<{ bucket_key: string }>(`SELECT bucket_key FROM rate_limits`);
     const names = keys.map((row) => row.bucket_key);
     expect(names).not.toContain("demo:ip:aa");
-    expect(names).toContain("session:keepme");
+    expect(names).toContain("start:ip:keepme");
   });
 
   it("will not send a sign-in link to a sample principal", async () => {
