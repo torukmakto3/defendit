@@ -9,6 +9,7 @@ import {
   type User,
 } from "./auth";
 import { appUrl } from "./config";
+import { grantBetaIfFirstGoogleSignIn } from "./credits";
 import { isDeployed } from "./secrets";
 
 /** Registered in the Google Cloud OAuth client. Do not change without updating that client. */
@@ -327,5 +328,6 @@ export async function resolveGoogleCallback(input: {
   }
   const identity = identityFromVerifiedClaims(claims);
   const session = await createSessionForEmail(identity.email, identity.name);
+  await grantBetaIfFirstGoogleSignIn(session.user.id);
   return { ...session, nextPath: nextPathWithoutAuthError(txn.nextPath) };
 }

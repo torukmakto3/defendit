@@ -200,6 +200,103 @@ CREATE TABLE IF NOT EXISTS budget_holds (
 );
 
 CREATE INDEX IF NOT EXISTS idx_budget_holds_session ON budget_holds(session_id, created_at);
+
+-- Append-only credit wallet. Balance for a kind is the sum of its amounts.
+-- learn_slot is a capacity (active projects), not a credit that is spent.
+-- flex is a pack credit that can pay for a defense or a challenge.
+CREATE TABLE IF NOT EXISTS credit_wallets (
+  user_id TEXT PRIMARY KEY REFERENCES users(id),
+  lock_nonce INTEGER NOT NULL DEFAULT 0,
+  -- Open Learn projects claimed while billing is on. The slot check is one
+  -- conditional UPDATE of this counter, under the wallet row lock.
+  learn_open INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+-- Global beta budget. spent_cents moves only by a conditional UPDATE so two
+-- accounts cannot both pass a stale read of the 150 EUR cap.
+CREATE TABLE IF NOT EXISTS credit_budget (
+  id TEXT PRIMARY KEY,
+  spent_cents INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS credit_ledger (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  kind TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  source TEXT,
+  purpose TEXT,
+  ref_type TEXT,
+  ref_id TEXT,
+  sponsored INTEGER NOT NULL DEFAULT 0,
+  budget_cents INTEGER,
+  period_id TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_credit_ledger_user ON credit_ledger(user_id, kind);
+CREATE INDEX IF NOT EXISTS idx_credit_ledger_ref ON credit_ledger(ref_type, ref_id);
+
+-- One beta grant per account. The primary key is the unique constraint.
+CREATE TABLE IF NOT EXISTS beta_grants (
+  user_id TEXT PRIMARY KEY REFERENCES users(id),
+  granted_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_plans (
+  user_id TEXT PRIMARY KEY REFERENCES users(id),
+  plan_id TEXT NOT NULL,
+  interval TEXT,
+  status TEXT NOT NULL,
+  period_id TEXT,
+  current_period_end TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS billing_profiles (
+  user_id TEXT PRIMARY KEY REFERENCES users(id),
+  card_fingerprint TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS defense_holds (
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+  user_id TEXT NOT NULL REFERENCES users(id),
+  hold_idempotency_key TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+
+-- A defense the user was challenged into. Sharing is not stored: the onward
+-- credit does not depend on it.
+CREATE TABLE IF NOT EXISTS credit_challenge_claims (
+  challenge_id TEXT PRIMARY KEY,
+  challenger_user_id TEXT NOT NULL REFERENCES users(id),
+  defender_user_id TEXT NOT NULL REFERENCES users(id),
+  session_id TEXT UNIQUE,
+  request_id TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS billing_overages (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  plan_id TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  ref_type TEXT,
+  ref_id TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS stripe_events (
+  event_id TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 `;
 
 /** Columns added after a table first shipped: [table, column, definition]. */
@@ -235,6 +332,12 @@ const ADDED_COLUMNS: [string, string, string][] = [
   ["defense_requests", "question_prefetch_enc", "TEXT"],
   // NULL: a deck saved before this column. 0: a deck is still being written. 1: the deck is complete.
   ["deliverables", "study_deck_ready", "INTEGER"],
+  // 1 when the defense credit was a beta (sponsored) credit.
+  ["sessions", "sponsored", "INTEGER NOT NULL DEFAULT 0"],
+  // Set when the creator closes the Learn project. The slot is free again.
+  // Retention of the file is unchanged.
+  ["defense_requests", "learn_closed_at", "TEXT"],
+  ["credit_wallets", "learn_open", "INTEGER NOT NULL DEFAULT 0"],
 ];
 
 let dbPromise: Promise<Db> | null = null;
@@ -260,6 +363,8 @@ async function openSqlite(): Promise<Db> {
   const raw = new Database(path);
   raw.pragma("journal_mode = WAL");
   raw.pragma("foreign_keys = ON");
+  // Wait for the writer instead of failing the budget or slot UPDATE.
+  raw.pragma("busy_timeout = 5000");
   raw.exec(SCHEMA.replaceAll("DOUBLE PRECISION", "REAL"));
   for (const [table, column, def] of ADDED_COLUMNS) {
     const cols = raw.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];

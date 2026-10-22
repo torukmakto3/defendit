@@ -1,5 +1,6 @@
 import type { User } from "./auth";
 import { extractClaims } from "./claims";
+import { assertLearnSlotAvailable, finishDefenseCredit, refundStaleDefenseHolds } from "./credits";
 import { getPublicKeyHex, sha256Hex } from "./crypto";
 import { dashboardWorkspaceHref } from "./dashboard-links";
 import { getDb, type Db } from "./db";
@@ -281,7 +282,7 @@ export async function creatorIngest(opts: {
 }) {
   maybePurge();
   // Claim extraction runs before the request row exists. Hold those calls,
-  // then attach them once the id is known.
+  // then attach them once the id is known. The slot claim shares that insert.
   return withLlmScope({ user: opts.user }, async () => {
     const upload = await prepareUpload(opts.fileName, opts.buffer, opts.mimeType);
     const difficulty = opts.difficulty || "hard";
@@ -289,6 +290,7 @@ export async function creatorIngest(opts: {
     const prefetchPromise = precomputeFirstQuestion({ claims: upload.claims, difficulty });
     const db = await getDb();
     const result = await db.transaction(async (tx) => {
+      await assertLearnSlotAvailable(opts.user.id, tx);
       const created = await insertRequest(tx, {
         owner: opts.user,
         kind: "creator",
@@ -433,6 +435,7 @@ export async function ingestDeliverable(opts: {
     const db = await getDb();
     const deliverableId = await db.transaction(async (tx) => {
     if (claiming) {
+      await assertLearnSlotAvailable(opts.user.id, tx);
       const claimed = await tx.run(
         `UPDATE defense_requests SET creator_user_id = ? WHERE id = ? AND creator_user_id IS NULL`,
         [opts.user.id, request.id],
@@ -924,6 +927,9 @@ export async function completeDefendSession(opts: {
   waitForStudyDeck?: boolean;
 }) {
   const session = await requireOwnSession(opts.sessionId, opts.user, "defend");
+  if (session.status === "abandoned") {
+    throw new HttpError(402, "This defense ended before grading. The credit was returned.");
+  }
   const db = await getDb();
 
   const request = await db.get<RequestRow>(`SELECT * FROM defense_requests WHERE id = ?`, [
@@ -941,6 +947,7 @@ export async function completeDefendSession(opts: {
   if (session.status === "completed") {
     const existing = await receiptForSession(db, session.id);
     if (existing) {
+      await finishDefenseCredit(opts.user.id, session.id);
       return {
         receipt: existing,
         score: existing.payload.score,
@@ -1119,6 +1126,7 @@ export async function completeDefendSession(opts: {
     throw e;
   }
 
+  await finishDefenseCredit(opts.user.id, session.id);
   return {
     receipt: signed,
     score: aggregateScore(grades, plan),
@@ -1527,7 +1535,7 @@ export async function listProjects(user: User) {
      FROM defense_requests r
      JOIN deliverables d ON d.id =
        (SELECT id FROM deliverables WHERE request_id = r.id ORDER BY created_at DESC LIMIT 1)
-     WHERE r.creator_user_id = ?
+     WHERE r.creator_user_id = ? AND r.learn_closed_at IS NULL
      ORDER BY d.created_at DESC
      LIMIT 100`,
     [new Date().toISOString(), user.id],
@@ -1609,6 +1617,7 @@ export async function purgeExpired() {
   await db.run(`DELETE FROM rate_limits WHERE window_start < ?`, [
     new Date(Date.now() - 2 * 24 * 3600_000).toISOString(),
   ]);
+  await refundStaleDefenseHolds();
   return {
     documentTexts: text.changes,
     deliverables: deliverables.changes,
