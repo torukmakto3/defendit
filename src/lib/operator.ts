@@ -1,5 +1,5 @@
 /** Who operates Defend It. */
-export const OPERATOR_NAME = "Luis Nunez";
+export const OPERATOR_NAME = "DefendIT";
 
 // TODO(legal review): placeholder contact
 export const OPERATOR_EMAIL = "tramuntanabtc@gmail.com";

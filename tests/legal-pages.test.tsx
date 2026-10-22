@@ -69,7 +69,14 @@ describe("public pages", () => {
     }
     const operator = readFileSync(join(root, "src/lib/operator.ts"), "utf8");
     expect(operator).toContain("// TODO(legal review): placeholder contact");
+    expect(operator).toContain(OPERATOR_EMAIL);
+    expect(OPERATOR_NAME).toBe("DefendIT");
+    expect(operator).not.toContain("Luis");
     expect(terms).toContain(OPERATOR_NAME);
+    expect(terms).not.toContain("Luis");
+    expect(faq).toContain(OPERATOR_NAME);
+    expect(faq).not.toContain("Luis");
+    expect(how).not.toContain("Luis");
     expect(terms).toContain(`mailto:${OPERATOR_EMAIL}`);
     expect(faq).toContain(`mailto:${OPERATOR_EMAIL}`);
   });
