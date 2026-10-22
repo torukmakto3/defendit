@@ -32,9 +32,6 @@ export default function RootLayout({
           <div className="shell flex flex-wrap items-center justify-between gap-3 py-3">
             <Link href="/" className="flex items-baseline gap-2">
               <span className="brand text-lg font-bold text-[var(--ink)]">Defend It</span>
-              <span className="mono hidden text-[11px] uppercase tracking-[0.1em] text-[var(--ink-2)] sm:inline">
-                Rev B
-              </span>
             </Link>
             <nav className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--ink-2)]">
               <Link href="/learn" className="hover:text-[var(--blueprint)]">
