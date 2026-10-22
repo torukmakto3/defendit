@@ -615,7 +615,9 @@ export async function startSession(opts: {
   if (opts.mode === "defend" && request.status === "defended") {
     throw new HttpError(409, "This deliverable has already been defended.");
   }
-  if (opts.mode === "defend") {
+  // A sample demo is not a challenge. It does not consult challenge status
+  // and it does not reserve the challenge slice of the beta budget.
+  if (opts.mode === "defend" && !demo) {
     await assertChallengeAllowsWork(request.id);
     // Beta challenge defenses skip the defender's credit in the route and
     // reserve the shared euro budget here instead.
@@ -727,7 +729,7 @@ export async function startSession(opts: {
   if (shown) await shown;
   await refreshRequestUsage(request.id);
   if (opts.mode === "defend") {
-    await noteChallengeSession(request.id, sessionId);
+    if (!demo) await noteChallengeSession(request.id, sessionId);
     if (!isDemoRequestKind(request.kind)) {
       await track({
         name: "defense_started",
@@ -1261,27 +1263,30 @@ export async function completeDefendSession(opts: {
   if (!request || !deliverable || !plan || !claims) {
     throw new HttpError(410, "This session has expired. Start a new defense.");
   }
+  const demo = isDemoKind(request.kind);
   // A retry after a dropped response returns the receipt this session already minted.
   if (session.status === "completed") {
     const existing = await receiptForSession(db, session.id);
     if (existing) {
       await finishDefenseCredit(opts.user.id, session.id);
-      await noteChallengeDefended(session.request_id, {
-        sessionId: session.id,
-        deliverableId: session.deliverable_id,
-        receiptId: existing.payload.id,
-      });
+      if (!demo) {
+        await noteChallengeDefended(session.request_id, {
+          sessionId: session.id,
+          deliverableId: session.deliverable_id,
+          receiptId: existing.payload.id,
+        });
+      }
       return {
         receipt: existing,
         score: existing.payload.score,
         flagged: await sessionFlagged(db, session, plan),
         stampPath: `/api/stamp/${existing.payload.id}`,
         idempotent: true,
-        challenge: await challengeCompletionHint(session.request_id),
+        challenge: demo ? null : await challengeCompletionHint(session.request_id),
       };
     }
   }
-  await assertChallengeAllowsWork(session.request_id);
+  if (!demo) await assertChallengeAllowsWork(session.request_id);
   if (session.status === "grading") {
     if (!gradingClaimIsStale(session.grading_claimed_at)) {
       throw new HttpError(409, "Grading is still running. Retry in a moment.");
@@ -1317,7 +1322,6 @@ export async function completeDefendSession(opts: {
     // Snapshot the file text and start the deck before grading, so the model
     // call overlaps the council. The receipt route does not wait for the cards.
     // A sample demo has no Learn deck. Its text is still deleted below.
-    const demo = isDemoKind(request.kind);
     if (!demo) await rememberStudyDeck(deliverable.id, false);
     // Graders see each claim and the answer, not the raw file.
     grades = await withLlmScope({ sessionId: session.id, requestId: session.request_id, user: opts.user }, () =>
@@ -1458,11 +1462,13 @@ export async function completeDefendSession(opts: {
       // The Learn deck was cached above, while this text was still readable.
       await tx.run(`UPDATE deliverables SET text_enc = NULL WHERE id = ?`, [deliverable.id]);
     });
-    await noteChallengeDefended(session.request_id, {
-      sessionId: session.id,
-      deliverableId: deliverable.id,
-      receiptId: signed.payload.id,
-    });
+    if (!demo) {
+      await noteChallengeDefended(session.request_id, {
+        sessionId: session.id,
+        deliverableId: deliverable.id,
+        receiptId: signed.payload.id,
+      });
+    }
   } catch (e) {
     // Release the claim so the creator can retry after a grading or storage failure.
     await db.run(
@@ -1485,7 +1491,7 @@ export async function completeDefendSession(opts: {
     score: aggregateScore(grades, plan),
     flagged: shouldFlagForHuman(grades, plan) || integrity.status !== "Clear",
     stampPath: `/api/stamp/${signed.payload.id}`,
-    challenge: await challengeCompletionHint(session.request_id),
+    challenge: demo ? null : await challengeCompletionHint(session.request_id),
   };
 }
 

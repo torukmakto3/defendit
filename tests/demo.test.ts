@@ -167,6 +167,32 @@ describe("sample demo defense", () => {
     expect(opened.json.questions).toBe(3);
     expect(await spent()).toBe(before + betaDefenseCents());
 
+    const db = await getDb();
+    const planted = await db.get<{ id: string; user_id: string }>(
+      `SELECT id, creator_user_id AS user_id FROM defense_requests WHERE token = ?`,
+      [opened.json.token],
+    );
+    const now = new Date().toISOString();
+    // A revoked beta challenge on the same request would block a real defense
+    // and would reserve another euro slice. A sample must ignore both.
+    await db.run(
+      `INSERT INTO challenges (
+         id, slug, creator_user_id, subject, difficulty, status, sponsor_type,
+         claimed_by_user_id, expires_at, request_id, created_at, revoked_at
+       ) VALUES (?, ?, ?, ?, 'standard', 'revoked', 'beta', ?, ?, ?, ?, ?)`,
+      [
+        "chg_demo_isolation",
+        "demo-isolation",
+        planted!.user_id,
+        "Not a sample",
+        planted!.user_id,
+        now,
+        planted!.id,
+        now,
+        now,
+      ],
+    );
+
     const started = await startSessionRoute(
       req("/api/sessions/start", { token: opened.json.token, mode: "defend" }, ip, opened.cookie),
     );
@@ -206,6 +232,7 @@ describe("sample demo defense", () => {
     );
     const doneJson = await done.json();
     expect(done.status).toBe(200);
+    expect(doneJson.challenge ?? null).toBeNull();
     const payload = doneJson.receipt.payload;
     expect(payload.demo).toEqual(
       expect.objectContaining({
@@ -220,7 +247,6 @@ describe("sample demo defense", () => {
     expect(JSON.stringify(doneJson.receipt)).not.toContain("separate search service");
     expect(JSON.stringify(doneJson.receipt)).not.toContain("demo.defendit.invalid");
 
-    const db = await getDb();
     const session = await db.get<{ cost_tier: string; budget_usd: number; channel: string; purge_after: string }>(
       `SELECT cost_tier, budget_usd, channel, purge_after FROM sessions WHERE id = ?`,
       [startJson.sessionId],
@@ -228,6 +254,18 @@ describe("sample demo defense", () => {
     expect(session?.cost_tier).toBe("consumer");
     expect(session?.budget_usd).toBe(budgetUsdForTier("consumer"));
     expect(session?.channel).toBe("text");
+    expect(await spent()).toBe(before + betaDefenseCents());
+    const challengeBudget = await db.get(`SELECT id FROM credit_ledger WHERE ref_type = 'challenge_defense'`);
+    expect(challengeBudget).toBeUndefined();
+    const claim = await db.get(`SELECT challenge_id FROM credit_challenge_claims WHERE request_id = ?`, [
+      planted!.id,
+    ]);
+    expect(claim).toBeUndefined();
+    const challengeRow = await db.get<{ status: string; session_id: string | null }>(
+      `SELECT status, session_id FROM challenges WHERE id = ?`,
+      ["chg_demo_isolation"],
+    );
+    expect(challengeRow).toEqual({ status: "revoked", session_id: null });
     const keptFor = new Date(session!.purge_after).getTime() - Date.now();
     expect(keptFor).toBeGreaterThan(23 * 3600_000);
     expect(keptFor).toBeLessThan(25 * 3600_000);
