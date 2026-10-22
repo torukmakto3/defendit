@@ -83,7 +83,7 @@ describe("gradeSession non-answers", () => {
     expect(scored.claimScores.every((n) => n === 0)).toBe(true);
     expect(scored.disputedProbeIds).toEqual([]);
     expect(grades).toHaveLength(1);
-    expect(grades[0].modelId).toBe("rule:non-answer");
+    expect(grades[0].modelId).toBe("non-answer");
     expect(grades[0].provider).toBe("rule");
     expect(grades[0].temperature).toBeUndefined();
     expect(grades[0].seed).toBeUndefined();
@@ -111,7 +111,7 @@ describe("gradeSession non-answers", () => {
     });
     expect(signed.payload.score).toBe(0);
     expect(signed.payload.outcome).toBe("Not defended");
-    expect(signed.payload.modelVersions).toEqual(["rule:rule:non-answer"]);
+    expect(signed.payload.modelVersions).toEqual(["rule:non-answer"]);
     expect(signed.payload.graders).toBeUndefined();
     expect(signed.payload.bands).toEqual({ strong: 0, partial: 0, weak: plan.probes.length });
     expect(signed.payload.rubricVersion).toBe("defend-it-rubric-v0.5");
@@ -126,7 +126,7 @@ describe("gradeSession non-answers", () => {
     });
     const grades = await gradeSession({ difficulty: "standard", claims, plan, turns });
     expect(spy).toHaveBeenCalled();
-    expect(grades.map((grade) => grade.modelId)).not.toContain("rule:non-answer");
+    expect(grades.map((grade) => grade.modelId)).not.toContain("non-answer");
     expect(scoreDefense(grades, plan).score).toBeGreaterThan(0);
   });
 

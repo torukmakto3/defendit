@@ -290,7 +290,7 @@ function gradesForAllNonAnswers(opts: {
     });
   }
   const grade: ModelGrade = {
-    modelId: "rule:non-answer",
+    modelId: "non-answer",
     provider: "rule",
     claimGrades: rows,
     overallScore: 0,
