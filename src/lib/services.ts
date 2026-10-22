@@ -3,6 +3,7 @@ import { extractClaims } from "./claims";
 import { getPublicKeyHex, sha256Hex } from "./crypto";
 import { getDb, type Db } from "./db";
 import { aggregateScore, claimScores, gradeSession, scoreDefense, shouldFlagForHuman } from "./grading";
+import { readGradingProgress, type GradingProgress } from "./grading-progress";
 import { HttpError } from "./http";
 import { newId, newToken } from "./ids";
 import { computeIntegrity } from "./integrity";
@@ -10,7 +11,9 @@ import { nextLearnTurn, type GapItem } from "./learn";
 import { describeGradingCouncil, flushLlmScope, llmModeLabel, refreshRequestUsage, sessionBudgetUsd, withLlmScope } from "./llm";
 import { extractText, guessMimeType } from "./parse";
 import { buildInterviewPlan, buildLearnPlan, makeFollowUpProbe } from "./probes";
+import { loadQuestionPrefetch, precomputeFirstQuestion, rememberFirstQuestion } from "./question-prefetch";
 import { phraseQuestions } from "./questions";
+import { listStageTimings, recordStageTiming } from "./timings";
 import { buildSignedReceipt } from "./receipt";
 import type {
   Claim,
@@ -130,6 +133,7 @@ interface SessionRow {
   purge_after: string;
   channel: Channel;
   grading_claimed_at?: string | null;
+  grading_progress?: string | null;
 }
 
 /** A grading claim older than the complete route's 120s limit is abandoned. */
@@ -186,10 +190,12 @@ interface PreparedUpload {
   byteLength: number;
   text: string;
   claims: Claim[];
+  parseMs: number;
 }
 
 /** Parse and extract claims before anything is written, so failures leave no rows behind. */
 async function prepareUpload(fileName: string, buffer: Buffer, mimeType?: string): Promise<PreparedUpload> {
+  const started = Date.now();
   if (buffer.length > MAX_UPLOAD_BYTES) {
     throw new HttpError(413, `File is larger than ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)} MB`);
   }
@@ -204,7 +210,15 @@ async function prepareUpload(fileName: string, buffer: Buffer, mimeType?: string
     throw new HttpError(400, "Could not extract enough text from the upload.");
   }
   const claims = await extractClaims(text);
-  return { fileName, mime, sha256: sha256Hex(buffer), byteLength: buffer.length, text, claims };
+  return {
+    fileName,
+    mime,
+    sha256: sha256Hex(buffer),
+    byteLength: buffer.length,
+    text,
+    claims,
+    parseMs: Date.now() - started,
+  };
 }
 
 async function insertDeliverable(db: Db, requestId: string, user: User, u: PreparedUpload) {
@@ -246,17 +260,25 @@ export async function creatorIngest(opts: {
   // then attach them once the id is known.
   return withLlmScope({}, async () => {
     const upload = await prepareUpload(opts.fileName, opts.buffer, opts.mimeType);
+    const difficulty = opts.difficulty || "hard";
+    // Phrase the first question while the deliverable row is written.
+    const prefetchPromise = precomputeFirstQuestion({ claims: upload.claims, difficulty });
     const db = await getDb();
     const result = await db.transaction(async (tx) => {
       const created = await insertRequest(tx, {
         owner: opts.user,
         kind: "creator",
-        difficulty: opts.difficulty || "hard",
+        difficulty,
         title: PRIVATE_TITLE,
       });
       const deliverableId = await insertDeliverable(tx, created.requestId, opts.user, upload);
       await tx.run(`UPDATE defense_requests SET status = 'uploaded' WHERE id = ?`, [created.requestId]);
       return { ...created, deliverableId };
+    });
+    await rememberFirstQuestion({
+      requestId: result.requestId,
+      prefetch: prefetchPromise,
+      parseMs: upload.parseMs,
     });
     await flushLlmScope({ requestId: result.requestId });
     return {
@@ -363,11 +385,18 @@ export async function ingestDeliverable(opts: {
     throw new HttpError(409, "This deliverable has already been defended.");
   }
 
-  const upload = await withLlmScope({ requestId: request.id }, () =>
-    prepareUpload(opts.fileName, opts.buffer, opts.mimeType),
-  );
-  const db = await getDb();
-  const deliverableId = await db.transaction(async (tx) => {
+  const { upload, deliverableId } = await withLlmScope({ requestId: request.id }, async () => {
+    const upload = await prepareUpload(opts.fileName, opts.buffer, opts.mimeType);
+    const pinnedClaimIds = request.pinned_claims
+      ? request.pinned_claims.split(",").map((s) => s.trim()).filter(Boolean)
+      : undefined;
+    const prefetchPromise = precomputeFirstQuestion({
+      claims: upload.claims,
+      difficulty: request.difficulty,
+      pinnedClaimIds,
+    });
+    const db = await getDb();
+    const deliverableId = await db.transaction(async (tx) => {
     if (claiming) {
       const claimed = await tx.run(
         `UPDATE defense_requests SET creator_user_id = ? WHERE id = ? AND creator_user_id IS NULL`,
@@ -382,6 +411,13 @@ export async function ingestDeliverable(opts: {
     );
     if (open.changes !== 1) throw new HttpError(409, "This deliverable has already been defended.");
     return insertDeliverable(tx, request.id, opts.user, upload);
+    });
+    await rememberFirstQuestion({
+      requestId: request.id,
+      prefetch: prefetchPromise,
+      parseMs: upload.parseMs,
+    });
+    return { upload, deliverableId };
   });
 
   return {
@@ -400,12 +436,26 @@ async function getLatestDeliverable(requestId: string) {
   );
 }
 
+export interface FirstQuestionInfo {
+  sessionId: string;
+  requestId: string;
+  channel: Channel;
+  total: number;
+  question: string;
+  probe: ReturnType<typeof publicProbes>[number];
+}
+
 export async function startSession(opts: {
   token: string;
   user: User;
   mode: "learn" | "defend";
   voice?: boolean;
   accommodation?: boolean;
+  /**
+   * Called once the first question is stored, before the remaining questions
+   * are phrased. The interview can show that question while the rest are written.
+   */
+  onFirstQuestion?: (info: FirstQuestionInfo) => void | Promise<void>;
 }) {
   maybePurge();
   const request = await requireRequest(opts.token);
@@ -421,48 +471,123 @@ export async function startSession(opts: {
     throw new HttpError(409, "This deliverable has already been defended.");
   }
 
-  const seed = newId("seed");
-  const drafted =
-    opts.mode === "learn"
-      ? buildLearnPlan(claims, seed)
-      : buildInterviewPlan({
-          claims,
-          difficulty: request.difficulty,
-          seed,
-          pinnedClaimIds: request.pinned_claims
-            ? request.pinned_claims.split(",").map((s) => s.trim())
-            : undefined,
-        });
-  const channel: Channel = opts.mode === "defend" ? channelFor(request.difficulty, opts) : "text";
-
   const sessionId = newId("ses");
-  // Question wording is a model call on this session. The row is inserted
-  // just after, and the totals are refreshed from the stored calls.
-  const plan = await withLlmScope({ sessionId, requestId: request.id }, async () =>
-    opts.mode === "defend" ? phraseQuestions(drafted, claims) : drafted,
-  );
+  const channel: Channel = opts.mode === "defend" ? channelFor(request.difficulty, opts) : "text";
+  const pinned = request.pinned_claims
+    ? request.pinned_claims.split(",").map((s) => s.trim()).filter(Boolean)
+    : undefined;
+
+  let seed: string;
+  let plan: InterviewPlan;
+  let phraseRest = false;
+
+  if (opts.mode === "learn") {
+    seed = newId("seed");
+    plan = buildLearnPlan(claims, seed);
+  } else {
+    const prefetched = await loadQuestionPrefetch(request.id, claims, request.difficulty, pinned);
+    if (prefetched) {
+      seed = prefetched.seed;
+      plan = prefetched.plan;
+      phraseRest = !prefetched.restPhrased;
+    } else {
+      seed = newId("seed");
+      plan = buildInterviewPlan({
+        claims,
+        difficulty: request.difficulty,
+        seed,
+        pinnedClaimIds: pinned,
+      });
+      const started = Date.now();
+      plan = await withLlmScope({ sessionId, requestId: request.id }, () =>
+        phraseQuestions(plan, claims, { indexes: [0] }),
+      );
+      await recordStageTiming({
+        requestId: request.id,
+        sessionId,
+        stage: "first_question",
+        durationMs: Date.now() - started,
+      });
+      phraseRest = plan.probes.length > 1;
+    }
+  }
+
   const db = await getDb();
+  await insertSessionRow(db, {
+    sessionId,
+    requestId: request.id,
+    deliverableId: deliverable.id,
+    userId: opts.user.id,
+    mode: opts.mode,
+    seed,
+    plan,
+    channel,
+  });
+
+  // The row exists, so the client can render question 1 while the rest are phrased.
+  const firstProbe = publicProbes(plan)[0];
+  const shown =
+    opts.mode === "defend" && opts.onFirstQuestion && firstProbe
+      ? Promise.resolve(
+          opts.onFirstQuestion({
+            sessionId,
+            requestId: request.id,
+            channel,
+            total: plan.probes.length,
+            question: firstProbe.question,
+            probe: firstProbe,
+          }),
+        )
+      : null;
+
+  if (phraseRest) {
+    const rest = plan.probes.map((_, index) => index).filter((index) => index !== 0);
+    plan = await withLlmScope({ sessionId, requestId: request.id }, () =>
+      phraseQuestions(plan, claims, { indexes: rest }),
+    );
+    await db.run(`UPDATE sessions SET plan_enc = ? WHERE id = ?`, [
+      encryptJson(plan, ctx.plan(sessionId)),
+      sessionId,
+    ]);
+  }
+
+  if (shown) await shown;
+  await refreshRequestUsage(request.id);
+  return { sessionId, plan, channel };
+}
+
+async function insertSessionRow(
+  db: Db,
+  row: {
+    sessionId: string;
+    requestId: string;
+    deliverableId: string;
+    userId: string;
+    mode: "learn" | "defend";
+    seed: string;
+    plan: InterviewPlan;
+    channel: Channel;
+  },
+) {
   await db.run(
     `INSERT INTO sessions
       (id, request_id, deliverable_id, user_id, mode, seed, plan_enc, transcript_enc, gap_map_enc, status, started_at, purge_after, channel)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?)`,
     [
-      sessionId,
-      request.id,
-      deliverable.id,
-      opts.user.id,
-      opts.mode,
-      seed,
-      encryptJson(plan, ctx.plan(sessionId)),
-      encryptJson([], ctx.transcript(sessionId)),
-      encryptJson([], ctx.gapMap(sessionId)),
+      row.sessionId,
+      row.requestId,
+      row.deliverableId,
+      row.userId,
+      row.mode,
+      row.seed,
+      encryptJson(row.plan, ctx.plan(row.sessionId)),
+      encryptJson([], ctx.transcript(row.sessionId)),
+      encryptJson([], ctx.gapMap(row.sessionId)),
       new Date().toISOString(),
       hoursFromNow(retentionDays() * 24),
-      channel,
+      row.channel,
     ],
   );
-  await refreshRequestUsage(request.id);
-  return { sessionId, plan, channel };
 }
 
 /** Strip what the creator must not see before answering (expected answers). */
@@ -622,12 +747,16 @@ async function storeAnswer(
   const answer = rawAnswer.trim().slice(0, 4000);
   if (!answer) throw new HttpError(400, "Answer is empty.");
 
-  const progress = (rows: TurnRecord[], idempotent = false) => ({
-    answered: rows.length,
-    total: plan.probes.length,
-    done: rows.length >= plan.probes.length,
-    ...(idempotent ? { idempotent: true } : {}),
-  });
+  const progress = (rows: TurnRecord[], idempotent = false) => {
+    const upcoming = publicProbes(plan)[rows.length];
+    return {
+      answered: rows.length,
+      total: plan.probes.length,
+      done: rows.length >= plan.probes.length,
+      ...(upcoming ? { nextProbe: upcoming } : {}),
+      ...(idempotent ? { idempotent: true } : {}),
+    };
+  };
 
   // Same answer saved twice (a retry after a dropped response) is success.
   // A different answer for a question already stored is refused.
@@ -672,6 +801,27 @@ async function storeAnswer(
   return progress(turns);
 }
 
+async function writeGradingProgress(sessionId: string, progress: GradingProgress): Promise<void> {
+  try {
+    const db = await getDb();
+    await db.run(`UPDATE sessions SET grading_progress = ? WHERE id = ? AND status = 'grading'`, [
+      JSON.stringify(progress),
+      sessionId,
+    ]);
+  } catch (e) {
+    console.error("[grading] progress", e instanceof Error ? e.message : e);
+  }
+}
+
+/** Polled by the interview while the complete request is still running. */
+export async function getDefendGradingProgress(sessionId: string, user: User) {
+  const session = await requireOwnSession(sessionId, user, "defend");
+  return {
+    status: session.status,
+    progress: readGradingProgress(session.grading_progress),
+  };
+}
+
 export async function completeDefendSession(opts: {
   sessionId: string;
   user: User;
@@ -712,7 +862,7 @@ export async function completeDefendSession(opts: {
       throw new HttpError(409, "Grading is still running. Retry in a moment.");
     }
     const released = await db.run(
-      `UPDATE sessions SET status = 'in_progress', grading_claimed_at = NULL WHERE id = ? AND status = 'grading'`,
+      `UPDATE sessions SET status = 'in_progress', grading_claimed_at = NULL, grading_progress = NULL WHERE id = ? AND status = 'grading'`,
       [session.id],
     );
     if (released.changes !== 1) throw new HttpError(409, "Grading is still running. Retry in a moment.");
@@ -730,8 +880,8 @@ export async function completeDefendSession(opts: {
 
   // Claim the session before paying for grading, so a double submit can't grade twice.
   const claimed = await db.run(
-    `UPDATE sessions SET status = 'grading', grading_claimed_at = ? WHERE id = ? AND status = 'in_progress'`,
-    [new Date().toISOString(), session.id],
+    `UPDATE sessions SET status = 'grading', grading_claimed_at = ?, grading_progress = ? WHERE id = ? AND status = 'in_progress'`,
+    [new Date().toISOString(), JSON.stringify({ done: 0, total: 0, stage: "grading" }), session.id],
   );
   if (claimed.changes !== 1) throw new HttpError(409, "This defense is already complete.");
 
@@ -741,16 +891,40 @@ export async function completeDefendSession(opts: {
   try {
     // Graders see each claim and the answer, not the raw file.
     grades = await withLlmScope({ sessionId: session.id, requestId: session.request_id }, () =>
-      gradeSession({ difficulty: request.difficulty, claims, plan, turns }),
+      gradeSession(
+        { difficulty: request.difficulty, claims, plan, turns },
+        {
+          onProgress: async (progress) => {
+            await writeGradingProgress(session.id, progress);
+            if (progress.modelId && progress.durationMs !== undefined) {
+              await recordStageTiming({
+                requestId: session.request_id,
+                sessionId: session.id,
+                stage: "grader",
+                detail: progress.modelId,
+                durationMs: progress.durationMs,
+              });
+            }
+          },
+        },
+      ),
     );
+    await writeGradingProgress(session.id, { done: grades.length, total: grades.length, stage: "aggregating" });
+    const aggregatedAt = Date.now();
     const disputed = scoreDefense(grades, plan).disputedProbeIds;
+    await recordStageTiming({
+      requestId: session.request_id,
+      sessionId: session.id,
+      stage: "aggregation",
+      durationMs: Date.now() - aggregatedAt,
+    });
     if (disputed.length > 0 && !plan.probes.some((p) => p.followUpOf)) {
       const source = plan.probes.find((p) => p.id === disputed[0]) ?? plan.probes[0];
       const claim = claims.find((c) => c.id === source.claimId) ?? claims[0];
       const extra = makeFollowUpProbe(claim, source);
       const nextPlan: InterviewPlan = { ...plan, probes: [...plan.probes, extra] };
       const released = await db.run(
-        `UPDATE sessions SET plan_enc = ?, status = 'in_progress', grading_claimed_at = NULL WHERE id = ? AND status = 'grading'`,
+        `UPDATE sessions SET plan_enc = ?, status = 'in_progress', grading_claimed_at = NULL, grading_progress = NULL WHERE id = ? AND status = 'grading'`,
         [encryptJson(nextPlan, ctx.plan(session.id)), session.id],
       );
       if (released.changes !== 1) throw new HttpError(409, "This defense is already complete.");
@@ -773,6 +947,8 @@ export async function completeDefendSession(opts: {
       pasteEvents: opts.pasteEvents,
       focusBlurEvents: opts.focusBlurEvents,
     });
+    await writeGradingProgress(session.id, { done: grades.length, total: grades.length, stage: "signing" });
+    const signedAt = Date.now();
     signed = buildSignedReceipt({
       difficulty: request.difficulty,
       sha256: deliverable.sha256,
@@ -784,6 +960,12 @@ export async function completeDefendSession(opts: {
       interviewMode: session.channel === "voice" ? "voice" : session.channel === "text_accommodation" ? "text-accommodation" : "text",
       plan,
     });
+    await recordStageTiming({
+      requestId: session.request_id,
+      sessionId: session.id,
+      stage: "receipt_sign",
+      durationMs: Date.now() - signedAt,
+    });
 
     const nowIso = new Date().toISOString();
     await db.transaction(async (tx) => {
@@ -794,7 +976,7 @@ export async function completeDefendSession(opts: {
       );
       if (won.changes !== 1) throw new HttpError(409, "This deliverable has already been defended.");
       await tx.run(
-        `UPDATE sessions SET integrity_json = ?, status = 'completed', completed_at = ? WHERE id = ?`,
+        `UPDATE sessions SET integrity_json = ?, status = 'completed', completed_at = ?, grading_progress = NULL WHERE id = ?`,
         [JSON.stringify(integrity), nowIso, session.id],
       );
       for (const g of grades) {
@@ -826,7 +1008,7 @@ export async function completeDefendSession(opts: {
   } catch (e) {
     // Release the claim so the creator can retry after a grading or storage failure.
     await db.run(
-      `UPDATE sessions SET status = 'in_progress', grading_claimed_at = NULL WHERE id = ? AND status = 'grading'`,
+      `UPDATE sessions SET status = 'in_progress', grading_claimed_at = NULL, grading_progress = NULL WHERE id = ? AND status = 'grading'`,
       [session.id],
     );
     throw e;
@@ -1053,6 +1235,7 @@ export async function getAdminSessionDetail(sessionId: string) {
         costSource: call.cost_source,
       })),
     },
+    timings: await listStageTimings({ requestId: session.request_id, sessionId }),
   };
 }
 

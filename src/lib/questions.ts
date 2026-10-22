@@ -33,14 +33,28 @@ interface DraftItem {
   figures: string[];
 }
 
-export async function phraseQuestions(plan: InterviewPlan, claims: Claim[]): Promise<InterviewPlan> {
+/**
+ * Phrase the whole plan, or only `indexes`, when the first question was
+ * already written during upload. Probes outside `indexes` keep their wording.
+ */
+export async function phraseQuestions(
+  plan: InterviewPlan,
+  claims: Claim[],
+  opts?: { indexes?: number[] },
+): Promise<InterviewPlan> {
+  const indexes = (opts?.indexes ?? plan.probes.map((_, index) => index)).filter(
+    (index) => index >= 0 && index < plan.probes.length,
+  );
+  if (indexes.length === 0) return plan;
+  const wanted = new Set(indexes);
   const byId = new Map(claims.map((c) => [c.id, c]));
-  const items = plan.probes.map((probe) => draftItem(probe, byId.get(probe.claimId)));
+  const probes = plan.probes.filter((_, index) => wanted.has(index));
+  const items = probes.map((probe) => draftItem(probe, byId.get(probe.claimId)));
 
   const written = await ask(items);
   const accepted = new Map<string, string>();
   const failed: { item: DraftItem; reasons: string[] }[] = [];
-  for (const probe of plan.probes) {
+  for (const probe of probes) {
     const claim = byId.get(probe.claimId);
     const decision = acceptDraft(probe, written.get(probe.id), claim);
     if (decision.question) accepted.set(probe.id, decision.question);
@@ -52,7 +66,7 @@ export async function phraseQuestions(plan: InterviewPlan, claims: Claim[]): Pro
       failed.map((row) => row.item),
       failed.map((row) => `${row.item.probeId}: ${row.reasons.join("; ")}`).join("\n"),
     );
-    for (const probe of plan.probes) {
+    for (const probe of probes) {
       if (accepted.has(probe.id)) continue;
       const decision = acceptDraft(probe, rewritten.get(probe.id), byId.get(probe.claimId));
       if (decision.question) accepted.set(probe.id, decision.question);
@@ -61,7 +75,8 @@ export async function phraseQuestions(plan: InterviewPlan, claims: Claim[]): Pro
 
   return {
     ...plan,
-    probes: plan.probes.map((probe) => {
+    probes: plan.probes.map((probe, index) => {
+      if (!wanted.has(index)) return probe;
       const claim = byId.get(probe.claimId);
       return {
         ...probe,

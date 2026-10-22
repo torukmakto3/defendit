@@ -112,19 +112,38 @@ export function withLlmScope<T>(
   ids: { sessionId?: string; requestId?: string },
   fn: () => Promise<T>,
 ): Promise<T> {
-  return scopes.run({ sessionId: ids.sessionId, requestId: ids.requestId, pending: [] }, fn);
+  return scopes.run({ sessionId: ids.sessionId, requestId: ids.requestId, pending: [] }, async () => {
+    try {
+      return await fn();
+    } finally {
+      // One write for every call in the scope, after the work itself has returned.
+      await flushLlmScope({});
+    }
+  });
 }
 
-/** Attach calls that ran before the defense request (or session) row existed. */
+/**
+ * Write every call queued in this scope. One transaction, one total recompute.
+ * Grading used to await this per grader, on the council's critical path.
+ */
 export async function flushLlmScope(ids: { sessionId?: string; requestId?: string }): Promise<void> {
   const scope = scopes.getStore();
   if (!scope) return;
   if (ids.sessionId) scope.sessionId = ids.sessionId;
   if (ids.requestId) scope.requestId = ids.requestId;
   const pending = scope.pending.splice(0);
-  for (const call of pending) await persist(call);
+  if (pending.length === 0) return;
+  if (!scope.sessionId && !scope.requestId) {
+    scope.pending.unshift(...pending);
+    return;
+  }
+  await persistAll(pending);
 }
 
+/**
+ * Queue a call. This does not touch the database: `withLlmScope` flushes the
+ * queue after the work returns, so parallel graders don't wait on the write.
+ */
 export async function recordLlmCall(input: {
   purpose?: string;
   provider: string;
@@ -133,19 +152,14 @@ export async function recordLlmCall(input: {
 }): Promise<void> {
   const scope = scopes.getStore();
   if (!scope) return;
-  const call: PendingCall = {
+  scope.pending.push({
     id: newId("llm"),
     purpose: input.purpose?.slice(0, 80) || null,
     provider: input.provider.slice(0, 40),
     modelId: input.modelId.slice(0, 120),
     usage: input.usage,
     createdAt: new Date().toISOString(),
-  };
-  if (!scope.sessionId && !scope.requestId) {
-    scope.pending.push(call);
-    return;
-  }
-  await persist(call);
+  });
 }
 
 /** Recompute stored totals after a session row is inserted. */
@@ -157,37 +171,39 @@ export async function refreshRequestUsage(requestId: string): Promise<void> {
   }
 }
 
-async function persist(call: PendingCall): Promise<void> {
+async function persistAll(calls: PendingCall[]): Promise<void> {
   const scope = scopes.getStore();
   if (!scope) return;
   const sessionId = scope.sessionId ?? null;
   const requestId = scope.requestId ?? null;
   if (!sessionId && !requestId) {
-    scope.pending.push(call);
+    scope.pending.unshift(...calls);
     return;
   }
   try {
     const db = await getDb();
     await db.transaction(async (tx) => {
-      await tx.run(
-        `INSERT INTO llm_calls
-          (id, session_id, request_id, purpose, provider, model_id,
-           prompt_tokens, completion_tokens, cost_usd, cost_source, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          call.id,
-          sessionId,
-          requestId,
-          call.purpose,
-          call.provider,
-          call.modelId,
-          call.usage.promptTokens,
-          call.usage.completionTokens,
-          call.usage.costUsd,
-          call.usage.costSource,
-          call.createdAt,
-        ],
-      );
+      for (const call of calls) {
+        await tx.run(
+          `INSERT INTO llm_calls
+            (id, session_id, request_id, purpose, provider, model_id,
+             prompt_tokens, completion_tokens, cost_usd, cost_source, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            call.id,
+            sessionId,
+            requestId,
+            call.purpose,
+            call.provider,
+            call.modelId,
+            call.usage.promptTokens,
+            call.usage.completionTokens,
+            call.usage.costUsd,
+            call.usage.costSource,
+            call.createdAt,
+          ],
+        );
+      }
       if (requestId) await recompute(tx, requestId);
     });
   } catch (e) {

@@ -42,6 +42,35 @@ interface Detail {
       costSource: "provider" | "estimated";
     }[];
   };
+  timings?: {
+    stage: string;
+    detail: string | null;
+    durationMs: number;
+    createdAt: string;
+  }[];
+}
+
+const STAGE_LABELS: Record<string, string> = {
+  upload_parse: "Upload and parse",
+  first_question: "First question",
+  tts_first_audio: "First audio",
+  grader: "Council grader",
+  aggregation: "Aggregation",
+  receipt_sign: "Receipt signing",
+};
+
+const STAGE_ORDER = [
+  "upload_parse",
+  "first_question",
+  "tts_first_audio",
+  "grader",
+  "aggregation",
+  "receipt_sign",
+];
+
+function stageRank(stage: string): number {
+  const index = STAGE_ORDER.indexOf(stage);
+  return index === -1 ? STAGE_ORDER.length : index;
 }
 
 function formatUsd(amount: number): string {
@@ -168,6 +197,34 @@ export default function AdminDetailPage() {
               </tbody>
             </table>
           </div>
+        )}
+      </div>
+
+      <div className="mt-8 panel p-5">
+        <h2 className="text-xl">Timing</h2>
+        {(detail.timings ?? []).length === 0 ? (
+          <p className="mt-2 text-sm text-[var(--ink-2)]">No stage timings for this session.</p>
+        ) : (
+          <table className="mt-3 w-full text-left text-sm">
+            <thead className="mono text-[11px] uppercase tracking-[0.08em] text-[var(--ink-2)]">
+              <tr>
+                <th className="py-2 pr-3">Stage</th>
+                <th className="py-2 pr-3">Detail</th>
+                <th className="py-2">Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...(detail.timings ?? [])]
+                .sort((a, b) => stageRank(a.stage) - stageRank(b.stage) || a.createdAt.localeCompare(b.createdAt))
+                .map((timing) => (
+                  <tr key={`${timing.stage}-${timing.detail ?? ""}-${timing.createdAt}`} className="border-t border-[var(--line)]">
+                    <td className="py-2 pr-3">{STAGE_LABELS[timing.stage] ?? timing.stage}</td>
+                    <td className="py-2 pr-3">{timing.detail ?? "—"}</td>
+                    <td className="py-2 font-mono">{timing.durationMs.toLocaleString()} ms</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
         )}
       </div>
 

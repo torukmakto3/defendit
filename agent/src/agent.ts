@@ -243,7 +243,14 @@ export default defineAgent({
       turnHandling: { endpointing: { minDelay: 1800, maxDelay: 6000 } },
     });
 
+    const audioClock = Date.now();
+    let reportedAudio = false;
     session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
+      if (!reportedAudio && ev.newState === "speaking") {
+        reportedAudio = true;
+        // First speech the creator hears. Failure here must not stop the interview.
+        void call("/api/voice/agent/timing", { sessionId, durationMs: Date.now() - audioClock }).catch(() => {});
+      }
       if (ev.oldState === "speaking" && ev.newState !== "speaking" && interview) interview.questionEndedAt = new Date();
     });
     session.on(voice.AgentSessionEventTypes.UserStateChanged, (ev) => {
