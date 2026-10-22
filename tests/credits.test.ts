@@ -23,6 +23,7 @@ import {
   getUserPlan,
   grantBetaIfFirstGoogleSignIn,
   grantCredits,
+  betaDefenseCents,
   holdCredit,
   learnSlotLimit,
   linkChallengedDefense,
@@ -123,6 +124,19 @@ async function defendToReceipt(
   }
   if (!("receipt" in done)) throw new Error("expected a receipt");
   return done;
+}
+
+async function openDefenseHolds(userId: string): Promise<number> {
+  const row = await (await getDb()).get<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM credit_ledger l
+     WHERE l.user_id = ? AND l.reason = 'hold' AND l.purpose = 'defense'
+       AND NOT EXISTS (
+         SELECT 1 FROM credit_ledger c
+         WHERE c.ref_type = 'hold' AND c.ref_id = l.id AND c.reason IN ('consume', 'refund')
+       )`,
+    [userId],
+  );
+  return Number(row?.n ?? 0);
 }
 
 async function ledgerCount(userId: string): Promise<number> {
@@ -464,6 +478,10 @@ describe("plans", () => {
 });
 
 describe("beta budget and sponsorship", () => {
+  it("counts a sponsored defense at 0.70 EUR unless BETA_DEFENSE_EUR is set", () => {
+    expect(betaDefenseCents()).toBe(70);
+  });
+
   it("pauses sponsored defenses when the global budget is spent and still spends paid credits", async () => {
     const previousBudget = process.env.BETA_BUDGET_EUR;
     const previousDefense = process.env.BETA_DEFENSE_EUR;
@@ -869,7 +887,12 @@ describe("defense gate", () => {
     await ensureBetaGrant(user.id);
     expect((await getBalance(user.id)).defense).toBe(3);
     for (let i = 1; i <= 3; i++) {
-      await holdCredit({ userId: user.id, kind: "defense", idempotencyKey: `allowance-hold-${i}` });
+      const held = await holdCredit({ userId: user.id, kind: "defense", idempotencyKey: `allowance-hold-${i}` });
+      await consumeCredit({
+        userId: user.id,
+        holdIdempotencyKey: held.idempotencyKey,
+        idempotencyKey: `allowance-consume-${i}`,
+      });
     }
     expect((await getBalance(user.id)).defense).toBe(0);
     const fourth = await startDefend(
@@ -980,6 +1003,63 @@ describe("defense gate", () => {
     await expect(
       completeDefendSession({ sessionId: session.sessionId, user: payer.user }),
     ).rejects.toMatchObject({ status: 402 });
+  });
+
+  it("refunds the previous unfinished defense when Begin is clicked again", async () => {
+    const { user, cookie } = await signIn("retry-defend@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "hard" });
+    const start = (accommodation: boolean) =>
+      startDefend(
+        new Request("http://localhost/api/sessions/start", {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json" },
+          body: JSON.stringify({ token: ingest.token, mode: "defend", accommodation }),
+        }),
+      );
+
+    const firstRes = await start(false);
+    expect(firstRes.status).toBe(200);
+    const first = (await firstRes.json()) as { sessionId: string };
+    expect((await getBalance(user.id)).held.defense).toBe(1);
+    expect((await getBalance(user.id)).defense).toBe(2);
+    expect(await openDefenseHolds(user.id)).toBe(1);
+
+    const secondRes = await start(true);
+    expect(secondRes.status).toBe(200);
+    const second = (await secondRes.json()) as { sessionId: string; plan: { probes: { id: string }[] } };
+    expect(second.sessionId).not.toBe(first.sessionId);
+    expect((await getBalance(user.id)).held.defense).toBe(1);
+    expect((await getBalance(user.id)).defense).toBe(2);
+    expect(await openDefenseHolds(user.id)).toBe(1);
+    const abandoned = await (await getDb()).get<{ status: string }>(`SELECT status FROM sessions WHERE id = ?`, [
+      first.sessionId,
+    ]);
+    expect(abandoned?.status).toBe("abandoned");
+    await expect(completeDefendSession({ sessionId: first.sessionId, user })).rejects.toMatchObject({ status: 402 });
+
+    await defendToReceipt(second, user);
+    expect((await getBalance(user.id)).held.defense).toBe(0);
+    expect((await getBalance(user.id)).defense).toBe(2);
+    expect(await openDefenseHolds(user.id)).toBe(0);
+
+    const thirdRes = await start(true);
+    expect(thirdRes.status).toBe(409);
+    expect((await getBalance(user.id)).held.defense).toBe(0);
+    expect((await getBalance(user.id)).defense).toBe(2);
+    expect(await openDefenseHolds(user.id)).toBe(0);
+
+    const another = await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "hard" });
+    const fourthRes = await startDefend(
+      new Request("http://localhost/api/sessions/start", {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ token: another.token, mode: "defend", accommodation: true }),
+      }),
+    );
+    expect(fourthRes.status).toBe(200);
+    expect((await getBalance(user.id)).held.defense).toBe(1);
+    expect((await getBalance(user.id)).defense).toBe(1);
+    expect(await openDefenseHolds(user.id)).toBe(1);
   });
 
   it("consumes the held credit when the defense reaches a receipt", async () => {

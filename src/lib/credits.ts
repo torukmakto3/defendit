@@ -27,11 +27,13 @@
  *
  * Draw order for a defense: subscription, purchase, overage, admin, then
  * flexible packs, then sponsored beta credits. Sponsored defense holds
- * count `BETA_DEFENSE_EUR` (default 0.30) against `BETA_BUDGET_EUR`
- * (default 150). Challenge holds do not. Each account is granted
- * `BETA_DEFENSE_CREDITS` free defenses once (default 3). While billing is
- * off, the next defense after those are spent is a 402. The global budget
- * can stop a sponsored defense sooner.
+ * count `BETA_DEFENSE_EUR` (default 0.70, about the $0.75 consumer cap)
+ * against `BETA_BUDGET_EUR` (default 150). Challenge holds do not. Each
+ * account is granted `BETA_DEFENSE_CREDITS` free defenses once (default 3).
+ * While billing is off, the next defense after those are spent is a 402.
+ * The global budget can stop a sponsored defense sooner. Starting a defense
+ * refunds that account's earlier unfinished defense holds first, so only
+ * one defense holds a credit.
  *
  * #42 reads the cost-cap tier from `costTierForUser(userId)` or
  * `costTierForUserPlan(planId)`. `consumer` is $0.75 and `enterprise` is
@@ -253,7 +255,7 @@ export function betaBudgetCents(): number {
 }
 
 export function betaDefenseCents(): number {
-  return Math.round(envNonNegative("BETA_DEFENSE_EUR", 0.3) * 100);
+  return Math.round(envNonNegative("BETA_DEFENSE_EUR", 0.7) * 100);
 }
 
 function envNonNegative(name: string, fallback: number): number {
@@ -1033,22 +1035,88 @@ export async function linkChallengedDefense(input: {
 }
 
 /**
+ * Open defense holds for this account: not yet attached, or attached to a
+ * defend session that is still in progress. Grading and finished defenses
+ * keep their credit.
+ */
+async function releaseUnfinishedDefenseHolds(tx: Db, userId: string): Promise<void> {
+  const rows = await tx.all<{ idempotency_key: string; session_id: string | null }>(
+    `SELECT l.idempotency_key,
+            (
+              SELECT h.session_id FROM defense_holds h
+              JOIN sessions s ON s.id = h.session_id
+              WHERE h.hold_idempotency_key = l.idempotency_key
+                AND h.user_id = l.user_id
+                AND s.mode = 'defend'
+                AND s.status = 'in_progress'
+              LIMIT 1
+            ) AS session_id
+     FROM credit_ledger l
+     WHERE l.user_id = ?
+       AND l.reason = 'hold'
+       AND l.purpose = 'defense'
+       AND NOT EXISTS (
+         SELECT 1 FROM credit_ledger c
+         WHERE c.ref_type = 'hold' AND c.ref_id = l.id AND c.reason IN ('consume', 'refund')
+       )
+       AND (
+         NOT EXISTS (
+           SELECT 1 FROM defense_holds h
+           WHERE h.hold_idempotency_key = l.idempotency_key AND h.user_id = l.user_id
+         )
+         OR EXISTS (
+           SELECT 1 FROM defense_holds h
+           JOIN sessions s ON s.id = h.session_id
+           WHERE h.hold_idempotency_key = l.idempotency_key
+             AND h.user_id = l.user_id
+             AND s.mode = 'defend'
+             AND s.status = 'in_progress'
+         )
+       )`,
+    [userId],
+  );
+  for (const row of rows) {
+    await refundCredit({
+      userId,
+      entryIdempotencyKey: row.idempotency_key,
+      idempotencyKey: `refund:${row.idempotency_key}`,
+      db: tx,
+    });
+    if (!row.session_id) continue;
+    await tx.run(
+      `UPDATE sessions SET status = 'abandoned'
+       WHERE id = ? AND user_id = ? AND status = 'in_progress' AND mode = 'defend'`,
+      [row.session_id, userId],
+    );
+    await tx.run(`DELETE FROM defense_holds WHERE session_id = ? AND user_id = ?`, [row.session_id, userId]);
+  }
+}
+
+/**
  * Hold one defense credit. Applies the beta grant first, for whichever way
- * the user signed in. The grant is the whole free allowance. The global
- * budget can still refuse a sponsored defense before that allowance is gone.
+ * the user signed in. Earlier unfinished defense holds are refunded in this
+ * same transaction, so a retry, a reload, or a switch to the text
+ * accommodation does not keep a second credit. The grant is the whole free
+ * allowance. The global budget can still refuse a sponsored defense before
+ * that allowance is gone.
  */
 export async function beginDefenseCredit(
   userId: string,
 ): Promise<{ idempotencyKey: string; sponsored: boolean }> {
   await ensureBetaGrant(userId);
   const idempotencyKey = `defense-hold:${userId}:${newId("hold")}`;
-  const entry = await holdCredit({
-    userId,
-    kind: "defense",
-    amount: 1,
-    idempotencyKey,
-    refType: "defense_start",
-    refId: idempotencyKey,
+  const entry = await withTx(undefined, async (tx) => {
+    await lockWallet(tx, userId);
+    await releaseUnfinishedDefenseHolds(tx, userId);
+    return holdCredit({
+      userId,
+      kind: "defense",
+      amount: 1,
+      idempotencyKey,
+      refType: "defense_start",
+      refId: idempotencyKey,
+      db: tx,
+    });
   });
   return { idempotencyKey: entry.idempotencyKey, sponsored: entry.sponsored };
 }
