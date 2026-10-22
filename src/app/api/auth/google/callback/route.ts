@@ -43,7 +43,6 @@ export async function GET(req: Request) {
     });
     await track({
       name: "sign_in_completed",
-      userId: result.user.id,
       props: { method: "google" },
       headers: req.headers,
     });

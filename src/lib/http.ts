@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getUserFromRequest, isAdmin, type User } from "./auth";
+import { sha256Hex } from "./crypto";
 import { HttpError } from "./errors";
 import { ipRateKey, rateLimit } from "./ratelimit";
 
@@ -25,6 +26,14 @@ export function clientIp(req: Request): string {
 /** Rate-limit bucket for this request's address, or null when there is no usable salt. */
 export function ipLimitKey(scope: string, req: Request): string | null {
   return ipRateKey(scope, clientIp(req));
+}
+
+/**
+ * Digest for a rate-limit bucket. Same `sha256Hex` as `login:email:${sha256Hex(email)}`,
+ * so the `rate_limits` row stores a hash and not the address.
+ */
+export function hashedClientIp(req: Request): string {
+  return sha256Hex(clientIp(req));
 }
 
 /**

@@ -44,12 +44,11 @@ export function LandingBeacon() {
   return null;
 }
 
-/** Receipt share or copy click. No user id is sent. */
-export function beaconReceiptShared(receiptId: string, method: "share" | "copy") {
+/** Receipt share or copy click. The receipt id is not sent. */
+export function beaconReceiptShared(method: "share" | "copy") {
   if (browserOptOut()) return;
   sendBeacon({
     name: "receipt_shared",
-    subjectId: receiptId,
     props: { method },
   });
 }

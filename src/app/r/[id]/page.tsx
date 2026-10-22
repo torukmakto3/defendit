@@ -210,7 +210,7 @@ export default function ReceiptPage() {
                 .writeText(window.location.href)
                 .then(() => {
                   setCopied(true);
-                  beaconReceiptShared(p.id, "copy");
+                  beaconReceiptShared("copy");
                 })
                 .catch(() => {});
             }}
@@ -224,7 +224,7 @@ export default function ReceiptPage() {
               onClick={() => {
                 void navigator
                   .share({ title: "Defend It receipt", url: window.location.href })
-                  .then(() => beaconReceiptShared(p.id, "share"))
+                  .then(() => beaconReceiptShared("share"))
                   .catch(() => {});
               }}
             >

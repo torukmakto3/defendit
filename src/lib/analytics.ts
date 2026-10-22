@@ -51,36 +51,6 @@ const ONWARD_SOURCES = ["defender", "viewer"] as const;
 const SPONSORS = ["beta", "paid"] as const;
 
 const UTM_VALUE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
-const USER_ID_VALUE = /^usr_[a-z0-9]{8,32}$/;
-const SUBJECT_ID_VALUE = /^[A-Za-z0-9_-]{1,64}$/;
-
-/** Signed-in server events. Landing, sign-in start, and receipt share stay anonymous. */
-const EVENTS_WITH_USER = new Set<AnalyticsEventName>([
-  "sign_in_completed",
-  "defense_started",
-  "defense_completed",
-  "learn_opened",
-  "challenge_created",
-  "challenge_opened",
-  "challenge_accepted",
-  "challenge_declined",
-  "challenge_completed",
-  "challenge_shared_back",
-]);
-
-/** Opaque session or challenge id. Never an auth token, email, or slug-only secret. */
-const EVENTS_WITH_SUBJECT = new Set<AnalyticsEventName>([
-  "defense_started",
-  "defense_completed",
-  "learn_opened",
-  "receipt_shared",
-  "challenge_created",
-  "challenge_opened",
-  "challenge_accepted",
-  "challenge_declined",
-  "challenge_completed",
-  "challenge_shared_back",
-]);
 
 export function isAnalyticsEvent(name: string): name is AnalyticsEventName {
   return (ANALYTICS_EVENTS as readonly string[]).includes(name);
@@ -148,16 +118,6 @@ export function referrerDomain(value: string | null | undefined): string | null 
 function isIpHost(hostname: string): boolean {
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return true;
   return hostname.includes(":");
-}
-
-export function cleanUserId(value: string | null | undefined): string | null {
-  if (!value || !USER_ID_VALUE.test(value)) return null;
-  return value;
-}
-
-export function cleanSubjectId(value: string | null | undefined): string | null {
-  if (!value || !SUBJECT_ID_VALUE.test(value)) return null;
-  return value;
 }
 
 function oneOf(value: unknown, allowed: readonly string[]): string | null {
@@ -233,8 +193,6 @@ export function sanitizeProps(name: AnalyticsEventName, props: unknown): Record<
 
 export interface TrackInput {
   name: AnalyticsEventName;
-  userId?: string | null;
-  subjectId?: string | null;
   /** Full referrer URL. Only the domain is stored. */
   referrer?: string | null;
   props?: unknown;
@@ -246,8 +204,6 @@ export interface TrackInput {
 export interface AnalyticsRow {
   name: AnalyticsEventName;
   occurredAt: string;
-  userId: string | null;
-  subjectId: string | null;
   referrerDomain: string | null;
   props: Record<string, string>;
 }
@@ -262,8 +218,6 @@ export function prepareTrack(input: TrackInput): { ok: true; row: AnalyticsRow }
     row: {
       name: input.name,
       occurredAt: minuteStamp(input.now ?? new Date()),
-      userId: EVENTS_WITH_USER.has(input.name) ? cleanUserId(input.userId) : null,
-      subjectId: EVENTS_WITH_SUBJECT.has(input.name) ? cleanSubjectId(input.subjectId) : null,
       referrerDomain: referrerDomain(input.referrer),
       props: sanitizeProps(input.name, input.props),
     },
@@ -369,9 +323,8 @@ export function buildFunnel(input: {
 }
 
 /**
- * Where PR #44 should call `trackChallenge`. Do not import `src/lib/challenges.ts`
- * from main; that module is not here yet. Pass `challenges.id` (`chg_…`) as
- * `subjectId`, never the public slug, a handle, a source URL, or the subject text.
+ * Where `src/lib/challenges.ts` should call `trackChallenge`. Count the event
+ * only. Do not pass an account id, session id, receipt id, or challenge id.
  */
 export const CHALLENGE_TRACK_SITES = [
   {
@@ -380,8 +333,6 @@ export const CHALLENGE_TRACK_SITES = [
     symbol: "createChallenge",
     when:
       "After the insert transaction commits, beside recordEvent(..., \"created\"). Once per created challenge, not when create is rejected.",
-    subjectId: "challenges.id",
-    userId: "input.user.id",
     props:
       "kind \"self\" when the creator is challenging their own work, otherwise \"third_party\". onward \"defender\" for /c/new?onward=defender (the receipt pass-it-on link) and \"viewer\" for /c/new?onward=viewer (a shared card). sponsor \"beta\" or \"paid\". Omit onward when neither.",
   },
@@ -391,8 +342,6 @@ export const CHALLENGE_TRACK_SITES = [
     symbol: "getPublicChallenge",
     when:
       "When opts.recordView is true and the viewer is not the creator (user?.id !== row.creator_user_id). src/app/c/[slug]/page.tsx already passes recordView: true. Skip the creator's own loads so acceptance stays accepted ÷ defender opens.",
-    subjectId: "row.id",
-    userId: "user.id when signed in, otherwise omit",
     props: "none",
   },
   {
@@ -400,8 +349,6 @@ export const CHALLENGE_TRACK_SITES = [
     file: "src/lib/challenges.ts",
     symbol: "claimChallenge",
     when: "After the claim transaction commits, beside recordEvent(..., \"accepted\").",
-    subjectId: "row.id",
-    userId: "opts.user.id",
     props: "none",
   },
   {
@@ -410,8 +357,6 @@ export const CHALLENGE_TRACK_SITES = [
     symbol: "declineChallenge",
     when:
       "Only when declineChallenge returns { closed: true }. Do not track the hide path (closed: false); that leaves the challenge open and stays invisible.",
-    subjectId: "row.id",
-    userId: "user.id",
     props: "none",
   },
   {
@@ -420,8 +365,6 @@ export const CHALLENGE_TRACK_SITES = [
     symbol: "noteChallengeDefended",
     when:
       "When row.status was \"claimed\" and the defense is stored, beside recordEvent(..., \"defended\"). Skip the retry that finds status already \"defended\".",
-    subjectId: "row.id",
-    userId: "row.claimed_by_user_id",
     props: "tier is the challenge difficulty (standard, hard, or expert). Never the score or Strong / Defended / Still sharpening.",
   },
   {
@@ -430,8 +373,6 @@ export const CHALLENGE_TRACK_SITES = [
     symbol: "recordShareClick",
     when:
       "Only when the challenge status is \"defended\" (ShareBar on the receipt and PublicResult). Do not count ShareBar on an open /c/{slug} link. Map channel \"x\" to method \"share\" and \"copy\" to \"copy\".",
-    subjectId: "row.id",
-    userId: "user.id when signed in, otherwise omit",
     props: "method \"share\" or \"copy\"",
   },
 ] as const;

@@ -17,6 +17,7 @@ import {
 } from "../src/lib/analytics";
 import { funnelReport, track, trackChallenge } from "../src/lib/analytics-store";
 import { consumeMagicLink, requestMagicLink, type User } from "../src/lib/auth";
+import { sha256Hex } from "../src/lib/crypto";
 import { getDb } from "../src/lib/db";
 import {
   completeDefendSession,
@@ -27,7 +28,10 @@ import {
 } from "../src/lib/services";
 
 const memo = readFileSync(join(__dirname, "..", "fixtures", "sample-memo.md"));
-const USER = "usr_abcdefghij1234";
+const ACCOUNT_ID = "usr_abcdefghij1234";
+const SESSION_ID = "ses_abc123def456gh";
+const RECEIPT_ID = "rcpt_abcDEF1234567890abcd";
+const ID_LEAK = /usr_|ses_|rcpt_/;
 
 beforeAll(() => {
   const dir = mkdtempSync(join(tmpdir(), "defendit-analytics-"));
@@ -48,8 +52,6 @@ beforeAll(() => {
 interface StoredEvent {
   name: string;
   occurred_at: string;
-  user_id: string | null;
-  subject_id: string | null;
   referrer_domain: string | null;
   props_json: string;
 }
@@ -57,8 +59,17 @@ interface StoredEvent {
 async function events(name: string): Promise<StoredEvent[]> {
   const db = await getDb();
   return db.all<StoredEvent>(
-    `SELECT name, occurred_at, user_id, subject_id, referrer_domain, props_json FROM analytics_events WHERE name = ?`,
+    `SELECT name, occurred_at, referrer_domain, props_json FROM analytics_events WHERE name = ?`,
     [name],
+  );
+}
+
+async function seedBucket(key: string, count: number) {
+  const db = await getDb();
+  await db.run(
+    `INSERT INTO rate_limits (bucket_key, window_start, count) VALUES (?, ?, ?)
+     ON CONFLICT (bucket_key) DO UPDATE SET window_start = excluded.window_start, count = excluded.count`,
+    [key, new Date().toISOString(), count],
   );
 }
 
@@ -80,8 +91,6 @@ describe("prepareTrack privacy", () => {
     const prepared = prepareTrack({
       name: "landing_view",
       now: new Date("2026-10-22T14:44:59.800Z"),
-      userId: USER,
-      subjectId: "ses_shouldnotstore",
       referrer: "https://News.YCombinator.com/item?id=1&ref=secret",
       props: {
         utm_source: "beta",
@@ -96,8 +105,8 @@ describe("prepareTrack privacy", () => {
     expect(prepared.ok).toBe(true);
     if (!prepared.ok) return;
     expect(prepared.row.occurredAt).toBe("2026-10-22T14:44:00.000Z");
-    expect(prepared.row.userId).toBeNull();
-    expect(prepared.row.subjectId).toBeNull();
+    expect(prepared.row).not.toHaveProperty("userId");
+    expect(prepared.row).not.toHaveProperty("subjectId");
     expect(prepared.row.referrerDomain).toBe("news.ycombinator.com");
     expect(prepared.row.props).toEqual({ utm_source: "beta", utm_campaign: "week1" });
   });
@@ -116,35 +125,23 @@ describe("prepareTrack privacy", () => {
     expect(prepared.row.props).toEqual({});
   });
 
-  it("keeps a signed-in user id and the difficulty tier, and drops the score", () => {
+  it("keeps the difficulty tier and drops the score", () => {
     const prepared = prepareTrack({
       name: "defense_completed",
-      userId: USER,
-      subjectId: "ses_abc123def456gh",
-      props: { tier: "hard", score: 84, outcome: "Defended", tierLabel: "Strong" },
+      props: { tier: "hard", score: 84, outcome: "Defended", tierLabel: "Strong", userId: ACCOUNT_ID },
     });
     expect(prepared.ok).toBe(true);
     if (!prepared.ok) return;
-    expect(prepared.row.userId).toBe(USER);
-    expect(prepared.row.subjectId).toBe("ses_abc123def456gh");
+    expect(prepared.row).not.toHaveProperty("userId");
+    expect(prepared.row).not.toHaveProperty("subjectId");
     expect(prepared.row.props).toEqual({ tier: "hard" });
   });
 
-  it("rejects a user id that is not an account id, including on sign-in start", () => {
-    const completed = prepareTrack({
-      name: "sign_in_completed",
-      userId: "founder@fund.example",
-      props: { method: "email" },
-    });
+  it("drops account-shaped props on sign-in", () => {
     const started = prepareTrack({
       name: "sign_in_started",
-      userId: USER,
-      subjectId: "di_session_secret",
-      props: { method: "google" },
+      props: { method: "google", userId: ACCOUNT_ID, subjectId: SESSION_ID, email: "founder@fund.example" },
     });
-    expect(completed.ok && completed.row.userId).toBeNull();
-    expect(started.ok && started.row.userId).toBeNull();
-    expect(started.ok && started.row.subjectId).toBeNull();
     expect(started.ok && started.row.props).toEqual({ method: "google" });
   });
 
@@ -159,12 +156,10 @@ describe("prepareTrack privacy", () => {
 
   it("holds challenge events until CHALLENGES_ENABLED is on", () => {
     delete process.env.CHALLENGES_ENABLED;
-    expect(prepareTrack({ name: "challenge_created", subjectId: "chg_abc123def456gh" }).ok).toBe(false);
+    expect(prepareTrack({ name: "challenge_created" }).ok).toBe(false);
     process.env.CHALLENGES_ENABLED = "1";
     const prepared = prepareTrack({
       name: "challenge_created",
-      userId: USER,
-      subjectId: "chg_abc123def456gh",
       props: { kind: "self", onward: "defender", sponsor: "beta", subject: "defend my README", sourceUrl: "https://x.com/a/status/1" },
     });
     delete process.env.CHALLENGES_ENABLED;
@@ -180,15 +175,12 @@ describe("track() and retention", () => {
     await track({
       name: "landing_view",
       now,
-      userId: USER,
       referrer: "https://t.co/abc",
       props: { utm_source: "x", utm_campaign: "loop" },
     });
     const rows = await events("landing_view");
     const row = rows.find((item) => item.occurred_at === minuteStamp(now));
     expect(row).toMatchObject({
-      user_id: null,
-      subject_id: null,
       referrer_domain: "t.co",
       props_json: JSON.stringify({ utm_source: "x", utm_campaign: "loop" }),
     });
@@ -202,7 +194,7 @@ describe("track() and retention", () => {
       (
         await beacon(
           beaconRequest(
-            { name: "landing_view", userId: USER, props: { email: "a@b.co" } },
+            { name: "landing_view", props: { email: "a@b.co" } },
             { origin: "https://evil.example", host: "localhost:3000" },
           ),
         )
@@ -211,34 +203,36 @@ describe("track() and retention", () => {
     expect((await events("landing_view")).length).toBe(before);
   });
 
-  it("stores a receipt share from the beacon without a user id", async () => {
+  it("stores a receipt share from the beacon without an id", async () => {
     const res = await beacon(
-      beaconRequest({
-        name: "receipt_shared",
-        subjectId: "rcpt_abcDEF1234567890abcd",
-        userId: USER,
-        props: { method: "copy", score: 90 },
-      }),
+      beaconRequest(
+        {
+          name: "receipt_shared",
+          subjectId: RECEIPT_ID,
+          userId: ACCOUNT_ID,
+          props: { method: "copy", score: 90 },
+        },
+        { "x-forwarded-for": "203.0.113.21" },
+      ),
     );
     expect(res.status).toBe(204);
     const rows = await events("receipt_shared");
     expect(rows.at(-1)).toMatchObject({
-      user_id: null,
-      subject_id: "rcpt_abcDEF1234567890abcd",
       props_json: JSON.stringify({ method: "copy" }),
     });
+    expect(JSON.stringify(rows.at(-1))).not.toMatch(ID_LEAK);
   });
 
   it("no-ops challenge events unless challenges are enabled", async () => {
     delete process.env.CHALLENGES_ENABLED;
-    await trackChallenge("challenge_opened", { subjectId: "chg_abc123def456gh", userId: USER });
+    await trackChallenge("challenge_opened");
     expect(await events("challenge_opened")).toHaveLength(0);
     process.env.CHALLENGES_ENABLED = "true";
-    await trackChallenge("challenge_opened", { subjectId: "chg_abc123def456gh", userId: USER });
+    await trackChallenge("challenge_opened");
     delete process.env.CHALLENGES_ENABLED;
     const rows = await events("challenge_opened");
     expect(rows).toHaveLength(1);
-    expect(rows[0].user_id).toBe(USER);
+    expect(JSON.stringify(rows[0])).not.toMatch(ID_LEAK);
   });
 
   it("does not write when ANALYTICS_ENABLED=false", async () => {
@@ -309,11 +303,10 @@ describe("track() and retention", () => {
     const completed = await events("sign_in_completed");
     expect(started).toHaveLength(1);
     expect(JSON.parse(started[0].props_json)).toEqual({ method: "email" });
-    expect(started[0].user_id).toBeNull();
     expect(completed).toHaveLength(1);
     expect(JSON.parse(completed[0].props_json)).toEqual({ method: "email" });
-    expect(completed[0].user_id).toMatch(/^usr_[a-z0-9]+$/);
     expect(JSON.stringify(completed[0])).not.toContain(email);
+    expect(JSON.stringify(completed[0])).not.toMatch(ID_LEAK);
   });
 });
 
@@ -372,24 +365,18 @@ describe("funnel query", () => {
     await track({
       name: "challenge_created",
       now,
-      userId: USER,
-      subjectId: "chg_recent00000001",
       props: { kind: "third_party", onward: "viewer", sponsor: "beta" },
     });
     await track({
       name: "challenge_created",
       now: new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000),
-      userId: USER,
-      subjectId: "chg_old00000000001",
       props: { kind: "self", onward: "defender" },
     });
-    await track({ name: "challenge_opened", now, subjectId: "chg_recent00000001" });
-    await track({ name: "challenge_accepted", now, userId: USER, subjectId: "chg_recent00000001" });
+    await track({ name: "challenge_opened", now });
+    await track({ name: "challenge_accepted", now });
     await track({
       name: "challenge_completed",
       now,
-      userId: USER,
-      subjectId: "chg_recent00000001",
       props: { tier: "standard", score: 91 },
     });
     delete process.env.CHALLENGES_ENABLED;
@@ -451,10 +438,11 @@ describe("defense wiring", () => {
     const startedRows = await events("defense_started");
     expect(startedRows).toHaveLength(1);
     expect(startedRows[0]).toMatchObject({
-      user_id: user.id,
-      subject_id: session.sessionId,
       props_json: JSON.stringify({ tier: "standard" }),
     });
+    expect(JSON.stringify(startedRows[0])).not.toMatch(ID_LEAK);
+    expect(JSON.stringify(startedRows[0])).not.toContain(user.id);
+    expect(JSON.stringify(startedRows[0])).not.toContain(session.sessionId);
 
     await answerAll(session, user);
     const first = await completeDefendSession({ sessionId: session.sessionId, user });
@@ -476,11 +464,139 @@ describe("defense wiring", () => {
 });
 
 describe("analytics_events columns", () => {
-  it("has no IP, user agent, cookie, or document column", async () => {
+  it("has no IP, user agent, cookie, document, or id column", async () => {
     const db = await getDb();
     const cols = await db.all<{ name: string }>(`PRAGMA table_info(analytics_events)`);
     expect(cols.map((col) => col.name).sort()).toEqual(
-      ["id", "name", "occurred_at", "props_json", "referrer_domain", "subject_id", "user_id"].sort(),
+      ["id", "name", "occurred_at", "props_json", "referrer_domain"].sort(),
     );
+  });
+
+  it("stores no usr_, ses_, or rcpt_ id", async () => {
+    const db = await getDb();
+    await db.run(`DELETE FROM analytics_events`);
+    process.env.CHALLENGES_ENABLED = "1";
+    const smuggled = {
+      name: "defense_completed" as const,
+      userId: ACCOUNT_ID,
+      subjectId: SESSION_ID,
+      props: {
+        tier: "hard",
+        note: `${ACCOUNT_ID} ${SESSION_ID} ${RECEIPT_ID}`,
+        receiptId: RECEIPT_ID,
+      },
+    };
+    await track(smuggled);
+    await track({
+      name: "sign_in_completed",
+      props: { method: "email", userId: ACCOUNT_ID, sessionId: SESSION_ID },
+    });
+    delete process.env.CHALLENGES_ENABLED;
+    const res = await beacon(
+      beaconRequest(
+        {
+          name: "receipt_shared",
+          subjectId: RECEIPT_ID,
+          userId: ACCOUNT_ID,
+          props: { method: "copy", receiptId: RECEIPT_ID, sessionId: SESSION_ID },
+        },
+        { "x-forwarded-for": "203.0.113.20" },
+      ),
+    );
+    expect(res.status).toBe(204);
+    const rows = await db.all<Record<string, unknown>>(`SELECT * FROM analytics_events`);
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    for (const row of rows) {
+      expect(row.name).not.toMatch(ID_LEAK);
+      expect(String(row.occurred_at)).not.toMatch(ID_LEAK);
+      expect(String(row.referrer_domain ?? "")).not.toMatch(ID_LEAK);
+      expect(String(row.props_json)).not.toMatch(ID_LEAK);
+      expect(row).not.toHaveProperty("user_id");
+      expect(row).not.toHaveProperty("subject_id");
+    }
+  });
+});
+
+describe("beacon rate limits", () => {
+  it("keys the per-client bucket on a hash of the IP", async () => {
+    const ip = "203.0.113.10";
+    const before = (await events("receipt_shared")).length;
+    const res = await beacon(
+      beaconRequest({ name: "receipt_shared", props: { method: "share" } }, { "x-forwarded-for": ip }),
+    );
+    expect(res.status).toBe(204);
+    expect((await events("receipt_shared")).length).toBe(before + 1);
+    const db = await getDb();
+    const hash = sha256Hex(ip);
+    const row = await db.get<{ bucket_key: string }>(
+      `SELECT bucket_key FROM rate_limits WHERE bucket_key = ?`,
+      [`analytics:ip:${hash}:m`],
+    );
+    expect(row?.bucket_key).toBe(`analytics:ip:${hash}:m`);
+    const leaked = await db.get<{ bucket_key: string }>(
+      `SELECT bucket_key FROM rate_limits WHERE bucket_key LIKE ?`,
+      [`%${ip}%`],
+    );
+    expect(leaked).toBeUndefined();
+  });
+
+  it("drops the 31st beacon from the same client in a minute", async () => {
+    const ip = "203.0.113.11";
+    await seedBucket(`analytics:ip:${sha256Hex(ip)}:m`, 30);
+    const before = (await events("receipt_shared")).length;
+    const res = await beacon(
+      beaconRequest({ name: "receipt_shared", props: { method: "copy" } }, { "x-forwarded-for": ip }),
+    );
+    expect(res.status).toBe(204);
+    expect((await events("receipt_shared")).length).toBe(before);
+  });
+
+  it("drops a beacon after 300 from the same client in a day", async () => {
+    const ip = "203.0.113.12";
+    await seedBucket(`analytics:ip:${sha256Hex(ip)}:d`, 300);
+    const before = (await events("receipt_shared")).length;
+    await beacon(
+      beaconRequest({ name: "receipt_shared", props: { method: "copy" } }, { "x-forwarded-for": ip }),
+    );
+    expect((await events("receipt_shared")).length).toBe(before);
+  });
+
+  it("stores one landing_view per hashed client within 60s and still stores repeat shares", async () => {
+    const landingIp = "203.0.113.14";
+    const beforeLanding = (await events("landing_view")).length;
+    await beacon(
+      beaconRequest({ name: "landing_view", props: { utm_source: "x" } }, { "x-forwarded-for": landingIp }),
+    );
+    await beacon(
+      beaconRequest({ name: "landing_view", props: { utm_source: "x" } }, { "x-forwarded-for": landingIp }),
+    );
+    expect((await events("landing_view")).length).toBe(beforeLanding + 1);
+
+    const shareIp = "203.0.113.15";
+    const beforeShare = (await events("receipt_shared")).length;
+    await beacon(
+      beaconRequest({ name: "receipt_shared", props: { method: "copy" } }, { "x-forwarded-for": shareIp }),
+    );
+    await beacon(
+      beaconRequest({ name: "receipt_shared", props: { method: "share" } }, { "x-forwarded-for": shareIp }),
+    );
+    expect((await events("receipt_shared")).length).toBe(beforeShare + 2);
+  });
+
+  it("drops a beacon once the global minute cap is full", async () => {
+    const db = await getDb();
+    await seedBucket("analytics:beacon", 120);
+    try {
+      const before = (await events("receipt_shared")).length;
+      await beacon(
+        beaconRequest(
+          { name: "receipt_shared", props: { method: "copy" } },
+          { "x-forwarded-for": "203.0.113.13" },
+        ),
+      );
+      expect((await events("receipt_shared")).length).toBe(before);
+    } finally {
+      await db.run(`DELETE FROM rate_limits WHERE bucket_key = ?`, ["analytics:beacon"]);
+    }
   });
 });

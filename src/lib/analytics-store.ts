@@ -24,14 +24,12 @@ export async function track(input: TrackInput): Promise<void> {
     const db = await getDb();
     await db.run(
       `INSERT INTO analytics_events
-        (id, name, occurred_at, user_id, subject_id, referrer_domain, props_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        (id, name, occurred_at, referrer_domain, props_json)
+       VALUES (?, ?, ?, ?, ?)`,
       [
         newId("aev"),
         prepared.row.name,
         prepared.row.occurredAt,
-        prepared.row.userId,
-        prepared.row.subjectId,
         prepared.row.referrerDomain,
         JSON.stringify(prepared.row.props),
       ],

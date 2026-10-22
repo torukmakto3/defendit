@@ -19,7 +19,6 @@ export async function POST(req: Request) {
     if (!result) return jsonError(400, "This sign-in link is invalid, used, or expired.");
     await track({
       name: "sign_in_completed",
-      userId: result.user.id,
       props: { method: "email" },
       headers: req.headers,
     });

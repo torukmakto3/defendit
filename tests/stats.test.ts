@@ -46,9 +46,7 @@ CREATE TABLE sessions (
 CREATE TABLE analytics_events (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  occurred_at TEXT NOT NULL,
-  user_id TEXT,
-  subject_id TEXT
+  occurred_at TEXT NOT NULL
 );
 CREATE TABLE credit_budget (
   id TEXT PRIMARY KEY,
@@ -132,27 +130,9 @@ function seed(db: Database.Database, withChallenges: boolean) {
   insertSession.run("ses_open", "defend", "in_progress", recent, null, 9, 9);
   insertSession.run("ses_learn", "learn", "completed", recent, recent, 1, 0);
 
-  db.prepare(`INSERT INTO analytics_events (id, name, occurred_at, user_id, subject_id) VALUES (?, ?, ?, ?, ?)`).run(
-    "aev_1",
-    "learn_opened",
-    recent,
-    SECRET_ID,
-    "ses_learn",
-  );
-  db.prepare(`INSERT INTO analytics_events (id, name, occurred_at, user_id, subject_id) VALUES (?, ?, ?, ?, ?)`).run(
-    "aev_2",
-    "learn_opened",
-    recent,
-    SECRET_ID,
-    "ses_learn",
-  );
-  db.prepare(`INSERT INTO analytics_events (id, name, occurred_at, user_id, subject_id) VALUES (?, ?, ?, ?, ?)`).run(
-    "aev_old",
-    "learn_opened",
-    old,
-    SECRET_ID,
-    "ses_old",
-  );
+  db.prepare(`INSERT INTO analytics_events (id, name, occurred_at) VALUES (?, ?, ?)`).run("aev_1", "learn_opened", recent);
+  db.prepare(`INSERT INTO analytics_events (id, name, occurred_at) VALUES (?, ?, ?)`).run("aev_2", "learn_opened", recent);
+  db.prepare(`INSERT INTO analytics_events (id, name, occurred_at) VALUES (?, ?, ?)`).run("aev_old", "learn_opened", old);
 
   db.prepare(`INSERT INTO credit_budget (id, spent_cents) VALUES ('beta', 7000)`).run();
   db.prepare(`INSERT INTO credit_ledger (id, budget_cents, created_at, user_id) VALUES (?, ?, ?, ?)`).run(

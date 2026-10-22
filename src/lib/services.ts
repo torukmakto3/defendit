@@ -630,16 +630,12 @@ export async function startSession(opts: {
     await noteChallengeSession(request.id, sessionId);
     await track({
       name: "defense_started",
-      userId: opts.user.id,
-      subjectId: sessionId,
       props: { tier: request.difficulty },
       headers: opts.analyticsHeaders,
     });
   } else {
     await track({
       name: "learn_opened",
-      userId: opts.user.id,
-      subjectId: sessionId,
       headers: opts.analyticsHeaders,
     });
   }
@@ -1311,8 +1307,6 @@ export async function completeDefendSession(opts: {
   await finishDefenseCredit(opts.user.id, session.id);
   await track({
     name: "defense_completed",
-    userId: opts.user.id,
-    subjectId: session.id,
     props: { tier: request.difficulty },
     headers: opts.analyticsHeaders,
   });
