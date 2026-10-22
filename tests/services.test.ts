@@ -181,6 +181,9 @@ describe("creator flow: process and purge", () => {
 
     const dash = await listDashboard(user);
     expect(dash[0].receiptId).toBe(p.id);
+    expect(dash[0].role).toBe("creator");
+    expect(dash[0].status).toBe("defended");
+    expect(dash[0].workspaceHref).toBe(`/d/${ingest.token}/learn`);
   });
 
   it("leaves the name off the receipt unless the creator opts in", async () => {
@@ -237,6 +240,12 @@ describe("access control", () => {
       difficulty: "standard",
       title: "Q3 memo",
     });
+    const pending = await listDashboard(receiver);
+    expect(pending[0]).toMatchObject({
+      role: "receiver",
+      status: "pending",
+      workspaceHref: `/d/${req.token}`,
+    });
 
     await ingestDeliverable({ token: req.token, user: creator, fileName: "q3.md", buffer: memo });
     await expect(
@@ -247,6 +256,12 @@ describe("access control", () => {
     expect(receiverView.isOwner).toBe(true);
     expect(receiverView.deliverable?.sha256).toBe(sha256Hex(memo));
     expect((await listDashboard(receiver))[0].role).toBe("receiver");
+    expect((await listDashboard(receiver))[0].workspaceHref).toBe(`/d/${req.token}`);
+    expect((await listDashboard(creator))[0]).toMatchObject({
+      role: "creator",
+      status: "uploaded",
+      workspaceHref: `/d/${req.token}/learn`,
+    });
   });
 });
 

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { SignInCard, useMe } from "@/components/auth";
 import { Companion } from "@/components/companion/Companion";
+import { studyFileMissingMessage } from "@/lib/study-file";
 
 interface Project {
   token: string;
@@ -83,10 +84,18 @@ export default function LearnHubPage() {
                 <div><small>Due now</small><b>{p.due}</b></div>
               </div>
               {p.purged && <p className="text-sm text-[var(--ink-2)]">This upload expired and its content was deleted.</p>}
+              {!p.documentAvailable && p.cards === 0 && (
+                <p className="text-sm text-[var(--ink-2)]">{studyFileMissingMessage(p.status)}</p>
+              )}
               <div className="flex flex-wrap gap-2">
-                {!p.purged && (
+                {(p.documentAvailable || p.cards > 0) && !p.purged && (
                   <Link href={`/d/${p.token}/learn`} className="btn btn-primary">
                     Flashcards{p.due > 0 ? ` · ${p.due} due` : ""}
+                  </Link>
+                )}
+                {!p.documentAvailable && (p.cards === 0 || p.purged) && (
+                  <Link href={`/d/${p.token}/learn`} className="btn btn-primary">
+                    Upload to study
                   </Link>
                 )}
                 {p.documentAvailable && (

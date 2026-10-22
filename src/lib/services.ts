@@ -1,6 +1,7 @@
 import type { User } from "./auth";
 import { extractClaims } from "./claims";
 import { getPublicKeyHex, sha256Hex } from "./crypto";
+import { dashboardWorkspaceHref } from "./dashboard-links";
 import { getDb, type Db } from "./db";
 import { aggregateScore, claimScores, gradeSession, scoreDefense, shouldFlagForHuman } from "./grading";
 import { readGradingProgress, type GradingProgress } from "./grading-progress";
@@ -29,7 +30,9 @@ import { decryptField, decryptJson, encryptField, encryptJson } from "./vault";
  * Data lifecycle ("process and purge"):
  * - Raw upload bytes are parsed in memory and never stored; only the SHA-256 is kept.
  * - Extracted document text is encrypted and deleted when the defense completes,
- *   or after DOCUMENT_TTL_HOURS for Learn-only use.
+ *   or after DOCUMENT_TTL_HOURS for Learn-only use. A flashcard deck is cached
+ *   first, encrypted, and kept for the deliverable's retention window so Learn
+ *   can continue. The raw text is not kept longer than that.
  * - Claims, transcripts, grades and the file name are encrypted and deleted
  *   after RETENTION_DAYS. Receipts (hash + score, no content) are kept.
  */
@@ -342,6 +345,7 @@ export async function getRequestView(token: string, user: User | null) {
       byteLength: number;
       claimCount: number;
       documentAvailable: boolean;
+      studyDeck: boolean;
       purged: boolean;
     },
   };
@@ -350,12 +354,22 @@ export async function getRequestView(token: string, user: User | null) {
     if (d) {
       const fileName = liveFileName(d);
       const purged = !!d.purged_at || isPast(d.purge_after);
+      let studyDeck = false;
+      if (isCreator && user) {
+        const db = await getDb();
+        const deck = await db.get<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM flashcards WHERE deliverable_id = ? AND user_id = ? AND purge_after >= ?`,
+          [d.id, user.id, new Date().toISOString()],
+        );
+        studyDeck = Number(deck?.n) > 0;
+      }
       view.deliverable = {
         fileName,
         sha256: d.sha256,
         byteLength: d.byte_length,
         claimCount: d.claim_count,
         documentAvailable: !purged && !!d.text_enc && !isPast(d.text_purge_after),
+        studyDeck,
         purged,
       };
       if (request.kind === "creator") view.title = displayTitle(fileName);
@@ -947,6 +961,7 @@ export async function completeDefendSession(opts: {
       pasteEvents: opts.pasteEvents,
       focusBlurEvents: opts.focusBlurEvents,
     });
+    await rememberStudyDeck(deliverable.id);
     await writeGradingProgress(session.id, { done: grades.length, total: grades.length, stage: "signing" });
     const signedAt = Date.now();
     signed = buildSignedReceipt({
@@ -1003,6 +1018,7 @@ export async function completeDefendSession(opts: {
         [signed.payload.id, session.id, request.id, JSON.stringify(signed), signed.signature, signed.publicKey, nowIso],
       );
       // The defense is done: the document body is no longer needed.
+      // The Learn deck was cached above, while this text was still readable.
       await tx.run(`UPDATE deliverables SET text_enc = NULL WHERE id = ?`, [deliverable.id]);
     });
   } catch (e) {
@@ -1109,6 +1125,11 @@ export async function listDashboard(user: User) {
       receiptId: r.receipt_id,
       score: receipt?.payload.score ?? null,
       outcome: receipt ? receipt.payload.outcome : null,
+      workspaceHref: dashboardWorkspaceHref({
+        token: r.token,
+        role: isCreator ? "creator" : "receiver",
+        status: r.status,
+      }),
     };
   });
 }
@@ -1335,10 +1356,34 @@ export async function listProjects(user: User) {
   });
 }
 
+/**
+ * flashcards.ts reads deliverables through this module. A static import would
+ * cycle on load, so the deck cache is imported at the moment text is deleted.
+ */
+async function rememberStudyDeck(deliverableId: string): Promise<void> {
+  const { cacheStudyDeckBeforeTextDeletion } = await import("./flashcards");
+  try {
+    await cacheStudyDeckBeforeTextDeletion(deliverableId);
+  } catch (e) {
+    console.warn(
+      "[flashcards] deck was not cached before document text was deleted:",
+      e instanceof Error ? e.message : e,
+    );
+  }
+}
+
 /** Delete expired content. Safe to run often: daily cron plus an hourly in-process backstop. */
 export async function purgeExpired() {
   const db = await getDb();
   const nowIso = new Date().toISOString();
+  // Full retention (purge_after) deletes the deck in this same run, so only
+  // cache when the text timer is up and the deliverable itself is still kept.
+  const expiring = await db.all<{ id: string }>(
+    `SELECT id FROM deliverables
+     WHERE text_enc IS NOT NULL AND text_purge_after < ? AND purge_after >= ?`,
+    [nowIso, nowIso],
+  );
+  for (const row of expiring) await rememberStudyDeck(row.id);
   const text = await db.run(
     `UPDATE deliverables SET text_enc = NULL WHERE text_enc IS NOT NULL AND text_purge_after < ?`,
     [nowIso],
