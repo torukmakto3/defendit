@@ -50,13 +50,16 @@ describe("brand mark", () => {
     expect(layout).not.toMatch(/rev\s*b/i);
   });
 
-  it("ships a D monogram from the day ink and blueprint tokens", () => {
+  it("ships a path D in the day card colour on an ink tile", () => {
     const ink = dayToken("ink");
-    const blueprint = dayToken("blueprint");
+    // Pressed theme toggle: light text on ink is --card, not blueprint.
+    const onInk = dayToken("card");
     const svg = read("src/app/icon.svg").toString("utf8");
     expect(svg).toContain(`fill="${ink}"`);
-    expect(svg).toContain(`fill="${blueprint}"`);
-    expect(svg).toContain(">D<");
+    expect(svg).toContain(`fill="${onInk}"`);
+    expect(svg).not.toContain(`fill="${dayToken("blueprint")}"`);
+    expect(svg).toContain("<path");
+    expect(svg).not.toContain("<text");
     expect(svg).not.toMatch(/set-square|M21 43/i);
 
     const frames = icoFrames(read("src/app/favicon.ico"));

@@ -2,7 +2,8 @@
  * Rasterize `src/app/icon.svg` into the Next.js app icons.
  *
  * The SVG is the only artwork. Day tokens live in that file (`--ink` and
- * `--blueprint` from `src/app/globals.css`). Replace the SVG, then run:
+ * `--card`, the light text colour on ink, from `src/app/globals.css`).
+ * Replace the SVG, then run:
  *
  *   npm run brand-icon
  *
