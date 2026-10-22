@@ -1,7 +1,7 @@
 import { createHmac } from "crypto";
 import { NextResponse } from "next/server";
 import { readRequestCookie, type User } from "./auth";
-import { betaBudgetCanAfford, betaDefenseCents } from "./credits";
+import { betaDefenseCents, demoBudgetCanAfford } from "./credits";
 import { sha256Hex } from "./crypto";
 import { getDb } from "./db";
 import {
@@ -21,8 +21,9 @@ import { isDeployed, keysRequired, load32ByteSecret } from "./secrets";
 
 /**
  * Hash of the client address, keyed with a server-side salt. The raw address
- * is not stored. The rate-limit row that holds the hash is deleted when its
- * window ends.
+ * is not stored. One function so a shared HMAC helper (IP_HASH_SALT) can
+ * replace this body later. The rate-limit row that holds the hash is deleted
+ * when its window ends, and that cleanup only removes demo-prefixed keys.
  */
 export function hashDemoIp(ip: string): string {
   const salt = load32ByteSecret("DEMO_IP_SALT", "demo-ip-salt.json");
@@ -70,12 +71,12 @@ export async function admitDemo(ip: string): Promise<DemoAdmission> {
     console.error(`[demo] ${saltProblem}`);
     return { ok: false, status: 503, message: DEMO_COPY.unavailable };
   }
-  if (!(await betaBudgetCanAfford(betaDefenseCents()))) {
+  if (!(await demoBudgetCanAfford(betaDefenseCents()))) {
     return { ok: false, status: 503, message: DEMO_COPY.budget };
   }
   const db = await getDb();
   await db.run(
-    `DELETE FROM rate_limits WHERE bucket_key LIKE 'demo:ip:%' AND window_start < ?`,
+    `DELETE FROM rate_limits WHERE bucket_key LIKE 'demo:%' AND window_start < ?`,
     [new Date(Date.now() - DEMO_WINDOW_SEC * 1000).toISOString()],
   );
   const ipHit = await rateLimit(`demo:ip:${hashDemoIp(ip)}`, demoPerIpPerDay(), DEMO_WINDOW_SEC);
@@ -113,6 +114,7 @@ export async function resolveDefenseStart(req: Request, token: string): Promise<
   }
   const request = await getRequestByToken(token);
   if (request && isDemoKind(request.kind)) {
+    if (!demoEnabled()) return { response: jsonError(403, DEMO_COPY.disabled) };
     const user = await demoUserForRequest(req, request.id);
     if (!user) return { response: jsonError(401, DEMO_COPY.openFromHome) };
     return { user, demo: true };
@@ -135,6 +137,7 @@ export async function resolveDefenseSession(req: Request, sessionId: string): Pr
     [sessionId],
   );
   if (row && isDemoKind(row.kind)) {
+    if (!demoEnabled()) return { response: jsonError(403, DEMO_COPY.disabled) };
     const user = await demoUserForRequest(req, row.request_id);
     if (!user || user.id !== row.user_id) return { response: jsonError(404, "Defend session not found") };
     return { user, demo: true };

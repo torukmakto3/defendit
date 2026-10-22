@@ -14,15 +14,15 @@ import { POST as complete } from "../src/app/api/sessions/defend/complete/route"
 import { POST as startSessionRoute } from "../src/app/api/sessions/start/route";
 import { POST as upload } from "../src/app/api/upload/route";
 import { consumeMagicLink, requestMagicLink } from "../src/lib/auth";
-import { betaDefenseCents } from "../src/lib/credits";
+import { beginDefenseCredit, betaDefenseCents } from "../src/lib/credits";
 import { getDb } from "../src/lib/db";
 import { hashDemoIp } from "../src/lib/demo";
 import { resultCardCopy } from "../src/lib/share-card";
 import { DEMO_SAMPLE_TEXT, demoSampleBundle } from "../src/lib/demo-bundle";
-import { DEMO_COPY, demoDailyCap, demoEnabled, demoPerIpPerDay } from "../src/lib/demo-policy";
+import { DEMO_COPY, demoBudgetEur, demoDailyCap, demoEnabled, demoPerIpPerDay } from "../src/lib/demo-policy";
 import { buildInterviewPlan } from "../src/lib/probes";
 import { verifyReceipt } from "../src/lib/receipt";
-import { getReceipt, listAdminSessions, listDashboard, listProjects } from "../src/lib/services";
+import { getReceipt, listAdminSessions, listDashboard, listProjects, purgeExpired } from "../src/lib/services";
 import { budgetUsdForTier } from "../src/lib/cost";
 import type { Claim } from "../src/lib/types";
 
@@ -38,6 +38,7 @@ beforeAll(() => {
   process.env.DEMO_IP_SALT = "ab".repeat(32);
   process.env.DEMO_PER_IP_PER_DAY = "5";
   process.env.DEMO_DAILY_CAP = "50";
+  process.env.DEMO_BUDGET_EUR = "100";
   process.env.BETA_BUDGET_EUR = "150";
   process.env.DEMO_ENABLED = "1";
   delete process.env.DATABASE_URL;
@@ -68,16 +69,19 @@ async function openDemo(ip: string, sample?: string) {
 }
 
 describe("sample demo policy", () => {
-  it("defaults the kill switch, the per-IP limit, and the daily cap", () => {
+  it("defaults the kill switch, the per-IP limit, the daily cap, and the sample budget", () => {
     const enabled = process.env.DEMO_ENABLED;
     const perIp = process.env.DEMO_PER_IP_PER_DAY;
     const cap = process.env.DEMO_DAILY_CAP;
+    const budget = process.env.DEMO_BUDGET_EUR;
     delete process.env.DEMO_ENABLED;
     delete process.env.DEMO_PER_IP_PER_DAY;
     delete process.env.DEMO_DAILY_CAP;
+    delete process.env.DEMO_BUDGET_EUR;
     expect(demoEnabled()).toBe(false);
     expect(demoPerIpPerDay()).toBe(3);
-    expect(demoDailyCap()).toBe(200);
+    expect(demoDailyCap()).toBe(20);
+    expect(demoBudgetEur()).toBe(20);
     process.env.DEMO_ENABLED = "1";
     expect(demoEnabled()).toBe(true);
     process.env.DEMO_ENABLED = "true";
@@ -92,6 +96,8 @@ describe("sample demo policy", () => {
     else process.env.DEMO_ENABLED = enabled;
     process.env.DEMO_PER_IP_PER_DAY = perIp;
     process.env.DEMO_DAILY_CAP = cap;
+    if (budget === undefined) delete process.env.DEMO_BUDGET_EUR;
+    else process.env.DEMO_BUDGET_EUR = budget;
   });
 
   it("uses a three-question blueprint with a planted error", () => {
@@ -154,15 +160,44 @@ describe("sample demo admission", () => {
     }
   });
 
-  it("refuses without spending the budget when the beta fund is exhausted", async () => {
-    const previous = process.env.BETA_BUDGET_EUR;
+  it("stops demos at the sample cap before the signed-in beta budget is touched", async () => {
+    const previousDemo = process.env.DEMO_BUDGET_EUR;
+    const previousBeta = process.env.BETA_BUDGET_EUR;
+    const betaBefore = await spent();
     process.env.BETA_BUDGET_EUR = "0";
-    const before = await spent();
-    const opened = await openDemo("203.0.113.11");
-    expect(opened.status).toBe(503);
-    expect(opened.json.error).toBe(DEMO_COPY.budget);
-    expect(await spent()).toBe(before);
-    process.env.BETA_BUDGET_EUR = previous;
+    const whileBetaEmpty = await openDemo("203.0.113.11");
+    expect(whileBetaEmpty.status).toBe(200);
+    expect(await spent()).toBe(betaBefore);
+    process.env.BETA_BUDGET_EUR = previousBeta;
+
+    const db = await getDb();
+    const already = await demoSpent();
+    process.env.DEMO_BUDGET_EUR = ((already + betaDefenseCents()) / 100).toFixed(2);
+    const room = await openDemo("203.0.113.12");
+    expect(room.status).toBe(200);
+    expect(await spent()).toBe(betaBefore);
+    expect(await demoSpent()).toBe(already + betaDefenseCents());
+    const blocked = await openDemo("203.0.113.13");
+    expect(blocked.status).toBe(503);
+    expect(blocked.json.error).toBe(DEMO_COPY.budget);
+    expect(blocked.json.error).toContain("Samples are paused");
+    expect(await spent()).toBe(betaBefore);
+
+    const { user } = await signIn("still-funded@fund.example");
+    const held = await beginDefenseCredit(user.id);
+    expect(held.sponsored).toBe(true);
+    expect(await spent()).toBe(betaBefore + betaDefenseCents());
+    const beta = await db.get<{ spent_cents: number }>(
+      `SELECT spent_cents FROM credit_budget WHERE id = 'beta'`,
+    );
+    const demo = await db.get<{ spent_cents: number }>(
+      `SELECT spent_cents FROM credit_budget WHERE id = 'demo'`,
+    );
+    expect(Number(beta?.spent_cents)).toBe(betaBefore + betaDefenseCents());
+    expect(Number(demo?.spent_cents)).toBe(already + betaDefenseCents());
+
+    if (previousDemo === undefined) delete process.env.DEMO_BUDGET_EUR;
+    else process.env.DEMO_BUDGET_EUR = previousDemo;
   });
 
   it("stops a network after its daily sample allowance and never stores the raw IP", async () => {
@@ -257,14 +292,62 @@ describe("sample demo defense", () => {
     expect(Number(sessions?.n)).toBe(1);
   });
 
+  it("blocks a sample already in progress when the kill switch is turned off", async () => {
+    const ip = "203.0.113.89";
+    const opened = await openDemo(ip);
+    expect(opened.status).toBe(200);
+    const started = await startSessionRoute(
+      req("/api/sessions/start", { token: opened.json.token, mode: "defend" }, ip, opened.cookie),
+    );
+    const startJson = await started.json();
+    expect(started.status).toBe(200);
+    const probeId = (startJson.probes as { id: string }[])[0].id;
+    process.env.DEMO_ENABLED = "false";
+    try {
+      const state = await defendState(
+        new Request(`http://localhost/api/sessions/defend/state?token=${encodeURIComponent(opened.json.token)}`, {
+          headers: { cookie: opened.cookie },
+        }),
+      );
+      expect(state.status).toBe(403);
+      expect((await state.json()).error).toBe(DEMO_COPY.disabled);
+      const saved = await answer(
+        req(
+          "/api/sessions/defend/answer",
+          { sessionId: startJson.sessionId, probeId, answer: "The assumption is the 2,000-note index." },
+          ip,
+          opened.cookie,
+        ),
+      );
+      expect(saved.status).toBe(403);
+      expect((await saved.json()).error).toBe(DEMO_COPY.disabled);
+      const again = await startSessionRoute(
+        req("/api/sessions/start", { token: opened.json.token, mode: "defend" }, ip, opened.cookie),
+      );
+      expect(again.status).toBe(403);
+      expect((await again.json()).error).toBe(DEMO_COPY.disabled);
+    } finally {
+      process.env.DEMO_ENABLED = "1";
+    }
+    const resumed = await defendState(
+      new Request(`http://localhost/api/sessions/defend/state?token=${encodeURIComponent(opened.json.token)}`, {
+        headers: { cookie: opened.cookie },
+      }),
+    );
+    expect(resumed.status).toBe(200);
+    expect((await resumed.json()).sessionId).toBe(startJson.sessionId);
+  });
+
   it("signs a demo receipt and keeps the anonymous pass off every other feature", async () => {
     const ip = "203.0.113.77";
     const before = await spent();
+    const demoBefore = await demoSpent();
     const opened = await openDemo(ip);
     expect(opened.status).toBe(200);
     expect(opened.json.title).toBe("Harbor README");
     expect(opened.json.questions).toBe(3);
-    expect(await spent()).toBe(before + betaDefenseCents());
+    expect(await spent()).toBe(before);
+    expect(await demoSpent()).toBe(demoBefore + betaDefenseCents());
 
     const db = await getDb();
     const openedCalls = await db.get<{ n: number }>(
@@ -365,7 +448,8 @@ describe("sample demo defense", () => {
     expect(session?.cost_tier).toBe("consumer");
     expect(session?.budget_usd).toBe(budgetUsdForTier("consumer"));
     expect(session?.channel).toBe("text");
-    expect(await spent()).toBe(before + betaDefenseCents());
+    expect(await spent()).toBe(before);
+    expect(await demoSpent()).toBe(demoBefore + betaDefenseCents());
     const challengeBudget = await db.get(`SELECT id FROM credit_ledger WHERE ref_type = 'challenge_defense'`);
     expect(challengeBudget).toBeUndefined();
     const claim = await db.get(`SELECT challenge_id FROM credit_challenge_claims WHERE request_id = ?`, [
@@ -454,6 +538,62 @@ describe("sample demo defense", () => {
     expect(expiredMeta.robots).toBeUndefined();
   });
 
+  it("deletes the demo user and defense request when the pass expires", async () => {
+    const opened = await openDemo("203.0.113.61");
+    expect(opened.status).toBe(200);
+    const db = await getDb();
+    const pass = await db.get<{ user_id: string; request_id: string }>(
+      `SELECT p.user_id, p.request_id
+       FROM demo_passes p JOIN defense_requests r ON r.id = p.request_id
+       WHERE r.token = ?`,
+      [opened.json.token],
+    );
+    expect(pass?.user_id).toBeTruthy();
+    const { user } = await signIn("kept@fund.example");
+    const live = await openDemo("203.0.113.62");
+    expect(live.status).toBe(200);
+    await db.run(`UPDATE demo_passes SET expires_at = ? WHERE request_id = ?`, [
+      "2000-01-01T00:00:00.000Z",
+      pass!.request_id,
+    ]);
+    await purgeExpired();
+    expect(await db.get(`SELECT id FROM defense_requests WHERE id = ?`, [pass!.request_id])).toBeUndefined();
+    expect(await db.get(`SELECT id FROM users WHERE id = ?`, [pass!.user_id])).toBeUndefined();
+    const kept = await db.get<{ id: string }>(`SELECT id FROM users WHERE id = ?`, [user.id]);
+    expect(kept?.id).toBe(user.id);
+    const liveUser = await db.get<{ id: string }>(
+      `SELECT u.id FROM users u
+       JOIN demo_passes p ON p.user_id = u.id
+       JOIN defense_requests r ON r.id = p.request_id
+       WHERE r.token = ?`,
+      [live.json.token],
+    );
+    expect(liveUser?.id).toBeTruthy();
+    const ledger = await db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM credit_ledger WHERE purpose = 'demo' AND ref_id = ?`,
+      [pass!.request_id],
+    );
+    expect(Number(ledger?.n)).toBe(1);
+  });
+
+  it("clears expired demo rate-limit keys and leaves other buckets", async () => {
+    const db = await getDb();
+    const old = new Date(Date.now() - 25 * 3600_000).toISOString();
+    await db.run(
+      `INSERT INTO rate_limits (bucket_key, window_start, count) VALUES ('demo:ip:aa', ?, 1)`,
+      [old],
+    );
+    await db.run(
+      `INSERT INTO rate_limits (bucket_key, window_start, count) VALUES ('session:keepme', ?, 1)`,
+      [old],
+    );
+    await purgeExpired();
+    const keys = await db.all<{ bucket_key: string }>(`SELECT bucket_key FROM rate_limits`);
+    const names = keys.map((row) => row.bucket_key);
+    expect(names).not.toContain("demo:ip:aa");
+    expect(names).toContain("session:keepme");
+  });
+
   it("will not send a sign-in link to a sample principal", async () => {
     await expect(requestMagicLink({ email: "person@demo.defendit.invalid" })).rejects.toMatchObject({
       status: 400,
@@ -465,6 +605,14 @@ async function spent(): Promise<number> {
   const db = await getDb();
   const row = await db.get<{ spent_cents: number | null }>(
     `SELECT spent_cents FROM credit_budget WHERE id = 'beta'`,
+  );
+  return Number(row?.spent_cents ?? 0);
+}
+
+async function demoSpent(): Promise<number> {
+  const db = await getDb();
+  const row = await db.get<{ spent_cents: number | null }>(
+    `SELECT spent_cents FROM credit_budget WHERE id = 'demo'`,
   );
   return Number(row?.spent_cents ?? 0);
 }

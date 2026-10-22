@@ -9,6 +9,7 @@ YYYY-MM-DD BLOCKED — what stopped the work · what the next agent needs
 
 ## Log
 
+2026-10-22 DONE — Sample demos spend DEMO_BUDGET_EUR (default 20, lifetime) on credit_budget id demo, so they cannot exhaust the shared BETA_BUDGET_EUR. DEMO_DAILY_CAP defaults to 20. DEMO_ENABLED off stops a demo already in progress. An expired pass deletes its user and defense request. · PR #49 · tsc, eslint, vitest (326)
 2026-10-22 DONE — Rebased the funnel onto 4ad3ca6 (#48). Beacon and stats limits use ipLimitKey and are skipped when ipHash returns null; the global beacon cap still applies. Those LIMITS entries are env-backed. /privacy has an Analytics paragraph. · PR #46 · tsc, eslint, vitest (372)
 2026-10-22 DONE — Rebased the first-party funnel onto 2d14afd (#52). Stats rate limit uses hashedClientIp, per-client beacon caps run before the global cap, challenge steps call trackChallenge, and a demo defense is not written into the admin event funnel. Unset STATS_TOKEN stays 404. · PR #46 · tsc, eslint, vitest (349)
 2026-10-22 DONE — All-non-answer receipt model id is non-answer with provider rule, so modelVersions reads rule:non-answer. · PR #53 · vitest non-answer

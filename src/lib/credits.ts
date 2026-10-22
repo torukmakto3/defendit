@@ -32,8 +32,10 @@
  * that same amount when the defense starts, without spending the defender's
  * defense credit, and releases it on decline, expiry, or revoke.
  * Challenge-credit holds do not count against the budget. A no-login sample
- * demo charges the same `BETA_DEFENSE_EUR` through `chargeBetaDefenseBudget`,
- * which uses this module's conditional `credit_budget` update. Each account
+ * demo charges the same `BETA_DEFENSE_EUR` through `chargeBetaDefenseBudget`
+ * with purpose `demo`, against `DEMO_BUDGET_EUR` (default 20, lifetime) on
+ * `credit_budget` id `demo`. That charge does not move the shared `beta`
+ * row, so samples cannot exhaust `BETA_BUDGET_EUR`. Each account
  * is granted `BETA_DEFENSE_CREDITS` free defenses once (default 3). While
  * billing is off, the next defense after those are spent is a 402. The
  * global budget can stop a sponsored defense sooner. Starting a defense
@@ -47,7 +49,7 @@
  * $3 (`src/lib/plans.ts`). This module does not enforce the cap.
  */
 
-import { isDemoPrincipalEmail } from "./demo-policy";
+import { demoBudgetEur, isDemoPrincipalEmail } from "./demo-policy";
 import { getDb, type Db } from "./db";
 import { HttpError } from "./errors";
 import { newId } from "./ids";
@@ -427,6 +429,16 @@ function pickBucket(buckets: Map<string, number>, purpose: SpendKind, amount: nu
 }
 
 const BETA_BUDGET_ID = "beta";
+const DEMO_BUDGET_ID = "demo";
+
+/** Ledger cents that belong on the shared beta row. Sample rows stay out. */
+const BETA_BUDGET_SEED = `COALESCE((SELECT SUM(budget_cents) FROM credit_ledger WHERE purpose IS NULL OR purpose <> 'demo'), 0)`;
+/** Ledger cents that belong on the sample lifetime cap. */
+const DEMO_BUDGET_SEED = `COALESCE((SELECT SUM(budget_cents) FROM credit_ledger WHERE purpose = 'demo'), 0)`;
+
+export function demoBudgetCents(): number {
+  return Math.round(demoBudgetEur() * 100);
+}
 
 /**
  * Whether another sponsored defense of `costCents` still fits. A read, so
@@ -445,7 +457,7 @@ export async function betaBudgetCanAfford(costCents: number): Promise<boolean> {
     : num(
         (
           await db.get<{ n: number | string | null }>(
-            `SELECT COALESCE(SUM(budget_cents), 0) AS n FROM credit_ledger`,
+            `SELECT ${BETA_BUDGET_SEED} AS n`,
           )
         )?.n,
       );
@@ -453,9 +465,27 @@ export async function betaBudgetCanAfford(costCents: number): Promise<boolean> {
 }
 
 /**
- * Count one sample demo against the global beta budget. Same conditional
- * update as a sponsored defense hold. Writes a zero-amount ledger row so a
- * later reseed of `credit_budget` still includes the charge. Does not grant
+ * Whether another sample of `costCents` still fits in `DEMO_BUDGET_EUR`.
+ * A read, so admission can refuse before it spends a rate-limit slot.
+ * The charge itself is `chargeBetaDefenseBudget` with purpose `demo`.
+ */
+export async function demoBudgetCanAfford(costCents: number): Promise<boolean> {
+  if (costCents < 0) return false;
+  const db = await getDb();
+  const row = await db.get<{ spent_cents: number | string | null }>(
+    `SELECT spent_cents FROM credit_budget WHERE id = ?`,
+    [DEMO_BUDGET_ID],
+  );
+  const spent = row
+    ? num(row.spent_cents)
+    : num((await db.get<{ n: number | string | null }>(`SELECT ${DEMO_BUDGET_SEED} AS n`))?.n);
+  return spent + costCents <= demoBudgetCents();
+}
+
+/**
+ * Count one sample demo against `DEMO_BUDGET_EUR`. The shared beta row is
+ * not updated. Writes a zero-amount ledger row with purpose `demo` so a
+ * later reseed of the demo budget still includes the charge. Does not grant
  * or spend a wallet credit.
  */
 export async function chargeBetaDefenseBudget(input: {
@@ -471,7 +501,8 @@ export async function chargeBetaDefenseBudget(input: {
     );
     if (existing) return true;
     const cost = betaDefenseCents();
-    if (!(await reserveBetaBudget(tx, cost))) return false;
+    const purpose = "demo" as const;
+    if (!(await reserveForPurpose(tx, purpose, cost))) return false;
     await insertEntry(tx, {
       userId: input.userId,
       kind: "defense",
@@ -479,7 +510,7 @@ export async function chargeBetaDefenseBudget(input: {
       amount: 0,
       idempotencyKey: input.idempotencyKey,
       source: "beta",
-      purpose: "demo",
+      purpose,
       refType: "demo",
       refId: input.refId,
       sponsored: true,
@@ -497,18 +528,45 @@ export async function chargeBetaDefenseBudget(input: {
  * the same statement under its writer lock.
  */
 async function reserveBetaBudget(tx: Db, costCents: number): Promise<boolean> {
+  return reserveBudgetRow(tx, BETA_BUDGET_ID, costCents, betaBudgetCents(), BETA_BUDGET_SEED);
+}
+
+/** purpose `demo` draws the sample cap. Any other purpose is a type error. */
+async function reserveForPurpose(tx: Db, purpose: "demo", costCents: number): Promise<boolean> {
+  switch (purpose) {
+    case "demo":
+      return reserveDemoBudget(tx, costCents);
+    default: {
+      const unknown: never = purpose;
+      return unknown;
+    }
+  }
+}
+
+/** Claim `costCents` of the sample lifetime cap. Does not touch id `beta`. */
+async function reserveDemoBudget(tx: Db, costCents: number): Promise<boolean> {
+  return reserveBudgetRow(tx, DEMO_BUDGET_ID, costCents, demoBudgetCents(), DEMO_BUDGET_SEED);
+}
+
+async function reserveBudgetRow(
+  tx: Db,
+  id: string,
+  costCents: number,
+  capCents: number,
+  seedSql: string,
+): Promise<boolean> {
   if (costCents < 0) return false;
   await tx.run(
     `INSERT INTO credit_budget (id, spent_cents)
-     VALUES (?, COALESCE((SELECT SUM(budget_cents) FROM credit_ledger), 0))
+     VALUES (?, ${seedSql})
      ON CONFLICT (id) DO NOTHING`,
-    [BETA_BUDGET_ID],
+    [id],
   );
   const updated = await tx.run(
     `UPDATE credit_budget
      SET spent_cents = spent_cents + ?
      WHERE id = ? AND spent_cents + ? <= ?`,
-    [costCents, BETA_BUDGET_ID, costCents, betaBudgetCents()],
+    [costCents, id, costCents, capCents],
   );
   return updated.changes === 1;
 }
@@ -517,7 +575,7 @@ async function reserveBetaBudget(tx: Db, costCents: number): Promise<boolean> {
 async function lockBetaBudget(tx: Db): Promise<void> {
   await tx.run(
     `INSERT INTO credit_budget (id, spent_cents)
-     VALUES (?, COALESCE((SELECT SUM(budget_cents) FROM credit_ledger), 0))
+     VALUES (?, ${BETA_BUDGET_SEED})
      ON CONFLICT (id) DO NOTHING`,
     [BETA_BUDGET_ID],
   );
@@ -616,7 +674,7 @@ async function releaseBetaBudget(tx: Db, costCents: number): Promise<void> {
   if (costCents <= 0) return;
   await tx.run(
     `INSERT INTO credit_budget (id, spent_cents)
-     VALUES (?, COALESCE((SELECT SUM(budget_cents) FROM credit_ledger), 0))
+     VALUES (?, ${BETA_BUDGET_SEED})
      ON CONFLICT (id) DO NOTHING`,
     [BETA_BUDGET_ID],
   );

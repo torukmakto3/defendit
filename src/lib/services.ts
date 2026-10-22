@@ -11,7 +11,14 @@ import {
   reserveChallengeDefenseBudget,
 } from "./credits";
 import { demoSampleBundle } from "./demo-bundle";
-import { DEMO_COPY, DEMO_SAMPLES, demoRetentionHours, isDemoKind, type DemoSampleId } from "./demo-policy";
+import {
+  DEMO_COPY,
+  DEMO_SAMPLES,
+  demoRetentionHours,
+  isDemoKind,
+  isDemoPrincipalEmail,
+  type DemoSampleId,
+} from "./demo-policy";
 import { getPublicKeyHex, sha256Hex } from "./crypto";
 import { dashboardWorkspaceHref } from "./dashboard-links";
 import { getDb, type Db } from "./db";
@@ -640,6 +647,7 @@ export async function startSession(opts: {
   let phraseRest = false;
   let cappedDuringPhrase = false;
   const db = await getDb();
+  let startedAt = "";
   try {
 
   if (opts.mode === "learn") {
@@ -679,7 +687,7 @@ export async function startSession(opts: {
     }
   }
 
-  const startedAt = await insertSessionRow(db, {
+  startedAt = await insertSessionRow(db, {
     sessionId,
     requestId: request.id,
     deliverableId: deliverable.id,
@@ -1983,13 +1991,12 @@ export async function purgeExpired() {
   await db.run(`DELETE FROM rate_limits WHERE window_start < ?`, [
     new Date(Date.now() - 2 * 24 * 3600_000).toISOString(),
   ]);
-  // IP hashes for the sample demo live only for the limit window, not the
-  // two-day backstop used by the other buckets.
+  // Sample counters only. This statement never deletes another bucket.
   await db.run(
-    `DELETE FROM rate_limits WHERE bucket_key LIKE 'demo:ip:%' AND window_start < ?`,
+    `DELETE FROM rate_limits WHERE bucket_key LIKE 'demo:%' AND window_start < ?`,
     [new Date(Date.now() - 24 * 3600_000).toISOString()],
   );
-  await db.run(`DELETE FROM demo_passes WHERE expires_at < ?`, [nowIso]);
+  await purgeExpiredDemoPasses(db, nowIso);
   await db.run(`DELETE FROM receipts WHERE purge_after IS NOT NULL AND purge_after < ?`, [nowIso]);
   await refundStaleDefenseHolds();
   const analyticsEvents = await purgeOldAnalyticsEvents(db, new Date(nowIso));
@@ -1999,6 +2006,84 @@ export async function purgeExpired() {
     sessions: sessions.changes,
     analyticsEvents,
   };
+}
+
+/**
+ * An expired sample pass takes its defense request and ephemeral user with it.
+ * The ledger row stays, moved onto one retained account, so the lifetime
+ * sample cap still counts that charge after the visitor is gone.
+ */
+async function purgeExpiredDemoPasses(db: Db, nowIso: string) {
+  const expired = await db.all<{ user_id: string; request_id: string }>(
+    `SELECT p.user_id, p.request_id
+     FROM demo_passes p
+     JOIN defense_requests r ON r.id = p.request_id
+     WHERE p.expires_at < ? AND r.kind = 'demo'`,
+    [nowIso],
+  );
+  if (expired.length === 0) return;
+  const anchor = await demoLedgerAnchorId(db);
+  for (const requestId of expired.map((row) => row.request_id)) {
+    await db.run(
+      `DELETE FROM budget_holds WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
+      [requestId],
+    );
+    await db.run(
+      `DELETE FROM defense_holds WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
+      [requestId],
+    );
+    await db.run(
+      `DELETE FROM grades WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
+      [requestId],
+    );
+    await db.run(
+      `DELETE FROM human_grades WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
+      [requestId],
+    );
+    await db.run(`DELETE FROM receipts WHERE request_id = ?`, [requestId]);
+    await db.run(`DELETE FROM flashcards WHERE request_id = ?`, [requestId]);
+    await db.run(`DELETE FROM sessions WHERE request_id = ?`, [requestId]);
+    await db.run(`DELETE FROM deliverables WHERE request_id = ?`, [requestId]);
+    await db.run(`DELETE FROM llm_calls WHERE request_id = ?`, [requestId]);
+    await db.run(`DELETE FROM stage_timings WHERE request_id = ?`, [requestId]);
+    await db.run(`DELETE FROM demo_passes WHERE request_id = ?`, [requestId]);
+    await db.run(`DELETE FROM defense_requests WHERE id = ? AND kind = 'demo'`, [requestId]);
+  }
+  for (const userId of new Set(expired.map((row) => row.user_id))) {
+    if (userId === anchor) continue;
+    const still = await db.get<{ id: string }>(
+      `SELECT id FROM defense_requests WHERE owner_user_id = ? OR creator_user_id = ?`,
+      [userId, userId],
+    );
+    const pass = await db.get<{ token_hash: string }>(
+      `SELECT token_hash FROM demo_passes WHERE user_id = ?`,
+      [userId],
+    );
+    if (still || pass) continue;
+    const user = await db.get<{ email: string }>(`SELECT email FROM users WHERE id = ?`, [userId]);
+    if (!user || !isDemoPrincipalEmail(user.email)) continue;
+    await db.run(`UPDATE credit_ledger SET user_id = ? WHERE user_id = ?`, [anchor, userId]);
+    await db.run(`DELETE FROM credit_wallets WHERE user_id = ?`, [userId]);
+    await db.run(`DELETE FROM beta_grants WHERE user_id = ?`, [userId]);
+    await db.run(`DELETE FROM auth_sessions WHERE user_id = ?`, [userId]);
+    await db.run(`DELETE FROM users WHERE id = ?`, [userId]);
+  }
+}
+
+/** Keeps sample ledger rows after the ephemeral visitor is deleted. */
+async function demoLedgerAnchorId(db: Db): Promise<string> {
+  const email = "ledger@demo.defendit.invalid";
+  const existing = await db.get<{ id: string }>(`SELECT id FROM users WHERE email = ?`, [email]);
+  if (existing) return existing.id;
+  const id = newId("usr");
+  await db.run(
+    `INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, NULL, ?)
+     ON CONFLICT (email) DO NOTHING`,
+    [id, email, new Date().toISOString()],
+  );
+  const row = await db.get<{ id: string }>(`SELECT id FROM users WHERE email = ?`, [email]);
+  if (!row) throw new Error("demo ledger anchor missing");
+  return row.id;
 }
 
 export function publicKeyInfo() {

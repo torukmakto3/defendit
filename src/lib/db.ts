@@ -213,8 +213,10 @@ CREATE TABLE IF NOT EXISTS credit_wallets (
   created_at TEXT NOT NULL
 );
 
--- Global beta budget. spent_cents moves only by a conditional UPDATE so two
--- accounts cannot both pass a stale read of the 150 EUR cap.
+-- Budget counters. spent_cents moves only by a conditional UPDATE so two
+-- accounts cannot both pass a stale read. id beta is BETA_BUDGET_EUR.
+-- id demo is the sample lifetime cap (DEMO_BUDGET_EUR) and is never
+-- mixed into the beta row.
 CREATE TABLE IF NOT EXISTS credit_budget (
   id TEXT PRIMARY KEY,
   spent_cents INTEGER NOT NULL

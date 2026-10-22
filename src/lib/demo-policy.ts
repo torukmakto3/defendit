@@ -16,7 +16,7 @@ export const DEMO_COPY = {
   disabled: "The sample demo is turned off right now. Sign in to defend your own file.",
   ip: "You've used today's free sample defenses on this network. Sign in to defend your own file, or try again tomorrow.",
   global: "The sample demo is full for today. Try again tomorrow, or sign in to defend your own file.",
-  budget: "The beta is full today, so the sample demo is paused. Sign in if you already have an account.",
+  budget: "Samples are paused. The sample budget is used up. Sign in to defend your own file.",
   noLearn: "This sample is only a short defense. Sign in to use Learn, challenges, or your own file.",
   noUpload: "This sample file can't be replaced. Sign in to defend your own file.",
   openFromHome: "Open the sample from the homepage. This demo is not an account.",
@@ -50,7 +50,16 @@ export function demoPerIpPerDay(): number {
 }
 
 export function demoDailyCap(): number {
-  return envInt("DEMO_DAILY_CAP", 200);
+  return envInt("DEMO_DAILY_CAP", 20);
+}
+
+/** Lifetime euro cap for sample defenses. Separate from BETA_BUDGET_EUR. */
+export function demoBudgetEur(): number {
+  const raw = process.env["DEMO_BUDGET_EUR"];
+  if (raw == null || raw.trim() === "") return 20;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 20;
+  return n;
 }
 
 /** How long a sample defense, its answers, and its receipt stay. Default 24 hours. */
