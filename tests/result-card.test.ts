@@ -12,6 +12,7 @@ import {
   RESULT_CARD_CACHE_CONTROL,
   shareMetadata,
   toNextMetadata,
+  withCardCopy,
   type ResultCard,
 } from "../src/lib/result-card";
 import type { ReceiptPayload } from "../src/lib/types";
@@ -89,7 +90,7 @@ describe("result card copy", () => {
     expect(card.alt).toContain("rated Defended");
   });
 
-  it("variant B hides the score, the tier, and the difficulty", () => {
+  it("variant B shows the tier and hides the score and the difficulty", () => {
     const card = fullCard({
       visibility: "score_hidden",
       score: 84,
@@ -98,8 +99,8 @@ describe("result card copy", () => {
       challengerName: "@challenger",
     });
     expect(card.variant).toBe("B");
-    expect(card.headline).toBe("Challenge taken");
-    expect(card.tier).toBeNull();
+    expect(card.headline).toBe("Defended");
+    expect(card.tier).toBe("Defended");
     expect(card.lines.map((line) => line.text)).toEqual([
       '@handle defended "README.md"',
       "Result: kept private by the defender",
@@ -108,7 +109,7 @@ describe("result card copy", () => {
       "Signed receipt · verify: defendit.me/r/xxxx",
     ]);
     expect(card.alt).toBe(
-      "DefendIT receipt card. @handle took a defense challenge on the file README.md on 19 October 2026 and chose to keep the score private. File fingerprint SHA-256 starting a12d and ending 9b04. Signed receipt; verify at defendit.me/r/xxxx.",
+      "DefendIT receipt card. @handle defended the file README.md on 19 October 2026, rated Defended. The number stays off this card. File fingerprint SHA-256 starting a12d and ending 9b04. Signed receipt; verify at defendit.me/r/xxxx.",
     );
     const text = blob(card);
     expect(text).not.toContain("84");
@@ -122,9 +123,28 @@ describe("result card copy", () => {
   it("uses variant B for a Still sharpening result shared without the score", () => {
     const card = fullCard({ visibility: "score_hidden", score: 58, fileLabel: "pitch-memo.pdf" });
     expect(card.variant).toBe("B");
+    expect(card.headline).toBe("Still sharpening");
     expect(blob(card)).not.toContain("58");
-    expect(blob(card)).not.toContain("Still sharpening");
-    expect(blob(card)).not.toContain("fail");
+    expect(blob(card).toLowerCase()).not.toContain("fail");
+  });
+
+  it("a score-hidden overlay keeps the tier title and drops the number", () => {
+    const card = fullCard({ visibility: "score_hidden", score: 92, fileLabel: "Tier band subject" });
+    const copy = withCardCopy(card, {
+      kicker: "Sponsored by DefendIT",
+      title: "Defended · Strong",
+      subtitle: "Tier band subject",
+      foot: "Score not shown",
+      score: null,
+    });
+    expect(copy.title).toBe("Defended · Strong");
+    expect(copy.headline).toBe("Defended · Strong");
+    expect(copy.score).toBeNull();
+    expect(copy.subtitle).toBe("Tier band subject");
+    expect(copy.foot).toBe("Score not shown");
+    const drawn = [copy.title, copy.subtitle, copy.alt, ...copy.lines.map((line) => line.text)].join("\n");
+    expect(drawn).not.toContain("92");
+    expect(drawn).not.toContain("Hard");
   });
 
   it("variant C frames a public low score as progress", () => {

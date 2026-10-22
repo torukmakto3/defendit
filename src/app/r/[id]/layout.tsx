@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { appUrl } from "@/lib/config";
-import { loadShareCard } from "@/lib/result-card-loader";
+import { resultCardCopy } from "@/lib/challenges";
 import { shareMetadata, toNextMetadata } from "@/lib/result-card";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +12,7 @@ export async function generateMetadata({
   params: Promise<{ id: string }>;
 }): Promise<Metadata> {
   const { id } = await params;
-  const card = await loadShareCard(id);
+  const card = await resultCardCopy(id);
   return {
     metadataBase: new URL(appUrl()),
     ...toNextMetadata(shareMetadata(card, id), `/r/${id}`),

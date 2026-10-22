@@ -61,7 +61,7 @@ export function resultCardImageId(visibility: ReceiptVisibility | "unknown"): st
   return `${RESULT_CARD_VERSION}-${visibility}`;
 }
 
-export function cacheControlForImage(requestedId: string, card: ResultCard): string {
+export function cacheControlForImage(requestedId: string, card: { imageId: string }): string {
   return requestedId === card.imageId ? RESULT_CARD_CACHE_CONTROL : RESULT_CARD_STALE_CACHE_CONTROL;
 }
 
@@ -85,8 +85,8 @@ export function cardVariant(visibility: ReceiptVisibility, tier: ResultTier): Ca
     case "private":
       return "private";
     case "score_hidden":
-      // Kit variant B, including a Still sharpening result the defender shares
-      // without the number. The band stays off the card with the score.
+      // Kit variant B. The number stays off the card. The headline is still the
+      // tier, the same rule resultCardCopy uses for a challenge result.
       return "B";
     case "public":
       return tier === "Still sharpening" ? "C" : "A";
@@ -135,6 +135,7 @@ export function buildResultCard(input: CardInput): ResultCard {
   const who = name ?? "A defender";
 
   if (variant === "B") {
+    const headline = publicTierTitle(tier);
     const defended = file ? `${who} defended "${file}"` : `${who} defended a file`;
     const lines: CardLine[] = [
       { text: defended, tone: "body" },
@@ -146,13 +147,13 @@ export function buildResultCard(input: CardInput): ResultCard {
     return {
       variant,
       visibility: "score_hidden",
-      tier: null,
+      tier,
       imageId: resultCardImageId("score_hidden"),
-      title: "Challenge taken",
+      title: headline,
       description: describeHidden(file, fingerprint?.label ?? null, date?.short ?? null),
-      alt: altHidden(who, file, date?.long ?? null, fingerprint, verifyPath),
+      alt: altHidden(who, file, date?.long ?? null, tier, fingerprint, verifyPath),
       kicker: "DEFEND IT",
-      headline: "Challenge taken",
+      headline,
       lines,
       actions: ["Challenge someone", "Defend your own"],
     };
@@ -282,7 +283,54 @@ export function unknownResultCard(): ResultCard {
   };
 }
 
-export function shareMetadata(card: ResultCard, receiptId: string): ShareMetadata {
+/** Text fields from `resultCardCopy`, plus the lines the shared OG renderer draws. */
+export interface ResultCardCopy {
+  kicker: string;
+  title: string;
+  subtitle: string;
+  foot: string;
+  score: string | null;
+  description: string;
+  alt: string;
+  imageId: string;
+  headline: string;
+  lines: CardLine[];
+  actions: string[];
+  tier: ResultTier | null;
+  visibility: ReceiptVisibility | "unknown";
+}
+
+/**
+ * Keep the visibility decision in the overlay. A score-hidden challenge result
+ * passes `score: null` here even when the receipt payload still has a number.
+ */
+export function withCardCopy(
+  card: ResultCard,
+  overlay: {
+    kicker: string;
+    title: string;
+    subtitle: string;
+    foot: string;
+    score: string | null;
+  },
+): ResultCardCopy {
+  return {
+    ...overlay,
+    headline: overlay.title,
+    description: card.description,
+    alt: card.alt,
+    imageId: card.imageId,
+    lines: card.lines,
+    actions: card.actions,
+    tier: card.tier,
+    visibility: card.visibility,
+  };
+}
+
+export function shareMetadata(
+  card: Pick<ResultCard, "title" | "description" | "alt" | "imageId">,
+  receiptId: string,
+): ShareMetadata {
   const id = encodeURIComponent(receiptId);
   return {
     title: card.title,
@@ -503,15 +551,16 @@ function altHidden(
   who: string,
   file: string | null,
   date: string | null,
+  tier: ResultTier,
   fingerprint: { start: string; end: string } | null,
   verifyPath: string,
 ): string {
-  const target = file ? ` on the file ${file}` : "";
+  const target = file ? `the file ${file}` : "a file";
   const when = date ? ` on ${date}` : "";
   const hash = fingerprint
     ? ` File fingerprint SHA-256 starting ${fingerprint.start} and ending ${fingerprint.end}.`
     : "";
-  return `DefendIT receipt card. ${who} took a defense challenge${target}${when} and chose to keep the score private.${hash} Signed receipt; verify at ${verifyPath}.`;
+  return `DefendIT receipt card. ${who} defended ${target}${when}, rated ${publicTierTitle(tier)}. The number stays off this card.${hash} Signed receipt; verify at ${verifyPath}.`;
 }
 
 function altSharpening(opts: {

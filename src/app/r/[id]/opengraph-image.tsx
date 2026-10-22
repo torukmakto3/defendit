@@ -1,5 +1,5 @@
-import { renderResultCard } from "@/components/receipt/ResultCardImage";
-import { loadShareCard } from "@/lib/result-card-loader";
+import { renderOgCard } from "@/components/challenge/og";
+import { resultCardCopy } from "@/lib/challenges";
 import { cacheControlForImage, CARD_HEIGHT, CARD_WIDTH } from "@/lib/result-card";
 
 export const alt = "DefendIT receipt card";
@@ -20,7 +20,7 @@ export async function generateImageMetadata({
   params: Promise<{ id: string }> | { id: string };
 }) {
   const { id } = await params;
-  const card = await loadShareCard(id);
+  const card = await resultCardCopy(id);
   return [
     {
       id: card.imageId,
@@ -40,6 +40,18 @@ export default async function Image({
 }) {
   const { id: receiptId } = await params;
   const requested = await id;
-  const card = await loadShareCard(receiptId);
-  return renderResultCard(card, cacheControlForImage(requested, card));
+  const card = await resultCardCopy(receiptId);
+  return renderOgCard(
+    {
+      kicker: card.kicker,
+      title: card.title,
+      subtitle: card.subtitle,
+      foot: card.foot,
+      score: card.score,
+      lines: card.lines,
+      actions: card.actions,
+      tier: card.tier,
+    },
+    cacheControlForImage(requested, card),
+  );
 }
