@@ -34,6 +34,7 @@ export {
   LlmBudgetError,
   markDefenseCapped,
   refreshRequestUsage,
+  scopeSettledUsd,
   scopeWasCapped,
   sessionBudgetUsd,
   usageFromProviderBody,
@@ -369,6 +370,19 @@ interface JsonSchema<T> {
 /** `/api/sessions/defend/complete` is killed at this. Grading has to finish sooner. */
 export const DEFEND_ROUTE_BUDGET_MS = 120_000;
 
+/**
+ * One grader, including one transient retry, may not hold the council longer than this.
+ * Live p90 was past the old 20s. 55s still finishes inside the 120s defend route.
+ */
+export function graderTimeoutMs(): number {
+  const raw = process.env.GRADER_TIMEOUT_MS;
+  if (raw !== undefined && raw.trim() !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 55_000;
+}
+
 function timeoutMs(): number {
   const n = Number(process.env.LLM_TIMEOUT_MS || "45000");
   return Number.isFinite(n) && n > 0 ? n : 45000;
@@ -378,11 +392,14 @@ function timeoutMs(): number {
  * Budget for one model call. The first call and the repair each take at most
  * half the route limit, and the repair also gives back whatever the first
  * call already used, so the worst case stays under 120s.
+ * A grade call may use the grader timeout when that is longer than the general
+ * LLM timeout. The pair is still capped by half the route.
  */
-export function graderCallBudgetMs(elapsedMs: number): number {
+export function graderCallBudgetMs(elapsedMs: number, purpose?: string): number {
   const remain = DEFEND_ROUTE_BUDGET_MS - elapsedMs;
   const half = Math.floor((DEFEND_ROUTE_BUDGET_MS - 1) / 2);
-  return Math.max(0, Math.min(timeoutMs(), half, remain - 1));
+  const preferred = purpose === "grade" ? Math.max(timeoutMs(), graderTimeoutMs()) : timeoutMs();
+  return Math.max(0, Math.min(preferred, half, remain - 1));
 }
 
 /**
@@ -395,13 +412,13 @@ export async function completeJson<T>(
   schema?: ZodType<T> | JsonSchema<T>,
 ): Promise<{ data: T; raw: LlmResponse }> {
   const started = Date.now();
-  const firstLimit = graderCallBudgetMs(0);
+  const firstLimit = graderCallBudgetMs(0, req.purpose);
   if (firstLimit <= 0) throw new Error(`LLM timed out after ${DEFEND_ROUTE_BUDGET_MS}ms`);
   const first = await runOnce(provider, req, firstLimit);
   const parsed = interpret(first.content, schema);
   if (parsed.ok) return { data: parsed.data, raw: first };
 
-  const repairLimit = graderCallBudgetMs(Date.now() - started);
+  const repairLimit = graderCallBudgetMs(Date.now() - started, req.purpose);
   if (repairLimit <= 0) throw new Error(`LLM timed out after ${DEFEND_ROUTE_BUDGET_MS}ms`);
   const repaired = await runOnce(
     provider,

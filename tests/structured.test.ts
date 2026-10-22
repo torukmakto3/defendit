@@ -1,6 +1,8 @@
+import { readFileSync } from "fs";
+import { join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { completeJson, graderCallBudgetMs } from "../src/lib/llm";
+import { completeJson, DEFEND_ROUTE_BUDGET_MS, graderCallBudgetMs, graderTimeoutMs } from "../src/lib/llm";
 import type { LlmProvider, LlmRequest, LlmResponse } from "../src/lib/llm";
 
 const schema = z.object({ ok: z.literal(true), n: z.number() });
@@ -67,6 +69,22 @@ describe("structured model output", () => {
     expect(first + repair).toBeLessThan(120_000);
     delete process.env.LLM_TIMEOUT_MS;
     expect(graderCallBudgetMs(0) + graderCallBudgetMs(graderCallBudgetMs(0))).toBeLessThan(120_000);
+  });
+
+  it("gives a grader 55s and still finishes inside the defend route", () => {
+    delete process.env.GRADER_TIMEOUT_MS;
+    delete process.env.LLM_TIMEOUT_MS;
+    const route = readFileSync(join(__dirname, "../src/app/api/sessions/defend/complete/route.ts"), "utf8");
+    const maxDuration = Number(route.match(/export const maxDuration = (\d+)/)?.[1]);
+    expect(maxDuration * 1000).toBe(DEFEND_ROUTE_BUDGET_MS);
+    // Fluid's Hobby ceiling is 300s. The route stays at or under that, so every plan can run it.
+    expect(maxDuration).toBeLessThanOrEqual(300);
+    expect(graderTimeoutMs()).toBe(55_000);
+    expect(graderTimeoutMs()).toBeLessThan(maxDuration * 1000);
+    const first = graderCallBudgetMs(0, "grade");
+    const repair = graderCallBudgetMs(first, "grade");
+    expect(first).toBe(55_000);
+    expect(first + repair).toBeLessThan(DEFEND_ROUTE_BUDGET_MS);
   });
 
   it("times out a provider that ignores the abort signal", async () => {

@@ -6,6 +6,8 @@ import { LIMITS } from "@/lib/ratelimit";
 import { completeDefendSession } from "@/lib/services";
 
 export const runtime = "nodejs";
+// The council waits up to the grader timeout (default 55s), including one retry, in parallel.
+// 120s covers that wait plus signing. It is under Fluid's 300s Hobby ceiling, so every plan can run it.
 export const maxDuration = 120;
 
 const schema = z.object({

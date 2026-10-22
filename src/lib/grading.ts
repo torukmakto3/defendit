@@ -5,6 +5,7 @@ import {
   forceNextGrade,
   getGradingCouncil,
   getTrackedCheapestLlm,
+  graderTimeoutMs,
   GRADING_TEMPERATURE,
   gradingSeed,
   LlmBudgetError,
@@ -22,6 +23,7 @@ import {
 import type { Claim, ClaimGrade, Difficulty, DimensionScores, InterviewPlan, ModelGrade, Probe, TurnRecord } from "./types";
 
 export { RUBRIC_VERSION };
+export { graderTimeoutMs };
 export { legacyAggregateScore, scoreDefense, type DefenseScore };
 
 const level = z.coerce.number();
@@ -49,16 +51,6 @@ const gradeResponseSchema = z.object({
   overallScore: z.coerce.number().optional(),
 });
 
-/** One grader, including its repair turn, may not hold the council longer than this. */
-export function graderTimeoutMs(): number {
-  const raw = process.env.GRADER_TIMEOUT_MS;
-  if (raw !== undefined && raw.trim() !== "") {
-    const n = Number(raw);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  return 20_000;
-}
-
 export interface GraderProgress extends GradingProgress {
   modelId?: string;
   durationMs?: number;
@@ -81,7 +73,6 @@ export async function gradeSession(
   },
 ): Promise<ModelGrade[]> {
   const council = getGradingCouncil();
-  const transcript = buildTranscript(opts.claims, opts.plan, opts.turns);
   const timeout = graderTimeoutMs();
   let settledCount = 0;
   // Progress writes stay in order and off each grader's clock.
@@ -90,6 +81,14 @@ export async function gradeSession(
     progressChain = progressChain.then(() => notify(hooks, progress));
   };
 
+  const skipped = gradesForAllNonAnswers(council, opts);
+  if (skipped) {
+    report({ done: council.length, total: council.length, stage: "grading" });
+    await progressChain;
+    return skipped;
+  }
+
+  const transcript = buildTranscript(opts.claims, opts.plan, opts.turns);
   report({ done: 0, total: council.length, stage: "grading" });
 
   const settled = await Promise.allSettled(
@@ -231,6 +230,60 @@ const ZERO_SCORES: DimensionScores = {
   ownership: 0,
 };
 
+function nonAnswerReason(kind: string): string {
+  return `Non-answer (${kind}): no substantive engagement with the claim.`;
+}
+
+/**
+ * When every recorded answer is a non-answer, the council is not called.
+ * The returned grades match a council that scored each probe at zero.
+ */
+function gradesForAllNonAnswers(
+  council: ReturnType<typeof getGradingCouncil>,
+  opts: { claims: Claim[]; plan: InterviewPlan; turns: TurnRecord[] },
+): ModelGrade[] | null {
+  if (opts.turns.length === 0 || opts.plan.probes.length === 0) return null;
+  if (opts.turns.some((turn) => !opts.plan.probes.some((probe) => probe.id === turn.probeId))) return null;
+  const rows: ClaimGrade[] = [];
+  for (const probe of opts.plan.probes) {
+    const turn = opts.turns.find((t) => t.probeId === probe.id);
+    if (!turn) return null;
+    const claim = opts.claims.find((c) => c.id === probe.claimId);
+    const nonAnswer = detectNonAnswer({
+      answer: turn.answer,
+      question: turn.question,
+      claimText: claim?.text ?? "",
+      sourceSpan: probe.sourceSpan || claim?.sourceSpan || "",
+      figures: claim?.figures ?? [],
+      probeType: probe.type,
+    });
+    if (!nonAnswer) return null;
+    rows.push({
+      probeId: probe.id,
+      claimId: probe.claimId,
+      section: claim?.section || "General",
+      scores: { ...ZERO_SCORES },
+      band: "Weak",
+      evidence: "",
+      reason: nonAnswerReason(nonAnswer.kind),
+    });
+  }
+  const temperature = GRADING_TEMPERATURE;
+  const seed = gradingSeed();
+  return council.map((model) => {
+    const grade: ModelGrade = {
+      modelId: model.id,
+      provider: model.provider,
+      temperature,
+      seed,
+      claimGrades: rows.map((row) => ({ ...row, scores: { ...row.scores } })),
+      overallScore: 0,
+    };
+    grade.overallScore = graderScore(grade, opts.plan);
+    return grade;
+  });
+}
+
 function alignGrades(
   grades: z.infer<typeof gradeResponseSchema>["claimGrades"],
   plan: InterviewPlan,
@@ -261,7 +314,7 @@ function alignGrades(
         scores: { ...ZERO_SCORES },
         band: "Weak",
         evidence: "",
-        reason: `Non-answer (${nonAnswer.kind}): no substantive engagement with the claim.`,
+        reason: nonAnswerReason(nonAnswer.kind),
       });
       continue;
     }
@@ -297,6 +350,88 @@ function alignGrades(
   return aligned;
 }
 
+/** 503 overloaded and a transient 404 model_not_found are worth one more try. */
+export function isRetryableGraderError(error: unknown): boolean {
+  if (!(error instanceof Error) || error instanceof LlmBudgetError) return false;
+  const status = error.message.match(/\berror (\d{3})\b/);
+  if (!status) return false;
+  if (status[1] === "503" && /overloaded/i.test(error.message)) return true;
+  if (status[1] === "404" && /model_not_found/i.test(error.message)) return true;
+  return false;
+}
+
+/** Short wait before the one retry. `GRADER_RETRY_BASE_MS` and `GRADER_RETRY_JITTER_MS` override it. */
+export function graderRetryDelayMs(rand: () => number = Math.random): number {
+  const base = readNonNegativeMs(process.env.GRADER_RETRY_BASE_MS, 250);
+  const jitter = readNonNegativeMs(process.env.GRADER_RETRY_JITTER_MS, 500);
+  return Math.round(base + rand() * jitter);
+}
+
+function readNonNegativeMs(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function waitForGraderRetry(signal: AbortSignal | undefined, modelId: string): Promise<void> {
+  const ms = graderRetryDelayMs();
+  const timedOut = () => new Error(`Grader ${modelId} timed out after ${graderTimeoutMs()}ms`);
+  if (signal?.aborted) return Promise.reject(timedOut());
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const fail = () => {
+      clearTimeout(timer);
+      reject(timedOut());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", fail);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", fail, { once: true });
+  });
+}
+
+/**
+ * One grader call, plus a single retry when the host is overloaded or cannot
+ * find the model yet. The retry is another `completeJson`, so the per-defense
+ * cost cap reserves it the same way as the first attempt. A cap refusal is
+ * not retried again.
+ */
+async function completeGradeCall(
+  model: ReturnType<typeof getGradingCouncil>[number],
+  opts: { difficulty: Difficulty },
+  transcript: string,
+  signal?: AbortSignal,
+) {
+  const temperature = GRADING_TEMPERATURE;
+  const seed = gradingSeed();
+  const run = () =>
+    completeJson(
+      model,
+      {
+        purpose: "grade",
+        temperature,
+        seed,
+        signal,
+        messages: [
+          { role: "system", content: rubricPrompt(opts.difficulty) },
+          {
+            role: "user",
+            content: `Grade each answer against its claim. Quote the answer in evidence.\n\n<transcript>\n${transcript}\n</transcript>`,
+          },
+        ],
+      },
+      gradeResponseSchema,
+    );
+  try {
+    return await run();
+  } catch (error) {
+    if (!isRetryableGraderError(error)) throw error;
+    await waitForGraderRetry(signal, model.id);
+    return await run();
+  }
+}
+
 /** One council member. A skipped question is asked again once, then the grader is dropped. */
 async function gradeOne(
   model: ReturnType<typeof getGradingCouncil>[number],
@@ -309,19 +444,7 @@ async function gradeOne(
   let last = "Grader skipped a question";
   for (let attempt = 0; attempt < 2; attempt++) {
     if (signal?.aborted) throw new Error(`Grader ${model.id} timed out after ${graderTimeoutMs()}ms`);
-    const { data, raw } = await completeJson(model, {
-      purpose: "grade",
-      temperature,
-      seed,
-      signal,
-      messages: [
-        { role: "system", content: rubricPrompt(opts.difficulty) },
-        {
-          role: "user",
-          content: `Grade each answer against its claim. Quote the answer in evidence.\n\n<transcript>\n${transcript}\n</transcript>`,
-        },
-      ],
-    }, gradeResponseSchema);
+    const { data, raw } = await completeGradeCall(model, opts, transcript, signal);
     const claimGrades = alignGrades(data.claimGrades, opts.plan, opts.turns, opts.claims);
     const answered = opts.plan.probes.filter((probe) => opts.turns.some((turn) => turn.probeId === probe.id));
     const covered = new Set(claimGrades.map((grade) => grade.probeId));
