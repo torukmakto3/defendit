@@ -785,6 +785,13 @@ async function claimDemoSession(
   sessionId: string,
 ): Promise<{ sessionId: string; plan: InterviewPlan; channel: Channel; startedAt: string; demo: true } | null> {
   const db = await getDb();
+  // Kind `demo` with no sample pass still starts, and the funnel skips it.
+  // A real pass is the row that limits the sample to one session.
+  const pass = await db.get<{ token_hash: string }>(
+    `SELECT token_hash FROM demo_passes WHERE request_id = ?`,
+    [requestId],
+  );
+  if (!pass) return null;
   const claimed = await db.run(
     `UPDATE demo_passes SET session_id = ? WHERE request_id = ? AND session_id IS NULL`,
     [sessionId, requestId],
