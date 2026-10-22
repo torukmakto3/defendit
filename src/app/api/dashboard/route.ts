@@ -4,7 +4,7 @@ import { getDb } from "@/lib/db";
 import { handleError, requireUser } from "@/lib/http";
 import { billingEnabled } from "@/lib/plans";
 import { listDashboard } from "@/lib/services";
-import { checkoutCatalog, paymentsEnabled } from "@/lib/stripe-config";
+import { checkoutCatalog } from "@/lib/stripe-config";
 
 export const runtime = "nodejs";
 
@@ -16,9 +16,10 @@ export async function GET(req: Request) {
     const [rows, wallet, profile] = await Promise.all([
       listDashboard(guard.user),
       walletView(guard.user.id),
-      db.get<{ flag_reason: string | null }>(`SELECT flag_reason FROM billing_profiles WHERE user_id = ?`, [
-        guard.user.id,
-      ]),
+      db.get<{ flag_reason: string | null; payment_notice: string | null }>(
+        `SELECT flag_reason, payment_notice FROM billing_profiles WHERE user_id = ?`,
+        [guard.user.id],
+      ),
     ]);
     const products = checkoutCatalog() ?? [];
     return NextResponse.json({
@@ -26,9 +27,9 @@ export async function GET(req: Request) {
       wallet: {
         ...wallet,
         billingEnabled: billingEnabled(),
-        paymentsEnabled: paymentsEnabled(),
         products,
         billingFlag: profile?.flag_reason ?? null,
+        paymentNotice: profile?.payment_notice ?? null,
       },
     });
   } catch (e) {
