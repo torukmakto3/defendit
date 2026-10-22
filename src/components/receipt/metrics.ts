@@ -1,3 +1,4 @@
+import { PARTIAL_CLAIM_SCORE, STRONG_CLAIM_SCORE } from "@/lib/score-bands";
 import type { ReceiptPayload } from "@/lib/types";
 
 /**
@@ -23,9 +24,9 @@ export interface ClaimResult {
   band: Band;
 }
 
-/** Bands use the rubric's thresholds: strong 75+, partial 50+, weak below. */
+/** Bands use the rubric's thresholds: strong at STRONG_CLAIM_SCORE, partial at PARTIAL_CLAIM_SCORE, weak below. */
 export function bandOf(score: number): Band {
-  return score >= 75 ? "strong" : score >= 50 ? "partial" : "weak";
+  return score >= STRONG_CLAIM_SCORE ? "strong" : score >= PARTIAL_CLAIM_SCORE ? "partial" : "weak";
 }
 
 /**

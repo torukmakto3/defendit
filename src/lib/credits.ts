@@ -49,6 +49,7 @@
  * $3 (`src/lib/plans.ts`). This module does not enforce the cap.
  */
 
+import { betaBudgetEur, betaDefenseEur } from "./beta";
 import { demoBudgetEur, isDemoPrincipalEmail } from "./demo-policy";
 import { getDb, type Db } from "./db";
 import { HttpError } from "./errors";
@@ -261,19 +262,11 @@ function num(value: number | string | null | undefined): number {
 }
 
 export function betaBudgetCents(): number {
-  return Math.round(envNonNegative("BETA_BUDGET_EUR", 150) * 100);
+  return Math.round(betaBudgetEur() * 100);
 }
 
 export function betaDefenseCents(): number {
-  return Math.round(envNonNegative("BETA_DEFENSE_EUR", 0.7) * 100);
-}
-
-function envNonNegative(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw == null || raw.trim() === "") return fallback;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return fallback;
-  return n;
+  return Math.round(betaDefenseEur() * 100);
 }
 
 function isUniqueViolation(e: unknown): boolean {

@@ -45,6 +45,12 @@ function budget(limitName: string, limitDefault: number, windowName: string, win
   };
 }
 
+/**
+ * The purge deletes a rate-limit row this long after its window started.
+ * The privacy page calls that "about two days".
+ */
+export const RATE_LIMIT_ROW_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000;
+
 /** IP bucket, or null when there is no usable salt. Never the raw address. */
 export function ipRateKey(scope: string, ip: string): string | null {
   const hash = ipHash(ip);

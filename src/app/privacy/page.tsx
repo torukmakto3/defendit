@@ -1,6 +1,7 @@
 // Draft, last updated 2026-10-22
 import type { Metadata } from "next";
 import { demoRetentionHours } from "@/lib/demo-policy";
+import { OPERATOR_NAME } from "@/lib/operator";
 import { PRIVACY_UPDATED } from "@/lib/privacy";
 
 export const metadata: Metadata = {
@@ -10,7 +11,7 @@ export const metadata: Metadata = {
 
 export default function PrivacyPage() {
   // TODO(legal review): placeholder contact
-  const contactName = "Luis Nunez";
+  const contactName = OPERATOR_NAME;
   const contactEmail = "tramuntanabtc@gmail.com";
 
   return (

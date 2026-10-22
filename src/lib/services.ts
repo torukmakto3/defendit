@@ -72,7 +72,11 @@ import {
   noteChallengeSession,
   noteChallengeUpload,
 } from "./challenges";
+import { RATE_LIMIT_ROW_MAX_AGE_MS } from "./ratelimit";
+import { documentTtlHours, MAX_UPLOAD_BYTES, retentionDays } from "./retention";
 import { decryptField, decryptJson, encryptField, encryptJson } from "./vault";
+
+export { MAX_UPLOAD_BYTES };
 
 /**
  * Data lifecycle ("process and purge"):
@@ -84,14 +88,11 @@ import { decryptField, decryptJson, encryptField, encryptJson } from "./vault";
  * - Claims, transcripts, grades and the file name are encrypted and deleted
  *   after RETENTION_DAYS. Receipts (hash + score, no content) are kept.
  */
-export const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 4 * 1024 * 1024);
 const MAX_TEXT_CHARS = 400_000;
 
 function hoursFromNow(h: number) {
   return new Date(Date.now() + h * 3600_000).toISOString();
 }
-const documentTtlHours = () => Number(process.env.DOCUMENT_TTL_HOURS || "72");
-const retentionDays = () => Number(process.env.RETENTION_DAYS || "30");
 
 const ctx = {
   fileName: (id: string) => `deliverables.file_name:${id}`,
@@ -1996,7 +1997,7 @@ export async function purgeExpired() {
   await db.run(`DELETE FROM login_tokens WHERE expires_at < ?`, [nowIso]);
   await db.run(`DELETE FROM auth_sessions WHERE expires_at < ?`, [nowIso]);
   await db.run(`DELETE FROM rate_limits WHERE window_start < ?`, [
-    new Date(Date.now() - 2 * 24 * 3600_000).toISOString(),
+    new Date(Date.now() - RATE_LIMIT_ROW_MAX_AGE_MS).toISOString(),
   ]);
   // Sample counters only. This statement never deletes another bucket.
   await db.run(
