@@ -12,8 +12,10 @@ import { consumeMagicLink, requestMagicLink, type User } from "../src/lib/auth";
 import { sha256Hex } from "../src/lib/crypto";
 import { getDb, resetDbForTests } from "../src/lib/db";
 import { ipLimitKey, RATE_LIMIT_MESSAGE } from "../src/lib/http";
-import { ipHash } from "../src/lib/ip-hash";
+import { ipHash, resetIpHashNotices } from "../src/lib/ip-hash";
 import { ipRateKey, LIMITS } from "../src/lib/ratelimit";
+import { registerNode } from "../src/instrumentation-node";
+import * as ratelimitModule from "../src/lib/ratelimit";
 
 const memo = readFileSync(join(__dirname, "..", "fixtures", "sample-memo.md"));
 
@@ -40,6 +42,8 @@ beforeAll(() => {
   process.env.DEFEND_IT_SIGNING_SEED = "33".repeat(32);
   delete process.env.DATABASE_URL;
   delete process.env.RESEND_API_KEY;
+  process.env.IP_HASH_SALT = "ab".repeat(32);
+  delete process.env.DEMO_IP_SALT;
   resetDbForTests();
 });
 
@@ -98,12 +102,54 @@ describe("rate limit configuration", () => {
       delete process.env.IP_HASH_SALT;
       process.env.DEMO_IP_SALT = "cd".repeat(32);
       expect(ipHash(ip)).toBe(createHmac("sha256", Buffer.from("cd".repeat(32), "hex")).update(ip).digest("hex"));
+    } finally {
+      if (savedSalt === undefined) delete process.env.IP_HASH_SALT;
+      else process.env.IP_HASH_SALT = savedSalt;
+      if (savedDemo === undefined) delete process.env.DEMO_IP_SALT;
+      else process.env.DEMO_IP_SALT = savedDemo;
+    }
+  });
 
+  it("logs a missing or malformed salt and does not hash", () => {
+    const ip = "203.0.113.50";
+    const savedSalt = process.env.IP_HASH_SALT;
+    const savedDemo = process.env.DEMO_IP_SALT;
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      resetIpHashNotices();
+      delete process.env.IP_HASH_SALT;
       delete process.env.DEMO_IP_SALT;
       vi.stubEnv("NODE_ENV", "production");
-      expect(() => ipHash(ip)).toThrow(/IP_HASH_SALT is not set/);
+      expect(ipHash(ip)).toBeNull();
+      expect(ipRateKey("upload", ip)).toBeNull();
+      expect(() => registerNode()).not.toThrow();
+      ipHash(ip);
+      const missing = spy.mock.calls.map((call) => String(call[0])).filter((line) => line.includes("IP_HASH_SALT is not set"));
+      expect(missing).toHaveLength(1);
+      expect(missing[0]).toContain("openssl rand -hex 32");
+
+      resetIpHashNotices();
+      spy.mockClear();
+      process.env.IP_HASH_SALT = "not-hex";
+      process.env.DEMO_IP_SALT = "cd".repeat(32);
+      expect(ipHash(ip)).toBe(createHmac("sha256", Buffer.from("cd".repeat(32), "hex")).update(ip).digest("hex"));
+      expect(spy.mock.calls.map((call) => String(call[0])).join("\n")).toContain("must be exactly 64 hex characters");
+
+      resetIpHashNotices();
+      spy.mockClear();
+      process.env.IP_HASH_SALT = "zz";
+      process.env.DEMO_IP_SALT = "also-bad";
+      expect(ipHash(ip)).toBeNull();
+      expect(ipHash(ip)).not.toBe(sha256Hex(ip));
+      const bad = spy.mock.calls.map((call) => String(call[0]));
+      expect(bad.filter((line) => line.includes("IP_HASH_SALT")).length).toBeGreaterThan(0);
+      expect(bad.filter((line) => line.includes("DEMO_IP_SALT")).length).toBeGreaterThan(0);
+      ipHash(ip);
+      expect(spy.mock.calls.length).toBe(bad.length);
     } finally {
+      spy.mockRestore();
       vi.unstubAllEnvs();
+      resetIpHashNotices();
       if (savedSalt === undefined) delete process.env.IP_HASH_SALT;
       else process.env.IP_HASH_SALT = savedSalt;
       if (savedDemo === undefined) delete process.env.DEMO_IP_SALT;
@@ -158,6 +204,22 @@ describe("rate limit configuration", () => {
     expect(res.status).toBeGreaterThanOrEqual(300);
     expect(res.status).toBeLessThan(400);
   });
+
+  it("redirects Google sign-in when the limiter cannot reach the database", async () => {
+    const spy = vi.spyOn(ratelimitModule, "rateLimit").mockRejectedValueOnce(new Error("db down"));
+    try {
+      const res = await googleCallback(
+        new Request("http://127.0.0.1:3000/api/auth/google/callback", {
+          headers: { "x-forwarded-for": "203.0.113.80" },
+        }),
+      );
+      expect(res.status).toBeGreaterThanOrEqual(300);
+      expect(res.status).toBeLessThan(400);
+      expect(res.headers.get("location")).toContain("auth_error=failed");
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe("sign-in email sends", () => {
@@ -191,6 +253,37 @@ describe("sign-in email sends", () => {
     expect(keys).toContain(`login:email:${sha256Hex("limit-email@fund.example")}`);
     expect(keys).toContain(ipRateKey("login", emailIp));
     expect(keys).toContain(ipRateKey("login", sharedIp));
+  });
+
+  it("keeps the per-email limit when no salt is set and stores no address", async () => {
+    const savedSalt = process.env.IP_HASH_SALT;
+    const savedDemo = process.env.DEMO_IP_SALT;
+    delete process.env.IP_HASH_SALT;
+    delete process.env.DEMO_IP_SALT;
+    process.env.RATE_LIMIT_LOGIN_EMAIL = "1";
+    process.env.RATE_LIMIT_LOGIN_IP = "1";
+    const ip = "203.0.113.90";
+    try {
+      const first = await requestLink(postJson("/api/auth/request", { email: "nosalt-one@fund.example" }, ip));
+      expect(first.status).toBe(200);
+      const sameIp = await requestLink(postJson("/api/auth/request", { email: "nosalt-two@fund.example" }, ip));
+      expect(sameIp.status).toBe(200);
+      const again = await requestLink(postJson("/api/auth/request", { email: "nosalt-one@fund.example" }, "203.0.113.91"));
+      await expectLimited(again);
+
+      const db = await getDb();
+      const rows = await db.all<{ bucket_key: string }>(`SELECT bucket_key FROM rate_limits`);
+      const stored = rows.map((row) => row.bucket_key).join("\n");
+      expect(stored).toContain(`login:email:${sha256Hex("nosalt-one@fund.example")}`);
+      expect(stored).not.toContain(ip);
+      expect(stored).not.toContain(sha256Hex(ip));
+      expect(ipRateKey("login", ip)).toBeNull();
+    } finally {
+      if (savedSalt === undefined) delete process.env.IP_HASH_SALT;
+      else process.env.IP_HASH_SALT = savedSalt;
+      if (savedDemo === undefined) delete process.env.DEMO_IP_SALT;
+      else process.env.DEMO_IP_SALT = savedDemo;
+    }
   });
 });
 

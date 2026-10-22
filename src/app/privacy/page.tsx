@@ -65,9 +65,9 @@ export default function PrivacyPage() {
 
         <h3 className="text-lg font-bold">Account</h3>
         <p>
-          Your sign-in email, stored in lowercase, and an optional display name. The row is created the
-          first time you sign in with Google or with an email link, and it is kept until someone
-          deletes it. Nothing in the app deletes accounts on a timer.
+          Your account is kept until you delete it or ask us to. Nothing in the app deletes accounts
+          on a timer. The row holds your sign-in email, stored in lowercase, and an optional display
+          name. It is created the first time you sign in with Google or with an email link.
         </p>
         <p>
           The session cookie (<span className="mono">di_session</span>) lasts 30 days. It is HTTP-only.
@@ -112,11 +112,14 @@ export default function PrivacyPage() {
           The card&apos;s scheduling state (when it is due) is stored next to the encrypted text.
         </p>
         <p>
-          Each grader&apos;s number, model id, provider, temperature, and seed are stored in the clear.
-          The detailed grade, which can quote an answer, is encrypted and cleared with the session
-          after the retention window. The numeric score on the grade row is not cleared. If a person
-          reviews the session, their score, name, and notes are stored. The notes are cleared with the
-          session. The score and the name are not.
+          The score is produced automatically by the AI models that grade the defense. A human review
+          is available on request: email{" "}
+          <a href={`mailto:${contactEmail}`}>{contactEmail}</a>. That request is how you get a person
+          to look at the score (Article 13(2)(f) and Article 22). Each grader&apos;s number, model id,
+          provider, temperature, and seed are stored in the clear. The detailed grade, which can quote
+          an answer, is encrypted and cleared with the session after the retention window. The numeric
+          score on the grade row is not cleared. If a person reviews the session, their score, name,
+          and notes are stored. The notes are cleared with the session. The score and the name are not.
         </p>
         <p>
           A precomputed first question is stored encrypted on the defense link. The purge job does not
@@ -165,6 +168,7 @@ export default function PrivacyPage() {
           and published-result views. A view or a share from a signed-in account stores that account id. A
           view or a share with no session stores no account id. A published-result view stores the account
           id, or a keyed hash of the IP address when there is no session, so the same account or address is counted once.
+          Without a usable salt, an anonymous view is not counted.
           A report can store a short note. The purge job leaves these rows in place.
         </p>
 
@@ -207,8 +211,10 @@ export default function PrivacyPage() {
           a stage name and a duration, not the file.
         </p>
         <p>
-          Abuse limits store a keyed hash of the IP address and a counter. The address itself is not
-          stored. Those rows are deleted about two days after the window starts.
+          Abuse limits store a keyed hash of the IP address and a counter when the server has a salt.
+          The address itself is not stored, and it is never stored as a raw value or an unkeyed hash.
+          Without a usable salt, the IP limit is skipped. Per-account and per-email limits still apply.
+          Those rows are deleted about two days after the window starts.
         </p>
       </section>
 
@@ -360,10 +366,11 @@ export default function PrivacyPage() {
         <p>
           If the GDPR applies to you, you can ask {contactName} for access to the personal data held
           for your sign-in email, for correction, for deletion, for a copy of what is still held
-          (portability), and to object to processing that relies on legitimate interests. You can also
-          complain to the Portuguese supervisory authority, the Comissão Nacional de Proteção de Dados
-          (CNPD), at <a href="https://www.cnpd.pt/">cnpd.pt</a>, Av. D. Carlos I, 134, 1º, 1200-651
-          Lisboa, or <a href="mailto:geral@cnpd.pt">geral@cnpd.pt</a>.
+          (portability), to restrict processing, and to object to processing that relies on legitimate
+          interests. We reply within one month. You can also complain to the Portuguese supervisory
+          authority, the Comissão Nacional de Proteção de Dados (CNPD), at{" "}
+          <a href="https://www.cnpd.pt/">cnpd.pt</a>, Av. D. Carlos I, 134, 1º, 1200-651 Lisboa, or{" "}
+          <a href="mailto:geral@cnpd.pt">geral@cnpd.pt</a>.
         </p>
         <p>
           There is no delete button and no export button. Signing out ends the session cookie on this

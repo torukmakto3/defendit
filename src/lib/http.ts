@@ -22,8 +22,8 @@ export function clientIp(req: Request): string {
   return req.headers.get("x-real-ip") || "unknown";
 }
 
-/** Rate-limit bucket for this request's address. The raw address is not part of the key. */
-export function ipLimitKey(scope: string, req: Request): string {
+/** Rate-limit bucket for this request's address, or null when there is no usable salt. */
+export function ipLimitKey(scope: string, req: Request): string | null {
   return ipRateKey(scope, clientIp(req));
 }
 
@@ -63,9 +63,10 @@ export async function requireAdmin(req: Request): Promise<Guarded> {
 }
 
 export async function limitOr429(
-  key: string,
+  key: string | null,
   budget: { limit: number; windowSec: number },
 ): Promise<NextResponse | null> {
+  if (!key) return null;
   const r = await rateLimit(key, budget.limit, budget.windowSec);
   if (r.ok) return null;
   return jsonError(429, RATE_LIMIT_MESSAGE, {

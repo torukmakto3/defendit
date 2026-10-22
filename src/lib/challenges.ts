@@ -15,7 +15,7 @@ import { getDb, type Db } from "./db";
 import { HttpError } from "./errors";
 import { newId, newToken } from "./ids";
 import { ipHash } from "./ip-hash";
-import { ipRateKey, LIMITS, rateLimit } from "./ratelimit";
+import { LIMITS, rateLimit, rateLimitIp } from "./ratelimit";
 import type { Difficulty, ReceiptOutcome, SignedReceipt } from "./types";
 
 /**
@@ -674,11 +674,7 @@ export async function claimChallenge(opts: {
     LIMITS.challengeClaimPerUser.windowSec,
   );
   if (!userLimited.ok) throw new HttpError(429, "Too many attempts. Try again later.");
-  const ipLimited = await rateLimit(
-    ipRateKey("challenge-claim", opts.ip),
-    LIMITS.challengeClaimPerIp.limit,
-    LIMITS.challengeClaimPerIp.windowSec,
-  );
+  const ipLimited = await rateLimitIp("challenge-claim", opts.ip, LIMITS.challengeClaimPerIp);
   if (!ipLimited.ok) throw new HttpError(429, "Too many attempts. Try again later.");
 
   const db = await getDb();
@@ -801,11 +797,7 @@ export async function declineChallenge(
     LIMITS.challengeClaimPerUser.windowSec,
   );
   if (!userLimited.ok) throw new HttpError(429, "Too many attempts. Try again later.");
-  const ipLimited = await rateLimit(
-    ipRateKey("challenge-decline", ip),
-    LIMITS.challengeClaimPerIp.limit,
-    LIMITS.challengeClaimPerIp.windowSec,
-  );
+  const ipLimited = await rateLimitIp("challenge-decline", ip, LIMITS.challengeClaimPerIp);
   if (!ipLimited.ok) throw new HttpError(429, "Too many attempts. Try again later.");
 
   const db = await getDb();
@@ -932,11 +924,7 @@ export async function recordShareClick(slug: string, user: User | null, channel:
 
 export async function reportChallenge(slug: string, ip: string, note?: string): Promise<void> {
   if (!challengesEnabled()) throw new HttpError(404, "Challenges are not available.");
-  const limited = await rateLimit(
-    ipRateKey("challenge-report", ip),
-    LIMITS.challengeReportPerIp.limit,
-    LIMITS.challengeReportPerIp.windowSec,
-  );
+  const limited = await rateLimitIp("challenge-report", ip, LIMITS.challengeReportPerIp);
   if (!limited.ok) throw new HttpError(429, "Too many reports. Try again later.");
   const db = await getDb();
   const row = await loadBySlug(db, slug);
@@ -1125,7 +1113,7 @@ export async function receiptGate(receiptId: string, user: User | null): Promise
 /**
  * Funnel count for a published result page. Sharing is not involved.
  * One row per signed-in viewer, or per keyed hash of an anonymous address.
- * Repeats do not add rows.
+ * Repeats do not add rows. No usable salt skips the anonymous count.
  */
 export async function recordResultView(receiptId: string, user: User | null, ip = "unknown"): Promise<void> {
   const db = await getDb();
@@ -1137,7 +1125,14 @@ export async function recordResultView(receiptId: string, user: User | null, ip 
   const visibility = asVisibility(row.visibility);
   if (visibility !== "public" && visibility !== "score_hidden") return;
   if (user && user.id === row.claimed_by_user_id) return;
-  const viewer = user?.id ?? `ip:${ipHash(ip)}`;
+  let viewer: string;
+  if (user) {
+    viewer = user.id;
+  } else {
+    const hashed = ipHash(ip);
+    if (!hashed) return;
+    viewer = `ip:${hashed}`;
+  }
   const meta = JSON.stringify({ viewer });
   const prior = await db.get<{ id: string }>(
     `SELECT id FROM challenge_events

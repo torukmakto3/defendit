@@ -61,8 +61,17 @@ describe("privacy page", () => {
   });
 
   it("states the GDPR bases, the real file clocks, and the rights", () => {
+    expect(html).toContain("Your account is kept until you delete it or ask us to");
+    expect(html).toContain("produced automatically");
+    expect(html).toContain("human review");
+    expect(html).toContain("Article 13(2)(f)");
+    expect(html).toContain("Article 22");
+    expect(html).toContain("restrict processing");
+    expect(html).toContain("within one month");
     expect(html).toContain("Article 6(1)(b)");
     expect(html).toContain("Article 6(1)(f)");
+    expect(html).toContain("anonymous view is not counted");
+    expect(html).toContain("IP limit is skipped");
     expect(html).toContain("legitimate interest");
     expect(html).toContain("raw uploaded file is not kept");
     expect(html).toContain("DOCUMENT_TTL_HOURS");

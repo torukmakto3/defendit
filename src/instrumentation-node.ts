@@ -7,6 +7,7 @@ import { describeGradingCouncil } from "./lib/llm";
  */
 export function registerNode(): void {
   if (process.env.NEXT_PHASE === "phase-production-build") return;
+  // A missing salt is logged. The process still listens; IP limits are skipped.
   assertIpHashConfigured();
   const label = describeGradingCouncil();
   if (label.startsWith("Grading is refused")) {

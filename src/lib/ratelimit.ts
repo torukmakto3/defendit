@@ -45,12 +45,25 @@ function budget(limitName: string, limitDefault: number, windowName: string, win
   };
 }
 
+/** IP bucket, or null when there is no usable salt. Never the raw address. */
+export function ipRateKey(scope: string, ip: string): string | null {
+  const hash = ipHash(ip);
+  if (!hash) return null;
+  return `${scope}:ip:${hash}`;
+}
+
 /**
- * Bucket key for an IP limit. The address is a keyed hash so the rate-limit
- * table never stores the raw IP. Callers must pass the address only into this function.
+ * IP-keyed limit. No usable salt skips the check (ok) and writes no row.
+ * Per-account and per-email limits use `rateLimit` directly and still apply.
  */
-export function ipRateKey(scope: string, ip: string): string {
-  return `${scope}:ip:${ipHash(ip)}`;
+export async function rateLimitIp(
+  scope: string,
+  ip: string,
+  budget: { limit: number; windowSec: number },
+): Promise<{ ok: boolean; retryAfterSec: number }> {
+  const key = ipRateKey(scope, ip);
+  if (!key) return { ok: true, retryAfterSec: 0 };
+  return rateLimit(key, budget.limit, budget.windowSec);
 }
 
 export async function rateLimit(

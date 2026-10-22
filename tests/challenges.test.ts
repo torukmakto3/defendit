@@ -95,6 +95,7 @@ beforeAll(() => {
   process.env.CHALLENGE_GLOBAL_DAILY_CAP = "100";
   process.env.BETA_BUDGET_EUR = "1000";
   process.env.CHALLENGE_MIN_ACCOUNT_AGE_HOURS = "0";
+  process.env.IP_HASH_SALT = "ab".repeat(32);
   process.env.CHALLENGE_CREATE_LIMIT = "30";
   process.env.CHALLENGE_CLAIM_LIMIT = "30";
   process.env.CHALLENGE_CLAIM_IP_LIMIT = "50";
@@ -530,6 +531,23 @@ describe("challenge links", () => {
     expect(viewed).toHaveLength(1);
     expect(viewed[0]?.meta).toContain(ipHash(viewIp));
     expect(viewed[0]?.meta).not.toContain(viewIp);
+    const savedSalt = process.env.IP_HASH_SALT;
+    const savedDemo = process.env.DEMO_IP_SALT;
+    delete process.env.IP_HASH_SALT;
+    delete process.env.DEMO_IP_SALT;
+    const unsaltedIp = "198.51.100.77";
+    await recordResultView(published.receipt.payload.id, null, unsaltedIp);
+    const unsigned = (await challengeEvents(published.created.slug)).filter((row) => row.event === "result_viewed");
+    expect(unsigned).toHaveLength(1);
+    expect(JSON.stringify(unsigned)).not.toContain(unsaltedIp);
+    await recordResultView(published.receipt.payload.id, published.creator, unsaltedIp);
+    const signedIn = (await challengeEvents(published.created.slug)).filter((row) => row.event === "result_viewed");
+    expect(signedIn).toHaveLength(2);
+    expect(JSON.stringify(signedIn)).not.toContain(unsaltedIp);
+    if (savedSalt === undefined) delete process.env.IP_HASH_SALT;
+    else process.env.IP_HASH_SALT = savedSalt;
+    if (savedDemo === undefined) delete process.env.DEMO_IP_SALT;
+    else process.env.DEMO_IP_SALT = savedDemo;
     expect((await ledgerForSlug(published.created.slug)).map((row) => row.action).sort()).toEqual([
       "consume",
       "grant",
