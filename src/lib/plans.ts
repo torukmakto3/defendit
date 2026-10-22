@@ -249,7 +249,12 @@ export function isSku(value: string): value is Sku {
   }
 }
 
-/** How many monthly allowances a renewal pays for. A year is twelve periods, paid once. */
+/**
+ * How many monthly allowances `renewPlan` pays for. Monthly Stripe invoices
+ * use one. A simulated year still pays twelve at once. Stripe Pro yearly
+ * (`dit_pro_yearly`) does not: `invoice.paid` grants month 0 and
+ * `grantDueSubscriptionRefills` grants the later months.
+ */
 export function periodsForInterval(interval: BillingInterval): number {
   switch (interval) {
     case "month":

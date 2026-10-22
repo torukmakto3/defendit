@@ -13,7 +13,7 @@ Turning it on opens Checkout and applies the wallet gate (paid defenses, Learn s
 | `dit_pack_3` | pack3 | €10 VAT included, 3 flex credits | payment |
 | `dit_pack_8` | pack8 | €20 VAT included, 8 flex credits | payment |
 | `dit_pro_monthly` | subscription_month | €11/month VAT included | subscription |
-| `dit_pro_yearly` | subscription_year | €99/year VAT included, 12 periods at once | subscription |
+| `dit_pro_yearly` | subscription_year | €99/year VAT included. Each month refills to 10 defenses, 5 challenges, and 10 Learn projects. Unused defenses and challenges do not roll over | subscription |
 | `dit_team_monthly` | team_month | €149/month, VAT added | subscription |
 
 `dit_enterprise_base` (€490/month, VAT added, 200 defenses) is not in Checkout. It is sold by quote. `dit_enterprise_extra_unit` (€2.50, VAT added) is the invoice-item fallback for Enterprise overage. The `defense_overage` meter is not created and no meter events are sent.
@@ -49,7 +49,7 @@ The same Stripe event id is acknowledged once. Credits are keyed on the Checkout
 | `checkout.session.completed` | Store the customer. One-time sku, `payment_status=paid`: grant from the line’s lookup key. Subscription mode: store the subscription and grant nothing. |
 | `checkout.session.async_payment_succeeded` | Same grant as completed, same session id. |
 | `checkout.session.async_payment_failed` | No grant. A notice on the dashboard. |
-| `invoice.paid` | `subscription_create`, `subscription_cycle`, or `subscription_update`. Renew from `parent.subscription_details.metadata` (not `invoice.metadata`). Pro +10 defenses, +5 challenges, 10 Learn slots. A year is 12 periods. Team +50. Enterprise +200. |
+| `invoice.paid` | `subscription_create`, `subscription_cycle`, or `subscription_update`. The sku comes from `parent.subscription_details.metadata` or the line lookup key, not `invoice.metadata`. A monthly plan grants its allowance once (Pro 10 defenses, 5 challenges, 10 Learn slots; Team 50; Enterprise 200). Yearly Pro grants month 0 only, keyed `refill:<subscription id>:<period index>`. |
 | `invoice.payment_failed` | `past_due` and a portal notice. Credits stay. |
 | `customer.subscription.updated` | Sync plan, interval, status, `cancel_at_period_end`. No grant. |
 | `customer.subscription.deleted` | Plan returns to pay as you go. Unused subscription defenses and challenges expire. Purchased, pack, and beta credits stay. |
@@ -64,6 +64,16 @@ The same Stripe event id is acknowledged once. Credits are keyed on the Checkout
 | `charge.succeeded` | Stores the card fingerprint used to block a self-claim. |
 
 The line check compares lookup key, or the catalog price id when the line has no lookup key. It does not compare `amount_total`.
+
+## Yearly Pro refill
+
+`dit_pro_yearly` is billed once a year and refilled every month. Stripe's `invoice.paid` grants month 0. `grantDueSubscriptionRefills` grants each later month the subscription is still inside. The purge cron runs it for every due subscription. The dashboard and the start of a Learn or Defend session run it for that user. There is no separate worker.
+
+Each subscription stores `current_period_start`, `current_period_end`, `grant_anchor` (the subscription start, or `billing_cycle_anchor`), and `last_granted_period_index`. The period index is the number of UTC monthly anniversaries of that anchor, clamped to the last day of a short month (31 January lands on 28 February, or 29 in a leap year). The ledger key is `refill:<subscription id>:<period index>`, so the invoice and the job cannot both credit the same month. A paid year gets at most 12 grants. The next yearly invoice starts the next run of 12.
+
+A refill tops up to the allowance. Unused subscription defenses and challenges expire, then the month's 10 and 5 are granted. Learn slots top up to 10. Purchased, pack, and beta credits stay. Nothing rolls over.
+
+The job grants a subscription only when its status is `active` or `trialing`, it is not past `current_period_end`, and it has not been deleted. `customer.subscription.deleted`, status `unpaid`, and status `canceled` stop further refills. `cancel_at_period_end` does not, while the status is still active and the period has not ended. A missed run catches up the months in between and does not grant them twice.
 
 ## Environment
 

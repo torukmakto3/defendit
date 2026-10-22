@@ -175,7 +175,7 @@ export interface GrantCreditsInput {
 export interface AssignedPlan {
   plan: Plan;
   interval: BillingInterval | null;
-  status: "active" | "past_due" | "canceled" | "none";
+  status: "active" | "trialing" | "past_due" | "unpaid" | "canceled" | "none";
   /** consumer or enterprise. The cost-cap reads this. It is not enforced here. */
   costTier: CostCapTier;
   periodId: string | null;
@@ -693,7 +693,13 @@ async function assignedPlan(db: Db, userId: string): Promise<AssignedPlan> {
   const plan = getPlan(row.plan_id);
   const interval = row.interval === "month" || row.interval === "year" ? row.interval : null;
   const status =
-    row.status === "active" || row.status === "past_due" || row.status === "canceled" ? row.status : "none";
+    row.status === "active" ||
+    row.status === "trialing" ||
+    row.status === "past_due" ||
+    row.status === "unpaid" ||
+    row.status === "canceled"
+      ? row.status
+      : "none";
   return { plan, interval, status, costTier: plan.costTier, periodId: row.period_id };
 }
 
@@ -1204,7 +1210,7 @@ export async function attachSubscription(input: {
   planId: PlanId;
   interval: BillingInterval;
   subscriptionId: string;
-  status: "active" | "past_due" | "canceled";
+  status: "active" | "trialing" | "past_due" | "unpaid" | "canceled";
   cancelAtPeriodEnd: boolean;
   periodEnd?: string | null;
 }): Promise<void> {
@@ -1239,7 +1245,7 @@ export async function attachSubscription(input: {
 export async function markPlanPastDue(userId: string): Promise<void> {
   const db = await getDb();
   await db.run(
-    `UPDATE user_plans SET status = 'past_due', updated_at = ? WHERE user_id = ? AND status = 'active'`,
+    `UPDATE user_plans SET status = 'past_due', updated_at = ? WHERE user_id = ? AND status IN ('active', 'trialing')`,
     [new Date().toISOString(), userId],
   );
 }
@@ -1270,6 +1276,156 @@ export async function endPaidPlan(userId: string, subscriptionId: string): Promi
       [userId, periodId, subscriptionId, now],
     );
   });
+}
+
+export interface SubscriptionMonthGrant {
+  userId: string;
+  planId: PlanId;
+  subscriptionId: string;
+  periodIndex: number;
+  periodStart: string;
+  periodEnd: string;
+  grantAnchor: string;
+  /** A paid invoice marks the plan active. A refill leaves status alone. */
+  activate: boolean;
+}
+
+/**
+ * One Pro month, keyed `refill:<subscription id>:<period index>`.
+ * Unused subscription defenses and gifts are expired first, then the month's
+ * allowance is granted, so the balance tops up to the allowance and does not
+ * stack. Learn slots top up to the plan cap. A repeat of the same index
+ * does not grant again.
+ */
+export async function grantSubscriptionMonth(input: SubscriptionMonthGrant): Promise<{
+  granted: boolean;
+  grants: { kind: LedgerKind; source: CreditSource; credits: number }[];
+}> {
+  if (!Number.isInteger(input.periodIndex) || input.periodIndex < 0) {
+    throw new HttpError(400, "Refill period is not valid.");
+  }
+  const plan = getPlan(input.planId);
+  const base = `refill:${input.subscriptionId}:${input.periodIndex}`;
+  return withTx(undefined, async (tx) => {
+    await lockWallet(tx, input.userId);
+    const row = await tx.get<{
+      stripe_subscription_id: string | null;
+      last_granted_period_index: number | string | null;
+    }>(
+      `SELECT stripe_subscription_id, last_granted_period_index FROM user_plans WHERE user_id = ?`,
+      [input.userId],
+    );
+    const sameSub = row?.stripe_subscription_id === input.subscriptionId;
+    const last =
+      sameSub && row?.last_granted_period_index != null ? Number(row.last_granted_period_index) : null;
+    const defenseKey = `${base}:defense`;
+    const already = await tx.get(`SELECT id FROM credit_ledger WHERE idempotency_key = ?`, [defenseKey]);
+    if (already || (last != null && last >= input.periodIndex)) {
+      if (input.activate || last == null || last < input.periodIndex) await storeRefillCursor(tx, input, base);
+      return { granted: false, grants: await refillGrants(tx, input.userId, base) };
+    }
+    if (!plan.challengesRollOver) await expireSource(tx, input.userId, "challenge", base);
+    if (!plan.defensesRollOver) await expireSource(tx, input.userId, "defense", base);
+    const grants: { kind: LedgerKind; source: CreditSource; credits: number }[] = [];
+    if (plan.defensesPerPeriod > 0) {
+      await insertEntry(tx, refillEntry(input.userId, base, "defense", plan.defensesPerPeriod));
+      grants.push({ kind: "defense", source: "subscription", credits: plan.defensesPerPeriod });
+    }
+    if (plan.challengesPerPeriod > 0) {
+      await insertEntry(tx, refillEntry(input.userId, base, "challenge", plan.challengesPerPeriod));
+      grants.push({ kind: "challenge", source: "subscription", credits: plan.challengesPerPeriod });
+    }
+    if (plan.learnSlots != null) {
+      const have = await sumKind(tx, input.userId, "learn_slot");
+      const topUp = plan.learnSlots - have;
+      if (topUp > 0) {
+        await insertEntry(tx, refillEntry(input.userId, base, "learn_slot", topUp));
+        grants.push({ kind: "learn_slot", source: "subscription", credits: topUp });
+      }
+    }
+    await storeRefillCursor(tx, input, base);
+    return { granted: true, grants };
+  });
+}
+
+async function storeRefillCursor(tx: Db, input: SubscriptionMonthGrant, periodId: string): Promise<void> {
+  const now = new Date().toISOString();
+  const status = input.activate ? "active" : null;
+  await tx.run(
+    `INSERT INTO user_plans
+      (user_id, plan_id, interval, status, period_id, current_period_start, current_period_end,
+       stripe_subscription_id, grant_anchor, last_granted_period_index, cancel_at_period_end, updated_at)
+     VALUES (?, ?, 'year', 'active', ?, ?, ?, ?, ?, ?, 0, ?)
+     ON CONFLICT (user_id) DO UPDATE SET
+       plan_id = excluded.plan_id,
+       interval = 'year',
+       status = COALESCE(?, user_plans.status),
+       period_id = excluded.period_id,
+       current_period_start = excluded.current_period_start,
+       current_period_end = excluded.current_period_end,
+       stripe_subscription_id = excluded.stripe_subscription_id,
+       grant_anchor = CASE
+         WHEN user_plans.stripe_subscription_id IS NOT NULL
+          AND user_plans.stripe_subscription_id != excluded.stripe_subscription_id THEN excluded.grant_anchor
+         ELSE COALESCE(user_plans.grant_anchor, excluded.grant_anchor)
+       END,
+       last_granted_period_index = CASE
+         WHEN user_plans.stripe_subscription_id IS NOT NULL
+          AND user_plans.stripe_subscription_id != excluded.stripe_subscription_id THEN excluded.last_granted_period_index
+         WHEN user_plans.last_granted_period_index IS NULL THEN excluded.last_granted_period_index
+         WHEN user_plans.last_granted_period_index < excluded.last_granted_period_index THEN excluded.last_granted_period_index
+         ELSE user_plans.last_granted_period_index
+       END,
+       updated_at = excluded.updated_at`,
+    [
+      input.userId,
+      input.planId,
+      periodId,
+      input.periodStart,
+      input.periodEnd,
+      input.subscriptionId,
+      input.grantAnchor,
+      input.periodIndex,
+      now,
+      status,
+    ],
+  );
+}
+
+async function refillGrants(
+  tx: Db,
+  userId: string,
+  base: string,
+): Promise<{ kind: LedgerKind; source: CreditSource; credits: number }[]> {
+  const keys = (["defense", "challenge", "learn_slot"] as const).map((kind) => `${base}:${kind}`);
+  const rows = await tx.all<{ kind: string; amount: number | string; source: string | null }>(
+    `SELECT kind, amount, source FROM credit_ledger WHERE user_id = ? AND idempotency_key IN (?, ?, ?)`,
+    [userId, keys[0], keys[1], keys[2]],
+  );
+  return rows
+    .filter((row) => Number(row.amount) > 0)
+    .map((row) => ({
+      kind: row.kind as LedgerKind,
+      source: (row.source as CreditSource | null) ?? "subscription",
+      credits: Number(row.amount),
+    }));
+}
+
+function refillEntry(userId: string, base: string, kind: LedgerKind, amount: number): Insert {
+  return {
+    userId,
+    kind,
+    reason: "subscription_renewal",
+    amount,
+    idempotencyKey: `${base}:${kind}`,
+    source: "subscription",
+    purpose: null,
+    refType: "refill",
+    refId: base,
+    sponsored: false,
+    budgetCents: null,
+    periodId: base,
+  };
 }
 
 function renewalEntry(

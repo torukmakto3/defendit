@@ -87,6 +87,8 @@ Do not set `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`. Checkout is hosted. Prices reso
 
 Webhook events the endpoint must receive: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated`, `customer.subscription.deleted`, `charge.refunded`, `charge.dispute.created`, `invoice.created`, `invoice.finalized`, `credit_note.created`, `cash_balance.funds_available`, `customer_cash_balance_transaction.created`, `payment_method.attached`, `payment_method.detached`.
 
+Yearly Pro (`dit_pro_yearly`) refills each month from `invoice.paid` (month 0) and the existing purge cron. The balance tops up to 10 defenses, 5 challenges, and 10 Learn projects. Unused monthly defenses and challenges do not roll over.
+
 The restricted key needs write access to Checkout Sessions, Customers, Subscriptions, the customer portal, Invoices, and Invoice Items, and read access to Products, Prices, Charges, Refunds, and Events. Details are in `docs/payments.md`.
 
 ### Sign in

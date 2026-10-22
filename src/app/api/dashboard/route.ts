@@ -5,6 +5,7 @@ import { handleError, requireUser } from "@/lib/http";
 import { billingEnabled } from "@/lib/plans";
 import { listDashboard } from "@/lib/services";
 import { checkoutCatalog } from "@/lib/stripe-config";
+import { refillUserIfDue } from "@/lib/subscription-refill";
 
 export const runtime = "nodejs";
 
@@ -12,6 +13,7 @@ export async function GET(req: Request) {
   const guard = await requireUser(req);
   if (guard.response) return guard.response;
   try {
+    await refillUserIfDue(guard.user.id);
     const db = await getDb();
     const [rows, wallet, profile] = await Promise.all([
       listDashboard(guard.user),

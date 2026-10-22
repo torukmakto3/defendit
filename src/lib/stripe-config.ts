@@ -148,7 +148,8 @@ export function checkoutCatalog(): CheckoutProduct[] | null {
       sku: "subscription_year",
       name: "Pro yearly",
       priceLabel: formatEur(skuPriceCents("subscription_year")),
-      detail: "Twelve periods at once: 120 defenses, 60 challenges, and 10 Learn projects. VAT included.",
+      detail:
+        "10 defenses, 5 challenges, and 10 Learn projects each month. Unused defenses and challenges do not roll over. VAT included.",
     },
     {
       sku: "team_month",

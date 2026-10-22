@@ -179,6 +179,9 @@ function invoiceEvent(input: {
   lookupKey?: string;
   customer?: string;
   subscription?: string;
+  periodStart?: number;
+  periodEnd?: number;
+  anchor?: number;
 }) {
   const lookupKey = input.lookupKey ?? lookupFor(input.sku);
   return {
@@ -193,16 +196,23 @@ function invoiceEvent(input: {
         payment_intent: `pi_${input.invoiceId}`,
         charge: `ch_${input.invoiceId}`,
         customer: input.customer,
+        period_start: input.periodStart,
+        period_end: input.periodEnd,
         metadata: { sku: "defense", user_id: "not-the-buyer" },
         parent: {
           subscription_details: {
             metadata: { user_id: input.userId, sku: input.sku },
             subscription: input.subscription ?? `sub_${input.invoiceId}`,
+            billing_cycle_anchor: input.anchor,
           },
         },
         lines: {
           data: [
             {
+              period:
+                input.periodStart != null && input.periodEnd != null
+                  ? { start: input.periodStart, end: input.periodEnd }
+                  : undefined,
               pricing: {
                 price_details: { price: { id: `price_${lookupKey}`, lookup_key: lookupKey } },
               },
@@ -382,7 +392,7 @@ describe("webhook", () => {
         reason: "subscription_create",
       }),
     );
-    expect(await getBalance(year.user.id)).toMatchObject({ defense: 120, challenge: 60, learnSlots: 10 });
+    expect(await getBalance(year.user.id)).toMatchObject({ defense: 10, challenge: 5, learnSlots: 10 });
   });
 
   it("renews a subscription without stacking unused challenge credits", async () => {
@@ -712,6 +722,10 @@ describe("checkout session", () => {
       "team_month",
     ]);
     expect(catalog?.find((product) => product.sku === "pack8")?.detail).toMatch(/defense or a challenge/);
+    expect(catalog?.find((product) => product.sku === "subscription_year")?.detail).toMatch(
+      /each month/,
+    );
+    expect(catalog?.find((product) => product.sku === "subscription_year")?.detail).toMatch(/do not roll over/);
     expect(catalog?.some((product) => product.sku === "team_month")).toBe(true);
   });
 
@@ -866,6 +880,56 @@ describe("webhook idempotency and subscription state", () => {
     expect(await replay.json()).toMatchObject({ duplicate: true });
     expect((await getBalance(user.id)).defense).toBe(10);
     expect((await getBalance(user.id)).challenge).toBe(5);
+  });
+
+  it("grants yearly Pro month 0 once and ignores a replayed invoice", async () => {
+    const { user } = await signIn("replay-year@pay.example");
+    const periodStart = Date.UTC(2026, 0, 31) / 1000;
+    const periodEnd = Date.UTC(2027, 0, 31) / 1000;
+    const paid = await postWebhook(
+      invoiceEvent({
+        id: "evt_year_replay_a",
+        invoiceId: "in_year_replay",
+        userId: user.id,
+        sku: "subscription_year",
+        amount: 9900,
+        reason: "subscription_create",
+        subscription: "sub_year_replay",
+        periodStart,
+        periodEnd,
+        anchor: periodStart,
+      }),
+    );
+    expect(paid.status).toBe(200);
+    expect(await getBalance(user.id)).toMatchObject({ defense: 10, challenge: 5, learnSlots: 10 });
+
+    const replay = await postWebhook(
+      invoiceEvent({
+        id: "evt_year_replay_b",
+        invoiceId: "in_year_replay",
+        userId: user.id,
+        sku: "subscription_year",
+        amount: 9900,
+        reason: "subscription_cycle",
+        subscription: "sub_year_replay",
+        periodStart,
+        periodEnd,
+        anchor: periodStart,
+      }),
+    );
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ duplicate: true });
+    expect(await getBalance(user.id)).toMatchObject({ defense: 10, challenge: 5, learnSlots: 10 });
+    const plan = await (await getDb()).get<{ last_granted_period_index: number }>(
+      `SELECT last_granted_period_index FROM user_plans WHERE user_id = ?`,
+      [user.id],
+    );
+    expect(plan?.last_granted_period_index).toBe(0);
+    const grants = await (await getDb()).all<{ idempotency_key: string }>(
+      `SELECT idempotency_key FROM credit_ledger WHERE user_id = ? AND kind = 'defense' AND amount > 0`,
+      [user.id],
+    );
+    expect(grants.map((row) => row.idempotency_key)).toEqual(["refill:sub_year_replay:0:defense"]);
   });
 
   it("keeps credits when cancel is scheduled and expires them when the subscription ends", async () => {

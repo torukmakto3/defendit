@@ -56,6 +56,7 @@ import { loadQuestionPrefetch, precomputeFirstQuestion, rememberFirstQuestion } 
 import { phraseQuestions } from "./questions";
 import { listStageTimings, recordStageTiming } from "./timings";
 import { buildSignedReceipt } from "./receipt";
+import { grantDueSubscriptionRefills, refillUserIfDue } from "./subscription-refill";
 import type {
   Claim,
   Difficulty,
@@ -606,6 +607,7 @@ export async function startSession(opts: {
   analyticsHeaders?: { get(name: string): string | null };
 }) {
   maybePurge();
+  await refillUserIfDue(opts.user.id);
   const request = await requireRequest(opts.token);
   const demo = isDemoKind(request.kind);
   if (demo && opts.mode !== "defend") throw new HttpError(403, DEMO_COPY.noLearn);
@@ -1958,6 +1960,11 @@ async function rememberStudyDeck(deliverableId: string, waitForCards: boolean): 
 
 /** Delete expired content. Safe to run often: daily cron plus an hourly in-process backstop. */
 export async function purgeExpired() {
+  try {
+    await grantDueSubscriptionRefills();
+  } catch (e) {
+    console.error("[refill]", e instanceof Error ? e.message : e);
+  }
   const db = await getDb();
   await expireDueChallenges(db);
   const nowIso = new Date().toISOString();

@@ -3,9 +3,12 @@
  * `BILLING_ENABLED` is the only switch. Off means 402 and no checkout UI.
  * A live key (`sk_live_` or `rk_live_`) is refused unless `STRIPE_ALLOW_LIVE=true`.
  *
- * Subscription periods are granted only from `invoice.paid`. Checkout credits
- * one-time purchases. Ledger keys are the Checkout session id or the invoice
- * id, so a second event for the same object does not credit again.
+ * Subscription periods are granted from `invoice.paid`. Checkout credits
+ * one-time purchases and does not credit a subscription. Monthly plans use
+ * the invoice id as the ledger key. Yearly Pro grants month 0 from that
+ * invoice and later months from the refill job, both keyed
+ * `refill:<subscription id>:<period index>`. A second event for the same
+ * invoice or the same month does not credit again.
  * Customers are classic Stripe Customers (`cus_…`). See `stripe-client.ts`.
  */
 
@@ -35,6 +38,7 @@ import {
 } from "./stripe-config";
 import { addInvoiceItem, openBillingPortal } from "./stripe-client";
 import { lookupKeyForSku, resolveCheckoutPrice, resolvePrices, skuForLookupKey, STRIPE_LOOKUP_KEYS } from "./stripe-prices";
+import { addUtcMonths, grantYearlyInvoiceMonth, syncYearlySubscriptionWindow } from "./subscription-refill";
 
 export { billingEnabled };
 
@@ -101,6 +105,7 @@ const invoiceLine = z
         price_details: z.object({ price: priceValue }).nullish(),
       })
       .nullish(),
+    period: z.object({ start: z.number().int(), end: z.number().int() }).nullish(),
   })
   .passthrough();
 
@@ -110,6 +115,8 @@ const invoiceObject = z.object({
   billing_reason: z.string().nullish(),
   charge: idOrObject,
   payment_intent: idOrObject,
+  period_start: z.number().int().nullish(),
+  period_end: z.number().int().nullish(),
   // Subscription invoices leave this empty. The sku is read from
   // parent.subscription_details, never from this object.
   metadata: metaSchema,
@@ -119,6 +126,10 @@ const invoiceObject = z.object({
         .object({
           metadata: metaSchema,
           subscription: idOrObject,
+          billing_cycle_anchor: z.number().int().nullish(),
+          start_date: z.number().int().nullish(),
+          current_period_start: z.number().int().nullish(),
+          current_period_end: z.number().int().nullish(),
         })
         .nullish(),
     })
@@ -184,10 +195,18 @@ const subscriptionEventSchema = z.object({
       customer: idOrObject,
       metadata: metaSchema,
       cancel_at_period_end: z.boolean().nullish(),
+      billing_cycle_anchor: z.number().int().nullish(),
+      start_date: z.number().int().nullish(),
+      current_period_start: z.number().int().nullish(),
       current_period_end: z.number().int().nullish(),
       items: z
         .object({
-          data: z.array(z.object({ current_period_end: z.number().int().nullish() }).passthrough()),
+          data: z.array(
+            z.object({
+              current_period_start: z.number().int().nullish(),
+              current_period_end: z.number().int().nullish(),
+            }).passthrough(),
+          ),
         })
         .nullish(),
     }),
@@ -435,9 +454,32 @@ async function applyInvoicePaid(event: z.infer<typeof invoiceEventSchema>): Prom
     await logEvent(event.id, event.type);
     return { duplicate: true };
   }
+  const subscriptionId = stripeId(invoice.parent?.subscription_details?.subscription) ?? null;
+  if (plan.interval === "year") {
+    if (!subscriptionId) throw new HttpError(400, "Invoice is missing a subscription.");
+    const window = yearlyWindow(invoice);
+    const granted = await grantYearlyInvoiceMonth({
+      userId: resolved.userId,
+      planId: plan.planId,
+      subscriptionId,
+      anchor: window.anchor,
+      periodStart: window.periodStart,
+      periodEnd: window.periodEnd,
+    });
+    await rememberGrants({
+      userId: resolved.userId,
+      eventId: event.id,
+      sku,
+      grants: granted.grants,
+      grantKey: `refill:${subscriptionId}:${granted.periodIndex}`,
+      invoiceId: invoice.id,
+      paymentIntentId: stripeId(invoice.payment_intent),
+      chargeId: stripeId(invoice.charge),
+    });
+    await setPaymentNotice(resolved.userId, null);
+    return logEvent(event.id, event.type);
+  }
   const periodId = `stripe:${invoice.id}`;
-  const subscriptionId =
-    stripeId(invoice.parent?.subscription_details?.subscription) ?? null;
   await renewPlan({
     userId: resolved.userId,
     planId: plan.planId,
@@ -635,6 +677,7 @@ async function applySubscription(event: z.infer<typeof subscriptionEventSchema>)
   const skuRaw = sub.metadata?.sku?.trim() ?? "";
   const plan = isSku(skuRaw) ? planForSku(skuRaw) : null;
   if (plan) {
+    const bounds = subscriptionBounds(sub);
     await attachSubscription({
       userId,
       planId: plan.planId,
@@ -642,23 +685,34 @@ async function applySubscription(event: z.infer<typeof subscriptionEventSchema>)
       subscriptionId: sub.id,
       status: subscriptionStatus(sub.status),
       cancelAtPeriodEnd: sub.cancel_at_period_end === true,
-      periodEnd: periodEndIso(sub),
+      periodEnd: bounds.end?.toISOString() ?? null,
     });
+    if (plan.interval === "year") {
+      await syncYearlySubscriptionWindow({
+        userId,
+        subscriptionId: sub.id,
+        anchor: bounds.anchor,
+        periodStart: bounds.start,
+        periodEnd: bounds.end,
+      });
+    }
   } else if (sub.status === "past_due" || sub.status === "unpaid") {
     await markPlanPastDue(userId);
   }
   return logEvent(event.id, event.type);
 }
 
-function subscriptionStatus(status: string): "active" | "past_due" | "canceled" {
+function subscriptionStatus(status: string): "active" | "trialing" | "past_due" | "unpaid" | "canceled" {
   switch (status) {
     case "active":
-    case "trialing":
       return "active";
+    case "trialing":
+      return "trialing";
     case "past_due":
-    case "unpaid":
     case "incomplete":
       return "past_due";
+    case "unpaid":
+      return "unpaid";
     case "canceled":
     case "incomplete_expired":
       return "canceled";
@@ -667,14 +721,47 @@ function subscriptionStatus(status: string): "active" | "past_due" | "canceled" 
   }
 }
 
-function periodEndIso(sub: {
+function unixDate(unix: number | null | undefined): Date | null {
+  if (unix == null) return null;
+  const date = new Date(unix * 1000);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** Month 0 of a yearly invoice. The anchor stays the subscription start. */
+function yearlyWindow(invoice: z.infer<typeof invoiceObject>): {
+  anchor: Date;
+  periodStart: Date;
+  periodEnd: Date;
+} {
+  const details = invoice.parent?.subscription_details;
+  const linePeriod = invoice.lines?.data.find((line) => line.period)?.period;
+  const periodStart =
+    unixDate(linePeriod?.start) ??
+    unixDate(invoice.period_start) ??
+    unixDate(details?.current_period_start) ??
+    new Date();
+  const periodEnd =
+    unixDate(linePeriod?.end) ??
+    unixDate(invoice.period_end) ??
+    unixDate(details?.current_period_end) ??
+    addUtcMonths(periodStart, 12);
+  const anchor = unixDate(details?.billing_cycle_anchor) ?? unixDate(details?.start_date) ?? periodStart;
+  return { anchor, periodStart, periodEnd };
+}
+
+function subscriptionBounds(sub: {
+  billing_cycle_anchor?: number | null;
+  start_date?: number | null;
+  current_period_start?: number | null;
   current_period_end?: number | null;
-  items?: { data: { current_period_end?: number | null }[] } | null;
-}): string | null {
-  const unix =
-    sub.items?.data.find((item) => item.current_period_end)?.current_period_end ?? sub.current_period_end ?? null;
-  if (!unix) return null;
-  return new Date(unix * 1000).toISOString();
+  items?: { data: { current_period_start?: number | null; current_period_end?: number | null }[] } | null;
+}): { anchor: Date | null; start: Date | null; end: Date | null } {
+  const item = sub.items?.data.find((row) => row.current_period_start || row.current_period_end);
+  return {
+    anchor: unixDate(sub.billing_cycle_anchor) ?? unixDate(sub.start_date),
+    start: unixDate(item?.current_period_start) ?? unixDate(sub.current_period_start),
+    end: unixDate(item?.current_period_end) ?? unixDate(sub.current_period_end),
+  };
 }
 
 function resolveInvoiceIdentity(invoice: z.infer<typeof invoiceObject>): { sku: string; userId: string } {
