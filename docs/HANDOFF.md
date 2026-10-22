@@ -9,7 +9,8 @@ YYYY-MM-DD BLOCKED — what stopped the work · what the next agent needs
 
 ## Log
 
-2026-10-22 DONE — Paste and focus-loss totals persist on the defend session, resume from defend state with the server start time, and are what the receipt signs. `GET /api/sessions/defend/state` sends `Cache-Control: no-store`. · PR #52 · tsc, eslint, vitest (294), e2e (13, including paste then reload)
+2026-10-22 DONE — Paste and focus-loss totals persist on the defend session, resume from defend state with the server start time, and are what the receipt signs. `GET /api/sessions/defend/state` sends `Cache-Control: no-store`. · PR #52 · tsc, eslint, vitest (313), e2e (13, including paste then reload)
+2026-10-22 DONE — noteChallengeDefended consumes the challenger's credit and marks the challenge defended in one conditional transaction, so an expiry at the deadline cannot refund a credit that was already used. · cursor/atomic-challenge-defend-5695 · tsc, eslint, vitest (286)
 2026-10-20 DONE — Google sign-in (authorization code, PKCE, state, verified ID token) reuses the user and session cookie. Vercel production never shows the on-screen magic link. · PR #24 · `tsc`, `eslint`, `vitest` (155), browser pass of the sign-in card (local link, Google hidden when unset, production message, Google-only card, OAuth redirect)
 2026-10-20 DONE — Token and USD cost are stored for each model call. A defend session rolls up every call on that defense and is flagged over `SESSION_BUDGET_USD` (default $3). Admin list and session page show the total. Liquid uses `exchange.charge.total_usd` when present. · PR #23 · `tsc`, `eslint`, `vitest` (142), mock `npm run smoke`, admin UI in the browser
 2026-10-20 DONE — A deployment refuses to grade when a council member is a router (`*.auto`) or there are fewer than 2 pinned models. Each stored grade records model id, temperature, and seed. Council list is `LIQUID_COUNCIL_MODELS`. · PR #15 · `tsc`, `eslint`, `vitest` (131)

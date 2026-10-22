@@ -551,6 +551,55 @@ describe("integrity signals survive a reload", () => {
       true,
     );
   });
+
+  it("returns 404 when the session belongs to someone else", async () => {
+    const { user } = await signIn("signals-owner@fund.example");
+    const other = await signIn("signals-stranger@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "signals-owner.md", buffer: memo, difficulty: "standard" });
+    const session = await startSession({ token: ingest.token, user, mode: "defend" });
+    await recordIntegritySignals({ sessionId: session.sessionId, user, pasteEvents: 2, focusBlurEvents: 1 });
+    await expect(
+      recordIntegritySignals({ sessionId: session.sessionId, user: other.user, pasteEvents: 9, focusBlurEvents: 9 }),
+    ).rejects.toMatchObject({ status: 404 });
+    const db = await getDb();
+    const row = await db.get<{ paste_events: number; focus_blur_events: number }>(
+      `SELECT paste_events, focus_blur_events FROM sessions WHERE id = ?`,
+      [session.sessionId],
+    );
+    expect(Number(row?.paste_events)).toBe(2);
+    expect(Number(row?.focus_blur_events)).toBe(1);
+  });
+
+  it("does not change the totals once the session is completed", async () => {
+    const { user } = await signIn("signals-closed@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "signals-closed.md", buffer: memo, difficulty: "standard" });
+    const session = await startSession({ token: ingest.token, user, mode: "defend" });
+    await recordIntegritySignals({ sessionId: session.sessionId, user, pasteEvents: 2, focusBlurEvents: 1 });
+    await answerAll(session, user);
+    await completeDefendSession({ sessionId: session.sessionId, user, pasteEvents: 2, focusBlurEvents: 1 });
+    const db = await getDb();
+    const before = await db.get<{ status: string; paste_events: number; focus_blur_events: number }>(
+      `SELECT status, paste_events, focus_blur_events FROM sessions WHERE id = ?`,
+      [session.sessionId],
+    );
+    expect(before?.status).toBe("completed");
+    const reported = await recordIntegritySignals({
+      sessionId: session.sessionId,
+      user,
+      pasteEvents: 9,
+      focusBlurEvents: 8,
+    });
+    expect(reported).toEqual({
+      pasteEvents: Number(before?.paste_events),
+      focusBlurEvents: Number(before?.focus_blur_events),
+    });
+    const after = await db.get<{ paste_events: number; focus_blur_events: number }>(
+      `SELECT paste_events, focus_blur_events FROM sessions WHERE id = ?`,
+      [session.sessionId],
+    );
+    expect(Number(after?.paste_events)).toBe(Number(before?.paste_events));
+    expect(Number(after?.focus_blur_events)).toBe(Number(before?.focus_blur_events));
+  });
 });
 
 describe("rate limiting", () => {
