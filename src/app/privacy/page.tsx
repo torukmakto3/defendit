@@ -153,7 +153,7 @@ export default function PrivacyPage() {
           The event log records views, accepts, finished defenses, publish choices, share clicks, reports,
           and published-result views. A view or a share from a signed-in account stores that account id. A
           view or a share with no session stores no account id. A published-result view stores the account
-          id, or the raw IP address when there is no session, so the same account or address is counted once.
+          id, or a keyed hash of the IP address when there is no session, so the same account or address is counted once.
           A report can store a short note. The purge job leaves these rows in place.
         </p>
 
@@ -188,7 +188,7 @@ export default function PrivacyPage() {
           a stage name and a duration, not the file.
         </p>
         <p>
-          Abuse limits store a SHA-256 of the IP address and a counter. The address itself is not
+          Abuse limits store a keyed hash of the IP address and a counter. The address itself is not
           stored. Those rows are deleted about two days after the window starts.
         </p>
       </section>

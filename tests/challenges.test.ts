@@ -39,6 +39,7 @@ import {
   refundCredit,
 } from "../src/lib/credits";
 import { getDb } from "../src/lib/db";
+import { ipHash } from "../src/lib/ip-hash";
 import { ipRateKey } from "../src/lib/ratelimit";
 import { HttpError } from "../src/lib/errors";
 import {
@@ -521,10 +522,14 @@ describe("challenge links", () => {
     const names = (await challengeEvents(published.created.slug)).map((row) => row.event);
     expect(names).toEqual(expect.arrayContaining(["created", "viewed", "accepted", "defended", "published"]));
     expect(names).not.toContain("share_clicked");
-    await recordResultView(published.receipt.payload.id, null, "203.0.113.10");
-    await recordResultView(published.receipt.payload.id, null, "203.0.113.10");
-    const after = (await challengeEvents(published.created.slug)).map((row) => row.event);
-    expect(after.filter((name) => name === "result_viewed")).toHaveLength(1);
+    const viewIp = "203.0.113.10";
+    await recordResultView(published.receipt.payload.id, null, viewIp);
+    await recordResultView(published.receipt.payload.id, null, viewIp);
+    const viewRows = await challengeEvents(published.created.slug);
+    const viewed = viewRows.filter((row) => row.event === "result_viewed");
+    expect(viewed).toHaveLength(1);
+    expect(viewed[0]?.meta).toContain(ipHash(viewIp));
+    expect(viewed[0]?.meta).not.toContain(viewIp);
     expect((await ledgerForSlug(published.created.slug)).map((row) => row.action).sort()).toEqual([
       "consume",
       "grant",

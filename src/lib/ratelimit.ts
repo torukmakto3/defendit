@@ -1,24 +1,36 @@
-import { sha256Hex } from "./crypto";
 import { getDb } from "./db";
+import { ipHash } from "./ip-hash";
 
 /**
  * Fixed-window counter stored in the database, so limits hold across
  * serverless instances and on both Postgres and SQLite. One atomic upsert per check.
  *
  * Counts and windows are env vars so a launch can tighten them without a deploy
- * of new code. Unset vars use the defaults below. A non-integer or a value below 1
- * throws, rather than silently disabling the limit.
+ * of new code. Unset vars use the defaults below. Each distinct value is parsed
+ * once. A value that is not a positive integer is logged and the default is used,
+ * so a typo does not fail the request.
  */
+const parsedLimits = new Map<string, { raw: string; value: number }>();
+
 function positiveInt(name: string, fallback: number): number {
   const raw = process.env[name];
-  if (raw === undefined || raw.trim() === "") return fallback;
-  if (!/^[1-9]\d*$/.test(raw.trim())) {
-    throw new Error(`${name} must be a positive integer`);
+  const token = raw === undefined ? "" : raw;
+  const cached = parsedLimits.get(name);
+  if (cached && cached.raw === token) return cached.value;
+
+  const trimmed = raw?.trim() ?? "";
+  let value = fallback;
+  if (trimmed !== "") {
+    const parsed = Number(trimmed);
+    if (!/^[1-9]\d*$/.test(trimmed) || !Number.isSafeInteger(parsed)) {
+      console.error(
+        `[ratelimit] ${name} must be a positive integer (got ${JSON.stringify(raw)}). Using the default ${fallback}.`,
+      );
+    } else {
+      value = parsed;
+    }
   }
-  const value = Number(raw.trim());
-  if (!Number.isSafeInteger(value)) {
-    throw new Error(`${name} must be a positive integer`);
-  }
+  parsedLimits.set(name, { raw: token, value });
   return value;
 }
 
@@ -34,11 +46,11 @@ function budget(limitName: string, limitDefault: number, windowName: string, win
 }
 
 /**
- * Bucket key for an IP limit. The address is hashed so the rate-limit table
- * never stores the raw IP. Callers must pass the address only into this function.
+ * Bucket key for an IP limit. The address is a keyed hash so the rate-limit
+ * table never stores the raw IP. Callers must pass the address only into this function.
  */
 export function ipRateKey(scope: string, ip: string): string {
-  return `${scope}:ip:${sha256Hex(ip)}`;
+  return `${scope}:ip:${ipHash(ip)}`;
 }
 
 export async function rateLimit(

@@ -14,6 +14,7 @@ import { appUrl } from "./config";
 import { getDb, type Db } from "./db";
 import { HttpError } from "./errors";
 import { newId, newToken } from "./ids";
+import { ipHash } from "./ip-hash";
 import { ipRateKey, LIMITS, rateLimit } from "./ratelimit";
 import type { Difficulty, ReceiptOutcome, SignedReceipt } from "./types";
 
@@ -1123,7 +1124,8 @@ export async function receiptGate(receiptId: string, user: User | null): Promise
 
 /**
  * Funnel count for a published result page. Sharing is not involved.
- * One row per signed-in viewer, or per anonymous IP. Repeats do not add rows.
+ * One row per signed-in viewer, or per keyed hash of an anonymous address.
+ * Repeats do not add rows.
  */
 export async function recordResultView(receiptId: string, user: User | null, ip = "unknown"): Promise<void> {
   const db = await getDb();
@@ -1135,7 +1137,7 @@ export async function recordResultView(receiptId: string, user: User | null, ip 
   const visibility = asVisibility(row.visibility);
   if (visibility !== "public" && visibility !== "score_hidden") return;
   if (user && user.id === row.claimed_by_user_id) return;
-  const viewer = user?.id ?? `ip:${ip}`;
+  const viewer = user?.id ?? `ip:${ipHash(ip)}`;
   const meta = JSON.stringify({ viewer });
   const prior = await db.get<{ id: string }>(
     `SELECT id FROM challenge_events

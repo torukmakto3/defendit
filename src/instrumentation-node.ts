@@ -1,3 +1,4 @@
+import { assertIpHashConfigured } from "./lib/ip-hash";
 import { describeGradingCouncil } from "./lib/llm";
 
 /**
@@ -6,6 +7,7 @@ import { describeGradingCouncil } from "./lib/llm";
  */
 export function registerNode(): void {
   if (process.env.NEXT_PHASE === "phase-production-build") return;
+  assertIpHashConfigured();
   const label = describeGradingCouncil();
   if (label.startsWith("Grading is refused")) {
     throw new Error(label);

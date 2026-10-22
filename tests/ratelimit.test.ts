@@ -1,7 +1,9 @@
+import { createHmac } from "crypto";
 import { mkdtempSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { GET as googleCallback } from "../src/app/api/auth/google/callback/route";
 import { POST as requestLink } from "../src/app/api/auth/request/route";
 import { POST as creatorIngestRoute } from "../src/app/api/creator/ingest/route";
 import { POST as startRoute } from "../src/app/api/sessions/start/route";
@@ -10,6 +12,7 @@ import { consumeMagicLink, requestMagicLink, type User } from "../src/lib/auth";
 import { sha256Hex } from "../src/lib/crypto";
 import { getDb, resetDbForTests } from "../src/lib/db";
 import { ipLimitKey, RATE_LIMIT_MESSAGE } from "../src/lib/http";
+import { ipHash } from "../src/lib/ip-hash";
 import { ipRateKey, LIMITS } from "../src/lib/ratelimit";
 
 const memo = readFileSync(join(__dirname, "..", "fixtures", "sample-memo.md"));
@@ -76,10 +79,36 @@ describe("rate limit configuration", () => {
   it("hashes an IP into the bucket and leaves the address out", () => {
     const ip = "203.0.113.44";
     const key = ipRateKey("upload", ip);
-    expect(key).toBe(`upload:ip:${sha256Hex(ip)}`);
+    expect(key).toBe(`upload:ip:${ipHash(ip)}`);
     expect(key).not.toContain(ip);
+    expect(ipHash(ip)).not.toBe(sha256Hex(ip));
     const req = new Request("http://localhost/api/upload", { headers: { "x-forwarded-for": ip } });
     expect(ipLimitKey("upload", req)).toBe(key);
+  });
+
+  it("keys the hash with IP_HASH_SALT, or DEMO_IP_SALT when that is unset", () => {
+    const ip = "203.0.113.9";
+    const savedSalt = process.env.IP_HASH_SALT;
+    const savedDemo = process.env.DEMO_IP_SALT;
+    try {
+      process.env.IP_HASH_SALT = "ab".repeat(32);
+      delete process.env.DEMO_IP_SALT;
+      expect(ipHash(ip)).toBe(createHmac("sha256", Buffer.from("ab".repeat(32), "hex")).update(ip).digest("hex"));
+
+      delete process.env.IP_HASH_SALT;
+      process.env.DEMO_IP_SALT = "cd".repeat(32);
+      expect(ipHash(ip)).toBe(createHmac("sha256", Buffer.from("cd".repeat(32), "hex")).update(ip).digest("hex"));
+
+      delete process.env.DEMO_IP_SALT;
+      vi.stubEnv("NODE_ENV", "production");
+      expect(() => ipHash(ip)).toThrow(/IP_HASH_SALT is not set/);
+    } finally {
+      vi.unstubAllEnvs();
+      if (savedSalt === undefined) delete process.env.IP_HASH_SALT;
+      else process.env.IP_HASH_SALT = savedSalt;
+      if (savedDemo === undefined) delete process.env.DEMO_IP_SALT;
+      else process.env.DEMO_IP_SALT = savedDemo;
+    }
   });
 
   it("uses the previous budgets when the env vars are unset", () => {
@@ -108,9 +137,26 @@ describe("rate limit configuration", () => {
     expect(LIMITS.sessionStartPerIp.windowSec).toBe(120);
   });
 
-  it("refuses a limit that would turn the bucket off", () => {
-    process.env.RATE_LIMIT_UPLOAD_IP = "0";
-    expect(() => LIMITS.uploadPerIp.limit).toThrow(/positive integer/);
+  it("logs a bad limit once and uses the default", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      process.env.RATE_LIMIT_UPLOAD_IP = "0";
+      expect(LIMITS.uploadPerIp.limit).toBe(30);
+      expect(LIMITS.uploadPerIp.limit).toBe(30);
+      const logged = spy.mock.calls.map((call) => String(call[0])).filter((line) => line.includes("RATE_LIMIT_UPLOAD_IP"));
+      expect(logged).toHaveLength(1);
+      process.env.RATE_LIMIT_UPLOAD_IP = "4";
+      expect(LIMITS.uploadPerIp.limit).toBe(4);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("keeps Google sign-in up when the IP limit is not a number", async () => {
+    process.env.RATE_LIMIT_LOGIN_IP = "nope";
+    const res = await googleCallback(new Request("http://127.0.0.1:3000/api/auth/google/callback"));
+    expect(res.status).toBeGreaterThanOrEqual(300);
+    expect(res.status).toBeLessThan(400);
   });
 });
 

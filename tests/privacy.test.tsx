@@ -33,7 +33,7 @@ describe("privacy page", () => {
     expect(html).toContain("Defended · Strong");
     expect(html).toContain("Still sharpening");
     expect(html).toContain("public without the score");
-    expect(html).toContain("raw IP address");
+    expect(html).toContain("keyed hash");
     expect(html).toContain("leaves these rows in place");
     expect(html).toContain("Ed25519");
     expect(html).toContain("does not contain the file");
