@@ -17,9 +17,11 @@ import {
   CHALLENGE_UNCLAIMED_DAYS_DEFAULT,
 } from "../src/lib/challenge-public";
 import { dailyPerCreator, openPerCreator, openPerDefender } from "../src/lib/challenges";
+import { RATE_LIMIT_MESSAGE } from "../src/lib/http";
 import { GRADING_TEMPERATURE } from "../src/lib/llm";
 import { LEGAL_UPDATED, OPERATOR_EMAIL, OPERATOR_NAME } from "../src/lib/operator";
 import { BETA_GRANT, formatEur, getPlan, PACKS, PAYG_CENTS } from "../src/lib/plans";
+import { RATE_LIMIT_ROW_MAX_AGE_MS } from "../src/lib/ratelimit";
 import { documentTtlHours, retentionDays } from "../src/lib/retention";
 import { bandFor } from "../src/lib/score";
 import {
@@ -155,6 +157,14 @@ describe("public pages", () => {
     expect(terms).toContain("not a certification");
     expect(faq).toContain("Opting out");
     expect(terms).toContain("Portuguese law");
+    expect(terms).toContain("keyed hash");
+    expect(terms).toContain("unkeyed hash");
+    expect(terms).toContain(RATE_LIMIT_MESSAGE);
+    expect(terms).toContain(String(RATE_LIMIT_ROW_MAX_AGE_MS / (24 * 60 * 60 * 1000)));
+    expect(faq).toContain("keyed hash");
+    expect(faq).not.toContain("raw IP");
+    const privacy = readFileSync(join(root, "src/app/privacy/page.tsx"), "utf8");
+    expect(privacy.startsWith("// Draft, last updated 2026-10-22")).toBe(true);
   });
 
   it("sets a title and description on each page", () => {

@@ -98,6 +98,15 @@ export default function FaqPage() {
           want an account or a receipt link taken down. The automatic job does not delete receipts
           or accounts.
         </p>
+        <p>
+          Abuse limits are a different row. When a salt is set they store a keyed hash of the IP
+          address and a counter, not the address. Without a usable salt, that IP limit is skipped.
+          The{" "}
+          <a className="text-[var(--blueprint)] underline" href="/privacy">
+            privacy page
+          </a>{" "}
+          has the same rule.
+        </p>
       </LegalSection>
 
       <LegalSection title="How do refunds work?">

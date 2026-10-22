@@ -18,7 +18,9 @@ export function LegalPage({
         <header className="grid gap-3">
           <p className="eyebrow">{eyebrow}</p>
           <h1 className="text-3xl font-bold sm:text-4xl">{title}</h1>
-          <p className="text-sm text-[var(--ink-2)]">Last updated {LEGAL_UPDATED}</p>
+          <p className="text-sm text-[var(--ink-2)]">
+          Last updated <time dateTime="2026-10-22">{LEGAL_UPDATED}</time>.
+        </p>
           <div className="grid gap-3 text-[var(--ink-2)]">{lede}</div>
         </header>
         {children}

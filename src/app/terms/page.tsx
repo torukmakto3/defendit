@@ -11,8 +11,10 @@ import {
   CHALLENGE_OPT_OUT_HANDLES_MAX,
   CHALLENGE_UNCLAIMED_DAYS_DEFAULT,
 } from "@/lib/challenge-public";
+import { RATE_LIMIT_MESSAGE } from "@/lib/http";
 import { OPERATOR_EMAIL, OPERATOR_NAME } from "@/lib/operator";
 import { BETA_GRANT, betaDefenseCredits, formatEur, ONWARD_CHALLENGE_CREDITS } from "@/lib/plans";
+import { RATE_LIMIT_ROW_MAX_AGE_MS } from "@/lib/ratelimit";
 
 export const metadata: Metadata = {
   title: "Terms of Service · Defend It",
@@ -24,6 +26,7 @@ export default function TermsPage() {
   const defenses = betaDefenseCredits();
   const budget = formatEur(Math.round(betaBudgetEur() * 100));
   const perDefense = formatEur(Math.round(betaDefenseEur() * 100));
+  const rateLimitDays = RATE_LIMIT_ROW_MAX_AGE_MS / (24 * 60 * 60 * 1000);
 
   return (
     <LegalPage
@@ -104,6 +107,18 @@ export default function TermsPage() {
           Do not attack the service, interfere with another person&apos;s defense, or upload
           unlawful material. We can refuse a file, close a challenge, or stop an account that
           breaks these rules.
+        </p>
+        <p>
+          Sign-in, uploads, and interview starts are counted per account. Sign-in is also counted
+          per email. When the server has a salt, the same checks can count a keyed hash of the IP
+          address. The address itself is not stored, and it is never stored as an unkeyed hash.
+          Without a usable salt, that IP limit is skipped. The per-account and per-email limits
+          still apply. Those rows are deleted about {rateLimitDays} days after the window starts.
+          Hitting a limit returns “{RATE_LIMIT_MESSAGE}” That pause does not change a score. The{" "}
+          <a className="text-[var(--blueprint)] underline" href="/privacy">
+            privacy page
+          </a>{" "}
+          is where that hash is described.
         </p>
       </LegalSection>
 
