@@ -759,6 +759,46 @@ describe("learn slots", () => {
     }
   });
 
+  it("drops the slot counter when an open project has expired or been purged", async () => {
+    const previous = process.env.BILLING_ENABLED;
+    process.env.BILLING_ENABLED = "1";
+    try {
+      const { user } = await signIn("learn-purge@fund.example");
+      await grantCredits({
+        userId: user.id,
+        kind: "learn_slot",
+        amount: 1,
+        reason: "grant",
+        source: "beta",
+        idempotencyKey: "learn-purge-slot",
+      });
+      const first = await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" });
+      await expect(
+        creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" }),
+      ).rejects.toMatchObject({ status: 402 });
+
+      const db = await getDb();
+      await db.run(`UPDATE deliverables SET purge_after = ?, purged_at = ? WHERE id = ?`, [
+        "2000-01-01T00:00:00.000Z",
+        "2000-01-01T00:00:00.000Z",
+        first.deliverableId,
+      ]);
+      expect(await countActiveLearnProjects(user.id)).toBe(0);
+
+      const again = await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" });
+      expect(again.token).not.toBe(first.token);
+      expect(await countActiveLearnProjects(user.id)).toBe(1);
+      const open = await db.get<{ learn_open: number }>(
+        `SELECT learn_open FROM credit_wallets WHERE user_id = ?`,
+        [user.id],
+      );
+      expect(Number(open?.learn_open)).toBe(1);
+    } finally {
+      if (previous === undefined) delete process.env.BILLING_ENABLED;
+      else process.env.BILLING_ENABLED = previous;
+    }
+  });
+
   it("lets only one of two simultaneous uploads take the last Learn slot", async () => {
     const previous = process.env.BILLING_ENABLED;
     process.env.BILLING_ENABLED = "1";

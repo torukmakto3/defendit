@@ -1183,23 +1183,36 @@ export async function learnSlotLimit(userId: string, db?: Db): Promise<number | 
   return null;
 }
 
+/**
+ * Projects that still hold a Learn slot. Closed, purged, and past
+ * `purge_after` do not. `purge_after` is checked on read, so a late purge
+ * job does not leave the slot taken.
+ */
+const OPEN_LEARN_COUNT_SQL = `SELECT COUNT(*) FROM defense_requests r
+  WHERE r.creator_user_id = ? AND r.learn_closed_at IS NULL
+    AND EXISTS (
+      SELECT 1 FROM deliverables d
+      WHERE d.request_id = r.id
+        AND d.purged_at IS NULL
+        AND d.purge_after >= ?
+    )`;
+
 export async function countActiveLearnProjects(userId: string, db?: Db): Promise<number> {
   const conn = db ?? (await getDb());
-  const row = await conn.get<{ n: number | string }>(
-    `SELECT COUNT(*) AS n FROM defense_requests r
-     WHERE r.creator_user_id = ? AND r.learn_closed_at IS NULL
-       AND EXISTS (SELECT 1 FROM deliverables d WHERE d.request_id = r.id)`,
-    [userId],
-  );
+  const row = await conn.get<{ n: number | string }>(`SELECT (${OPEN_LEARN_COUNT_SQL}) AS n`, [
+    userId,
+    new Date().toISOString(),
+  ]);
   return num(row?.n);
 }
 
 /**
  * While billing is off, Learn uploads are not capped. The beta grant's 3
  * slots would otherwise count every file the account ever keeps open.
- * When billing is on, the cap is one conditional UPDATE of `learn_open`
- * on the caller's wallet row. Pass `db` from the transaction that inserts
- * the project so the counter and the row commit together.
+ * When billing is on, the wallet counter is set to the number of projects
+ * that are still open, which can fall, and then one slot is claimed with a
+ * conditional UPDATE. Pass `db` from the transaction that inserts the project
+ * so the counter and the row commit together.
  */
 export async function assertLearnSlotAvailable(userId: string, db?: Db): Promise<void> {
   if (!billingEnabled()) return;
@@ -1207,19 +1220,12 @@ export async function assertLearnSlotAvailable(userId: string, db?: Db): Promise
     const limit = await learnSlotLimit(userId, tx);
     if (limit == null) return;
     await lockWallet(tx, userId);
+    const now = new Date().toISOString();
     await tx.run(
       `UPDATE credit_wallets
-       SET learn_open = (
-         SELECT COUNT(*) FROM defense_requests r
-         WHERE r.creator_user_id = ? AND r.learn_closed_at IS NULL
-           AND EXISTS (SELECT 1 FROM deliverables d WHERE d.request_id = r.id)
-       )
-       WHERE user_id = ? AND learn_open < (
-         SELECT COUNT(*) FROM defense_requests r
-         WHERE r.creator_user_id = ? AND r.learn_closed_at IS NULL
-           AND EXISTS (SELECT 1 FROM deliverables d WHERE d.request_id = r.id)
-       )`,
-      [userId, userId, userId],
+       SET learn_open = (${OPEN_LEARN_COUNT_SQL})
+       WHERE user_id = ?`,
+      [userId, now, userId],
     );
     const claimed = await tx.run(
       `UPDATE credit_wallets
