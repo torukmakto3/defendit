@@ -72,7 +72,10 @@ import {
   noteChallengeSession,
   noteChallengeUpload,
 } from "./challenges";
+import { documentTtlHours, MAX_UPLOAD_BYTES, retentionDays } from "./retention";
 import { decryptField, decryptJson, encryptField, encryptJson } from "./vault";
+
+export { MAX_UPLOAD_BYTES };
 
 /**
  * Data lifecycle ("process and purge"):
@@ -84,14 +87,11 @@ import { decryptField, decryptJson, encryptField, encryptJson } from "./vault";
  * - Claims, transcripts, grades and the file name are encrypted and deleted
  *   after RETENTION_DAYS. Receipts (hash + score, no content) are kept.
  */
-export const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 4 * 1024 * 1024);
 const MAX_TEXT_CHARS = 400_000;
 
 function hoursFromNow(h: number) {
   return new Date(Date.now() + h * 3600_000).toISOString();
 }
-const documentTtlHours = () => Number(process.env.DOCUMENT_TTL_HOURS || "72");
-const retentionDays = () => Number(process.env.RETENTION_DAYS || "30");
 
 const ctx = {
   fileName: (id: string) => `deliverables.file_name:${id}`,

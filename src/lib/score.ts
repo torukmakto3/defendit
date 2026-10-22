@@ -1,4 +1,5 @@
 import { mulberry32, seedFromString } from "./rng";
+import { PARTIAL_LEVEL, STRONG_LEVEL } from "./score-bands";
 import type {
   ClaimGrade,
   DimensionScores,
@@ -28,8 +29,8 @@ export function roundLevel(n: number): number {
 }
 
 export function bandFor(avg: number): UnderstandingBand {
-  if (avg >= 3) return "Strong";
-  if (avg >= 2) return "Partial";
+  if (avg >= STRONG_LEVEL) return "Strong";
+  if (avg >= PARTIAL_LEVEL) return "Partial";
   return "Weak";
 }
 

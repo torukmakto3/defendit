@@ -4,6 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMe } from "@/components/auth";
 import { Companion } from "@/components/companion/Companion";
+import { CreditTermsNotice, isCreditWall } from "@/components/credit-terms";
 import { VoiceInterview } from "@/components/voice/VoiceInterview";
 import { gradingProgressLabel, type GradingProgress } from "@/lib/grading-progress";
 import { canSubmit, INITIAL_INTERVIEW, interviewReducer, withProbeAt, type InterviewState } from "@/lib/interview-state";
@@ -42,6 +43,7 @@ export default function DefendPage() {
   const [answer, setAnswer] = useState("");
   const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [outOfCredits, setOutOfCredits] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const tickRef = useRef<number | null>(null);
   const startedRef = useRef(false);
@@ -109,6 +111,7 @@ export default function DefendPage() {
   const begin = useCallback(
     async (accommodation = false) => {
       setError(null);
+      setOutOfCredits(false);
       // A new session must not keep the previous plan. Voice falling back to
       // typing used to submit the spoken session's probe ids.
       setProbes([]);
@@ -124,6 +127,7 @@ export default function DefendPage() {
         });
         if (!res.ok) {
           const failed = (await res.json().catch(() => ({}))) as { error?: string };
+          if (isCreditWall(res.status)) setOutOfCredits(true);
           throw new Error(failed.error || "Failed to start");
         }
         const contentType = res.headers.get("content-type") || "";
@@ -389,6 +393,7 @@ export default function DefendPage() {
     return (
       <div className="shell grid max-w-3xl gap-4">
         <p className="text-danger">{error || "Could not start the interview."}</p>
+        {outOfCredits && <CreditTermsNotice />}
         <button
           type="button"
           className="btn btn-primary justify-self-start"

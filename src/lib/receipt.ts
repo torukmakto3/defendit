@@ -2,6 +2,7 @@ import { signPayload, verifySignature } from "./crypto";
 import { appUrl } from "./config";
 import { aggregateScore, RUBRIC_VERSION, scoreDefense } from "./grading";
 import { newReceiptId } from "./ids";
+import { DEFENDED_MIN_SCORE, PARTIAL_MIN_SCORE } from "./score-bands";
 import type {
   Difficulty,
   IntegritySignals,
@@ -15,8 +16,8 @@ import type {
 } from "./types";
 
 export function outcomeFor(score: number): ReceiptOutcome {
-  if (score >= 70) return "Defended";
-  if (score >= 45) return "Partially defended";
+  if (score >= DEFENDED_MIN_SCORE) return "Defended";
+  if (score >= PARTIAL_MIN_SCORE) return "Partially defended";
   return "Not defended";
 }
 
