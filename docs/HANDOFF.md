@@ -9,6 +9,7 @@ YYYY-MM-DD BLOCKED — what stopped the work · what the next agent needs
 
 ## Log
 
+2026-10-22 DONE — Yearly refill stop is written in the refund transaction, and Stripe Checkout is rebased onto ef320ab (#46). Funnel analytics and the Stripe paragraph both stay. Billing stays off. · PR #47 · tsc, eslint, vitest (425)
 2026-10-22 DONE — Stripe credit follow-up on #47: a pack refund cannot spend another pack, a partial yearly refund leaves refills running, a full refund or dispute stops refills without canceling, and the next paid invoice grants. Year-2 months follow that year's charge. Billing stays off. · PR #47 · tsc, eslint, vitest (385)
 2026-10-22 DONE — Stripe review on #47: invoice payments supply the charge, yearly refills are clawable and stop after a refund, canceled subscriptions stay canceled, unknown statuses are non-active, portal switches follow the price lookup key, partial refunds floor the credits, checkout reads the card fingerprint and collects the withdrawal waiver, checkout and portal are rate limited, a live key does not stop the process, and /privacy names Stripe. Rebased onto 13cdbbf. Billing stays off. · PR #47 · tsc, eslint, vitest (379)
 2026-10-22 DONE — Rebased Stripe Checkout onto main. 2d14afd (#52) is in that base; main's tip is 4ad3ca6 (#48), and the Stripe commits sit on that tip so the pull request stays mergeable. Yearly Pro still tops up each month with no rollover. /terms stays a plain link. · PR #47 · tsc, eslint, vitest (361)
