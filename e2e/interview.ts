@@ -43,6 +43,14 @@ export async function uploadDeliverable(page: Page, difficulty: "standard" | "ha
   await expect(page.getByRole("button", { name: "Defend now" })).toBeVisible();
 }
 
+/** Upload on a claimed defense link, then wait until the interview can start. */
+export async function uploadOnDefenseLink(page: Page) {
+  await expect(page.getByRole("button", { name: "Upload" })).toBeVisible();
+  await page.locator('input[type="file"]').setInputFiles(fixture);
+  await page.getByRole("button", { name: "Upload" }).click();
+  await expect(page.getByRole("link", { name: "Start Defend interview" })).toBeVisible();
+}
+
 export async function openDefend(page: Page) {
   await page.getByRole("button", { name: "Defend now" }).click();
   await page.waitForURL(/\/d\/[^/]+\/defend$/);
@@ -78,6 +86,7 @@ export async function answerVisibleQuestion(page: Page) {
 async function leftQuestion(page: Page, previousQuestion: string) {
   if (/\/r\/rcpt_/.test(page.url())) return true;
   if (await page.getByText("Signature valid").isVisible()) return true;
+  if (await page.getByRole("link", { name: "Open your receipt" }).isVisible()) return true;
   if (
     await page
       .getByText(/of \d graders done|Grading council scoring|Combining the council|Signing the receipt|Retry grading/)
@@ -93,17 +102,28 @@ async function leftQuestion(page: Page, previousQuestion: string) {
 /** Answer until the receipt is on screen, including a grader follow-up if one appears. */
 export async function defendToReceipt(page: Page) {
   for (let step = 0; step < 10; step++) {
-    if (/\/r\/rcpt_/.test(page.url())) return;
+    if (await openReceipt(page)) return;
     const signature = page.getByText("Signature valid");
-    if (await signature.isVisible()) return;
     const submit = page.getByRole("button", { name: /Submit & (next|finish)/ });
-    await expect(signature.or(submit)).toBeVisible({ timeout: 25_000 });
-    if (/\/r\/rcpt_/.test(page.url()) || (await signature.isVisible())) return;
+    const receiptLink = page.getByRole("link", { name: "Open your receipt" });
+    await expect(signature.or(submit).or(receiptLink)).toBeVisible({ timeout: 25_000 });
+    if (await openReceipt(page)) return;
     const previous = await currentQuestion(page);
     await answerVisibleQuestion(page);
     await expect.poll(() => leftQuestion(page, previous), { timeout: 25_000 }).toBe(true);
   }
   await expect(page.getByText("Signature valid")).toBeVisible({ timeout: 25_000 });
+}
+
+/** A finished challenge stops on the publish choice, which links to the signed receipt. */
+async function openReceipt(page: Page): Promise<boolean> {
+  if (/\/r\/rcpt_/.test(page.url()) && (await page.getByText("Signature valid").isVisible())) return true;
+  const receiptLink = page.getByRole("link", { name: "Open your receipt" });
+  if (!(await receiptLink.isVisible())) return false;
+  await receiptLink.click();
+  await page.waitForURL(/\/r\/rcpt_/);
+  await expect(page.getByText("Signature valid")).toBeVisible();
+  return true;
 }
 
 /**

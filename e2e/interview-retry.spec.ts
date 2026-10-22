@@ -12,6 +12,7 @@ import {
   openDefend,
   signIn,
   uploadDeliverable,
+  uploadOnDefenseLink,
 } from "./interview";
 
 function email(label: string) {
@@ -143,6 +144,8 @@ test("a reload mid-interview resumes the same session on the open question", asy
   })) as { sessionId?: string; answered?: number };
   expect(before.sessionId).toMatch(/^ses_/);
   expect(before.answered).toBe(1);
+  const holds = await defenseHoldIds(page);
+  expect(holds).toHaveLength(1);
 
   const stateWait = page.waitForResponse(
     (res) => res.url().includes("/api/sessions/defend/state") && res.request().method() === "GET" && res.ok(),
@@ -151,6 +154,7 @@ test("a reload mid-interview resumes the same session on the open question", asy
   const state = (await (await stateWait).json()) as { sessionId?: string; answered?: number };
   expect(state.sessionId).toBe(before.sessionId);
   expect(state.answered).toBe(1);
+  expect(await defenseHoldIds(page)).toEqual(holds);
   await expectQuestion(page, 2);
   expect(await currentQuestion(page)).toBe(question);
   expect(starts()).toBe(1);
@@ -232,6 +236,70 @@ test("a voice error falls back to a typed interview and a signed receipt", async
   await expectQuestion(page, 1);
   await defendToReceipt(page);
 });
+
+test("a challenge defense is claimed, uploaded, defended, and receipted", async ({ browser, baseURL }) => {
+  const challengerContext = await browser.newContext({ baseURL });
+  const defenderContext = await browser.newContext({ baseURL });
+  const challenger = await challengerContext.newPage();
+  const defender = await defenderContext.newPage();
+  try {
+    await blockExternal(challenger);
+    await blockExternal(defender);
+    await signIn(challenger, email("challenger"));
+    await challenger.goto("/c/new");
+    await challenger.getByLabel("What should they defend?").fill("Defend the sample memo's unit economics.");
+    await challenger.locator("#difficulty").selectOption("standard");
+    await challenger.getByRole("button", { name: "Create challenge link" }).click();
+    const link = (await challenger.locator("p.font-mono").innerText()).trim();
+    expect(link).toMatch(/\/c\/[a-z0-9]+/);
+
+    await signIn(defender, email("defender"));
+    await defender.goto(link);
+    await defender.getByRole("checkbox", { name: /18 or older/ }).check();
+    await defender.getByRole("button", { name: "Accept challenge" }).click();
+    await defender.waitForURL(/\/d\/[^/]+$/);
+    await uploadOnDefenseLink(defender);
+    await defender.getByRole("link", { name: "Start Defend interview" }).click();
+    await defender.waitForURL(/\/d\/[^/]+\/defend$/);
+    await expectQuestion(defender, 1);
+    await defendToReceipt(defender);
+    await expect(defender).toHaveURL(/\/r\/rcpt_/);
+  } finally {
+    await challengerContext.close();
+    await defenderContext.close();
+  }
+});
+
+test("a spent beta allowance shows the out-of-credits screen", async ({ page }) => {
+  await signIn(page, email("empty"));
+  await uploadDeliverable(page, "standard");
+  await openDefend(page);
+  await defendToReceipt(page);
+
+  await page.goto("/");
+  await uploadDeliverable(page, "standard");
+  const denied = page.waitForResponse(
+    (res) => res.url().includes("/api/sessions/start") && res.request().method() === "POST" && res.status() === 402,
+  );
+  await openDefend(page);
+  const body = (await (await denied).json()) as { error?: string };
+  expect(body.error).toMatch(/free beta defense/i);
+  await expect(page.getByText(/You've used your \d+ free beta defense/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+  await expect(page.getByText(/Question 1 \//)).toHaveCount(0);
+});
+
+async function defenseHoldIds(page: Page): Promise<string[]> {
+  const res = await page.request.get("/api/dashboard");
+  expect(res.ok()).toBeTruthy();
+  const data = (await res.json()) as {
+    wallet?: { history?: { id: string; label: string; amount: number }[] };
+  };
+  return (data.wallet?.history ?? [])
+    .filter((row) => row.label.startsWith("Hold for defense") && row.amount < 0)
+    .map((row) => row.id)
+    .sort();
+}
 
 async function reachFinish(page: Page, label: string) {
   await signIn(page, email(label));

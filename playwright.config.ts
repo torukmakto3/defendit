@@ -40,6 +40,10 @@ export default defineConfig({
       DEFEND_IT_SIGNING_SEED: "33".repeat(32),
       DATA_ENCRYPTION_KEY: "22".repeat(32),
       DATABASE_URL: "",
+      // Challenge pages 404 unless this is on. One free defense per account
+      // makes the out-of-credits screen a second start, after the first receipt.
+      CHALLENGES_ENABLED: "1",
+      BETA_DEFENSE_CREDITS: "1",
     },
   },
 });
