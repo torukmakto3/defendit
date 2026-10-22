@@ -1,12 +1,10 @@
 import type { Metadata } from "next";
+import { PRIVACY_UPDATED } from "@/lib/privacy";
 
 export const metadata: Metadata = {
   title: "Privacy · Defend It",
   description: "What Defend It stores, how long it is kept, and how to ask for deletion.",
 };
-
-/** Shown on the page and locked by the render test. */
-export const PRIVACY_UPDATED = "22 October 2026";
 
 export default function PrivacyPage() {
   return (

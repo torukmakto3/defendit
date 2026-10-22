@@ -1,7 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import PrivacyPage, { PRIVACY_UPDATED } from "../src/app/privacy/page";
+import PrivacyPage from "../src/app/privacy/page";
+import { PRIVACY_UPDATED } from "../src/lib/privacy";
 import { SiteFooter } from "../src/components/site-footer";
 
 describe("privacy page", () => {
