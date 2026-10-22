@@ -1062,6 +1062,63 @@ describe("defense gate", () => {
     expect(await openDefenseHolds(user.id)).toBe(1);
   });
 
+  it("refunds a streamed defense that fails before a session exists and keeps a single hold when it starts", async () => {
+    const { user, cookie } = await signIn("stream-defend@fund.example");
+    const failed = await startDefend(
+      new Request("http://localhost/api/sessions/start", {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json", accept: "application/x-ndjson" },
+        body: JSON.stringify({ token: "missing", mode: "defend", accommodation: true }),
+      }),
+    );
+    expect(failed.status).toBe(200);
+    expect(failed.headers.get("content-type")).toContain("application/x-ndjson");
+    const failLines = (await failed.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string });
+    expect(failLines.at(-1)?.type).toBe("error");
+    expect((await getBalance(user.id)).defense).toBe(3);
+    expect((await getBalance(user.id)).held.defense).toBe(0);
+    expect(await openDefenseHolds(user.id)).toBe(0);
+    expect(await (await getDb()).get(`SELECT id FROM sessions WHERE user_id = ?`, [user.id])).toBeUndefined();
+
+    const ingest = await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" });
+    const stream = () =>
+      startDefend(
+        new Request("http://localhost/api/sessions/start", {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json", accept: "application/x-ndjson" },
+          body: JSON.stringify({ token: ingest.token, mode: "defend", accommodation: true }),
+        }),
+      );
+    const readReady = async (res: Response) => {
+      expect(res.status).toBe(200);
+      const lines = (await res.text())
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { type: string; sessionId?: string });
+      expect(lines[0]?.type).toBe("question");
+      expect(lines.at(-1)?.type).toBe("ready");
+      return lines.at(-1)?.sessionId ?? "";
+    };
+
+    const firstId = await readReady(await stream());
+    expect((await getBalance(user.id)).held.defense).toBe(1);
+    expect((await getBalance(user.id)).defense).toBe(2);
+    expect(await openDefenseHolds(user.id)).toBe(1);
+
+    const secondId = await readReady(await stream());
+    expect(secondId).not.toBe(firstId);
+    expect((await getBalance(user.id)).held.defense).toBe(1);
+    expect((await getBalance(user.id)).defense).toBe(2);
+    expect(await openDefenseHolds(user.id)).toBe(1);
+    const abandoned = await (await getDb()).get<{ status: string }>(`SELECT status FROM sessions WHERE id = ?`, [
+      firstId,
+    ]);
+    expect(abandoned?.status).toBe("abandoned");
+  });
+
   it("consumes the held credit when the defense reaches a receipt", async () => {
     const { user, cookie } = await signIn("consume-route@fund.example");
     await grantCredits({
