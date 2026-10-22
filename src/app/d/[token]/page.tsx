@@ -154,7 +154,7 @@ export default function CreatorEntryPage() {
           {d.purged && <p className="text-sm text-[var(--amber)]">This upload has expired and was purged.</p>}
           <div className="grid gap-3">
             {d.documentAvailable || d.studyDeck ? (
-              <Link className="btn btn-ghost justify-self-start" href={`/d/${token}/learn`}>
+              <Link className="btn btn-ghost justify-self-start" href={`/d/${token}/learn`} prefetch>
                 {data.status === "defended" ? "Learn" : "Learn first (private)"}
               </Link>
             ) : (
@@ -166,7 +166,7 @@ export default function CreatorEntryPage() {
               />
             )}
             {data.status !== "defended" && !d.purged && (
-              <Link className="btn btn-primary justify-self-start" href={`/d/${token}/defend`}>
+              <Link className="btn btn-primary justify-self-start" href={`/d/${token}/defend`} prefetch>
                 Start Defend interview
               </Link>
             )}

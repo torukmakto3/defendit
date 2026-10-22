@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { SignInCard, useMe } from "@/components/auth";
 
@@ -18,6 +19,7 @@ interface Row {
 }
 
 export default function DashboardPage() {
+  const router = useRouter();
   const { me } = useMe();
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,7 +78,12 @@ export default function DashboardPage() {
                       {row.score != null ? `${row.outcome} · ${row.score}/100` : "—"}
                     </td>
                     <td className="space-x-3 px-4 py-3">
-                      <Link href={row.workspaceHref} className="text-[var(--moss)] underline">
+                      <Link
+                        href={row.workspaceHref}
+                        prefetch
+                        className="text-[var(--moss)] underline"
+                        onMouseEnter={() => router.prefetch(row.workspaceHref)}
+                      >
                         Workspace
                       </Link>
                       {row.receiptId && (

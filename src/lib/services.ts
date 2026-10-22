@@ -843,6 +843,12 @@ export async function completeDefendSession(opts: {
   pasteEvents?: number;
   focusBlurEvents?: number;
   showName?: boolean;
+  /**
+   * When false, the deck cache starts before grading and the receipt returns
+   * without waiting for the cards. The text is already copied into that job.
+   * Callers that need the cards stored before this returns omit the flag.
+   */
+  waitForStudyDeck?: boolean;
 }) {
   const session = await requireOwnSession(opts.sessionId, opts.user, "defend");
   const db = await getDb();
@@ -903,6 +909,9 @@ export async function completeDefendSession(opts: {
   let grades: ModelGrade[];
   let integrity: ReturnType<typeof computeIntegrity>;
   try {
+    // Snapshot the file text and start the deck before grading, so the model
+    // call overlaps the council. The receipt route does not wait for the cards.
+    await rememberStudyDeck(deliverable.id, false);
     // Graders see each claim and the answer, not the raw file.
     grades = await withLlmScope({ sessionId: session.id, requestId: session.request_id }, () =>
       gradeSession(
@@ -961,7 +970,7 @@ export async function completeDefendSession(opts: {
       pasteEvents: opts.pasteEvents,
       focusBlurEvents: opts.focusBlurEvents,
     });
-    await rememberStudyDeck(deliverable.id);
+    if (opts.waitForStudyDeck !== false) await rememberStudyDeck(deliverable.id, true);
     await writeGradingProgress(session.id, { done: grades.length, total: grades.length, stage: "signing" });
     const signedAt = Date.now();
     signed = buildSignedReceipt({
@@ -1360,10 +1369,12 @@ export async function listProjects(user: User) {
  * flashcards.ts reads deliverables through this module. A static import would
  * cycle on load, so the deck cache is imported at the moment text is deleted.
  */
-async function rememberStudyDeck(deliverableId: string): Promise<void> {
-  const { cacheStudyDeckBeforeTextDeletion } = await import("./flashcards");
+async function rememberStudyDeck(deliverableId: string, waitForCards: boolean): Promise<void> {
+  const { beginStudyDeckCache } = await import("./flashcards");
   try {
-    await cacheStudyDeckBeforeTextDeletion(deliverableId);
+    const job = beginStudyDeckCache(deliverableId);
+    await job.snapshotted;
+    if (waitForCards) await job.done;
   } catch (e) {
     console.warn(
       "[flashcards] deck was not cached before document text was deleted:",
@@ -1383,7 +1394,7 @@ export async function purgeExpired() {
      WHERE text_enc IS NOT NULL AND text_purge_after < ? AND purge_after >= ?`,
     [nowIso, nowIso],
   );
-  for (const row of expiring) await rememberStudyDeck(row.id);
+  for (const row of expiring) await rememberStudyDeck(row.id, true);
   const text = await db.run(
     `UPDATE deliverables SET text_enc = NULL WHERE text_enc IS NOT NULL AND text_purge_after < ?`,
     [nowIso],

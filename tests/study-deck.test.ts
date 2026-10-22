@@ -4,7 +4,7 @@ import { join } from "path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { consumeMagicLink, requestMagicLink, type User } from "../src/lib/auth";
 import { getDb } from "../src/lib/db";
-import { dueCards, generateFlashcards, restoreStudyDeck } from "../src/lib/flashcards";
+import { dueCards, generateFlashcards, restoreStudyDeck, settlePendingStudyDecks } from "../src/lib/flashcards";
 import { STUDY_FILE_DELETED, STUDY_TEXT_EXPIRED } from "../src/lib/study-file";
 import {
   completeDefendSession,
@@ -175,5 +175,42 @@ describe("Learn after the document text is deleted", () => {
     expect(view.deliverable?.documentAvailable).toBe(false);
     expect(view.deliverable?.studyDeck).toBe(true);
     expect(view.status).toBe("defended");
+  });
+
+  it("returns the receipt before a slow deck finishes", async () => {
+    const previous = process.env.MOCK_FLASHCARD_DELAY_MS;
+    process.env.MOCK_FLASHCARD_DELAY_MS = "800";
+    try {
+      const user = await signIn("deck-async@fund.example");
+      const ingest = await creatorIngest({
+        user,
+        fileName: "async.md",
+        buffer: memo,
+        difficulty: "standard",
+      });
+      const session = await startSession({ token: ingest.token, user, mode: "defend" });
+      await answerAll(session, user);
+      const started = Date.now();
+      const result = await completeDefendSession({
+        sessionId: session.sessionId,
+        user,
+        waitForStudyDeck: false,
+      });
+      const elapsed = Date.now() - started;
+      expect(result.receipt?.payload.id).toBeTruthy();
+      expect(elapsed).toBeLessThan(500);
+      const db = await getDb();
+      const row = await db.get<{ text_enc: string | null }>(`SELECT text_enc FROM deliverables WHERE id = ?`, [
+        ingest.deliverableId,
+      ]);
+      expect(row?.text_enc).toBeNull();
+      await settlePendingStudyDecks();
+      const cards = await dueCards({ user, token: ingest.token });
+      expect(cards.length).toBeGreaterThan(0);
+      expect(cards.some((card) => card.source)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.MOCK_FLASHCARD_DELAY_MS;
+      else process.env.MOCK_FLASHCARD_DELAY_MS = previous;
+    }
   });
 });
