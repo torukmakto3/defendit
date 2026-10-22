@@ -96,6 +96,14 @@ export default function ReviewPage() {
       {me === null && <SignInCard title="Sign in to review your cards" />}
       {error && <p className="text-sm text-danger">{error}</p>}
 
+      {me && cards === null && !error && (
+        <div className="panel grid gap-3 p-6" aria-busy="true">
+          <span className="block h-5 w-3/4 animate-pulse bg-[var(--line)]" />
+          <span className="block h-5 w-1/2 animate-pulse bg-[var(--line)]" />
+          <p className="text-sm text-[var(--ink-2)]">Loading cards…</p>
+        </div>
+      )}
+
       {me && cards && !current && (
         <div className="panel grid justify-items-center gap-3 p-8 text-center">
           <Companion state="impressed" size={84} />

@@ -30,18 +30,40 @@ const RATINGS: { key: RatingName; label: string; hint: string; shortcut: string 
   { key: "easy", label: "Easy", hint: "Instant", shortcut: "4" },
 ];
 
-async function requestDeck(token: string, regenerate: boolean): Promise<StudyCard[]> {
-  const made = await fetch("/api/learn/cards", {
+async function requestDeck(token: string, regenerate: boolean, onCard: (card: StudyCard) => void): Promise<void> {
+  const res = await fetch("/api/learn/cards", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
     body: JSON.stringify({ token, regenerate }),
   });
-  const madeBody = await made.json();
-  if (!made.ok) throw new Error(madeBody.error || "Could not make flashcards");
-  const res = await fetch(`/api/learn/cards?token=${encodeURIComponent(token)}`, { cache: "no-store" });
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error || "Could not load cards");
-  return body.cards as StudyCard[];
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/x-ndjson")) {
+    const body = (await res.json()) as { error?: string; cards?: StudyCard[] };
+    if (!res.ok) throw new Error(body.error || "Could not make flashcards");
+    const listed = await fetch(`/api/learn/cards?token=${encodeURIComponent(token)}`, { cache: "no-store" });
+    const listedBody = (await listed.json()) as { error?: string; cards?: StudyCard[] };
+    if (!listed.ok) throw new Error(listedBody.error || "Could not load cards");
+    for (const card of listedBody.cards ?? []) onCard(card);
+    return;
+  }
+  if (!res.ok || !res.body) throw new Error("Could not make flashcards");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    pending += decoder.decode(chunk.value, { stream: true });
+    const lines = pending.split("\n");
+    pending = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const event = JSON.parse(trimmed) as { type?: string; card?: StudyCard; error?: string };
+      if (event.type === "error") throw new Error(event.error || "Could not make flashcards");
+      if (event.type === "card" && event.card) onCard(event.card);
+    }
+  }
 }
 
 export default function LearnPage() {
@@ -54,42 +76,68 @@ export default function LearnPage() {
   const [revealed, setRevealed] = useState(false);
   const [done, setDone] = useState(0);
   const [busy, setBusy] = useState(true);
+  const [more, setMore] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [trackedToken, setTrackedToken] = useState(token);
+  if (token !== trackedToken) {
+    setTrackedToken(token);
+    setBusy(true);
+    setMore(true);
+    setCards(null);
+    setError(null);
+    setRevealed(false);
+    setDone(0);
+  }
+
+  const takeCard = useCallback((card: StudyCard) => {
+    setCards((list) => {
+      const current = list ?? [];
+      if (current.some((item) => item.id === card.id)) return current;
+      return [...current, card];
+    });
+    setBusy(false);
+  }, []);
 
   const load = useCallback(
     async (regenerate = false) => {
       setBusy(true);
+      setMore(true);
       setError(null);
       setRevealed(false);
+      if (regenerate) {
+        setCards([]);
+        setDone(0);
+      }
       try {
-        const next = await requestDeck(token, regenerate);
-        setCards(next);
-        if (regenerate) setDone(0);
+        await requestDeck(token, regenerate, takeCard);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not load cards");
       } finally {
         setBusy(false);
+        setMore(false);
       }
     },
-    [token],
+    [token, takeCard],
   );
 
   useEffect(() => {
     let cancelled = false;
-    requestDeck(token, false)
-      .then((next) => {
-        if (!cancelled) setCards(next);
-      })
+    requestDeck(token, false, (card) => {
+      if (!cancelled) takeCard(card);
+    })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : "Could not load cards");
       })
       .finally(() => {
-        if (!cancelled) setBusy(false);
+        if (!cancelled) {
+          setBusy(false);
+          setMore(false);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, takeCard]);
 
   useEffect(() => {
     let cancelled = false;
@@ -211,6 +259,7 @@ export default function LearnPage() {
           remaining={remaining}
           done={done}
           revealed={revealed}
+          more={more}
           allowRegenerate={documentAvailable !== false}
           documentAvailable={documentAvailable !== false}
           onReveal={() => setRevealed(true)}
@@ -232,6 +281,7 @@ function LearnModeBody(props: {
   remaining: number;
   done: number;
   revealed: boolean;
+  more: boolean;
   allowRegenerate: boolean;
   documentAvailable: boolean;
   onReveal: () => void;
@@ -249,6 +299,7 @@ function LearnModeBody(props: {
           remaining={props.remaining}
           done={props.done}
           revealed={props.revealed}
+          more={props.more}
           allowRegenerate={props.allowRegenerate}
           onReveal={props.onReveal}
           onRate={props.onRate}
@@ -274,18 +325,14 @@ function FlashcardStudy(props: {
   remaining: number;
   done: number;
   revealed: boolean;
+  more: boolean;
   allowRegenerate: boolean;
   onReveal: () => void;
   onRate: (rating: RatingName) => void;
   onReload: (regenerate: boolean) => void;
 }) {
-  if (!props.cardsLoaded || (props.busy && !props.current)) {
-    return (
-      <div className="panel grid justify-items-center gap-3 p-8 text-center">
-        <Companion state="thinking" size={84} />
-        <p className="text-lg font-semibold">Writing cards from your file…</p>
-      </div>
-    );
+  if (!props.current && (props.more || !props.cardsLoaded || props.busy)) {
+    return <CardSkeleton label={props.cardsLoaded ? "More cards loading" : "Writing the first card…"} />;
   }
 
   if (!props.current) {
@@ -314,8 +361,13 @@ function FlashcardStudy(props: {
           {props.done} done · {props.remaining} left
         </span>
         {props.allowRegenerate && (
-          <button type="button" className="btn btn-ghost" disabled={props.busy} onClick={() => props.onReload(true)}>
-            {props.busy ? "Writing cards…" : "Regenerate"}
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={props.busy || props.more}
+            onClick={() => props.onReload(true)}
+          >
+            {props.busy || props.more ? "Writing cards…" : "Regenerate"}
           </button>
         )}
       </div>
@@ -367,6 +419,23 @@ function FlashcardStudy(props: {
           </button>
         )}
       </div>
+      {props.more && <CardSkeleton label="More cards loading" />}
+    </div>
+  );
+}
+
+function CardSkeleton({ label }: { label: string }) {
+  return (
+    <div className="panel grid gap-4 p-5 sm:p-6" aria-busy="true">
+      <div className="grid grid-cols-[auto_1fr] items-start gap-4">
+        <Companion state="thinking" size={64} />
+        <div className="grid min-w-0 gap-2">
+          <span className="mono text-xs uppercase tracking-[0.08em] text-[var(--blueprint)]">Question</span>
+          <span className="block h-5 w-4/5 animate-pulse bg-[var(--line)]" />
+          <span className="block h-5 w-2/3 animate-pulse bg-[var(--line)]" />
+        </div>
+      </div>
+      <p className="text-sm text-[var(--ink-2)]">{label}</p>
     </div>
   );
 }

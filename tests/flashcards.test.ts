@@ -5,14 +5,17 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { consumeMagicLink, requestMagicLink, type User } from "../src/lib/auth";
 import { getDb } from "../src/lib/db";
 import { cardTextIssues } from "../src/lib/card-text";
+import { claimsFromText } from "../src/lib/claims";
 import {
   DEFAULT_FLASHCARD_MODEL,
   dedupeFlashcards,
   dueCards,
+  estimateFlashcardTokens,
   flashcardLlm,
   generateFlashcards,
   listProjects,
   reviewCard,
+  streamStudyDeck,
 } from "../src/lib/flashcards";
 import { creatorIngest, purgeExpired } from "../src/lib/services";
 
@@ -193,5 +196,89 @@ describe("flashcards", () => {
       ingest.deliverableId,
     ]);
     expect(Number(left?.n)).toBe(0);
+  });
+
+  it("streams card 1 before the rest of the deck", async () => {
+    const previous = process.env.MOCK_FLASHCARD_DELAY_MS;
+    process.env.MOCK_FLASHCARD_DELAY_MS = "80";
+    try {
+      const user = await signIn("stream-cards@fund.example");
+      const ingest = await creatorIngest({ user, fileName: "stream.md", buffer: memo });
+      const times: number[] = [];
+      const started = Date.now();
+      const result = await streamStudyDeck({
+        token: ingest.token,
+        user,
+        onCard: () => times.push(Date.now() - started),
+      });
+      expect(times.length).toBeGreaterThan(1);
+      expect(result.created).toBe(times.length);
+      expect(result.cached).toBe(false);
+      expect(times[0]).toBeLessThan(times[times.length - 1]);
+      expect(times[times.length - 1] - times[0]).toBeGreaterThanOrEqual(70);
+      console.info(
+        JSON.stringify({
+          cards: times.length,
+          delayMs: 80,
+          beforeFirstCardMs: 80 * times.length,
+          beforeDeckMs: 80 * times.length,
+          afterFirstCardMs: times[0],
+          afterDeckMs: times[times.length - 1],
+          resultFirstCardMs: result.firstCardMs,
+          resultDeckMs: result.deckMs,
+        }),
+      );
+      const due = await dueCards({ user, token: ingest.token });
+      expect(due).toHaveLength(result.total);
+      expect(due.some((card) => card.source)).toBe(true);
+      const db = await getDb();
+      const stored = await db.get<{ source_enc: string }>(
+        `SELECT source_enc FROM flashcards WHERE deliverable_id = ? AND source_enc IS NOT NULL LIMIT 1`,
+        [ingest.deliverableId],
+      );
+      expect(stored?.source_enc).toBeTruthy();
+      expect(stored?.source_enc).not.toMatch(/Series B|churn/i);
+    } finally {
+      if (previous === undefined) delete process.env.MOCK_FLASHCARD_DELAY_MS;
+      else process.env.MOCK_FLASHCARD_DELAY_MS = previous;
+    }
+  });
+
+  it("reads a stored deck without another model call", async () => {
+    const user = await signIn("cached-fast@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "cached.md", buffer: memo });
+    const first = await generateFlashcards({ token: ingest.token, user });
+    expect(first.cached).toBe(false);
+    const db = await getDb();
+    const before = await db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM llm_calls WHERE request_id = ? AND purpose = 'write_flashcards'`,
+      [ingest.requestId],
+    );
+    const previous = process.env.MOCK_FLASHCARD_DELAY_MS;
+    process.env.MOCK_FLASHCARD_DELAY_MS = "500";
+    try {
+      const started = Date.now();
+      const again = await generateFlashcards({ token: ingest.token, user });
+      expect(Date.now() - started).toBeLessThan(250);
+      expect(again.cached).toBe(true);
+      expect(again.created).toBe(0);
+      const after = await db.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM llm_calls WHERE request_id = ? AND purpose = 'write_flashcards'`,
+        [ingest.requestId],
+      );
+      expect(Number(after?.n)).toBe(Number(before?.n));
+    } finally {
+      if (previous === undefined) delete process.env.MOCK_FLASHCARD_DELAY_MS;
+      else process.env.MOCK_FLASHCARD_DELAY_MS = previous;
+    }
+  });
+
+  it("keeps a split deck near the cost of one call", () => {
+    const text = memo.toString("utf8");
+    const estimate = estimateFlashcardTokens(claimsFromText(text), text, "sample-memo.md");
+    expect(estimate.cards).toBeGreaterThan(1);
+    expect(estimate.callsAfter).toBe(2);
+    expect(estimate.afterTokens - estimate.beforeTokens).toBeLessThanOrEqual(250);
+    console.info(JSON.stringify({ flashcardTokens: estimate }));
   });
 });

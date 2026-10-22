@@ -57,6 +57,11 @@ export default function LearnHubPage() {
 
       {me === null && <SignInCard title="Sign in to see your projects" />}
       {error && <p className="text-sm text-danger">{error}</p>}
+      {me && !projects && !error && (
+        <div className="panel p-6" aria-busy="true">
+          <p className="text-[var(--ink-2)]">Loading projects…</p>
+        </div>
+      )}
 
       {me && projects?.length === 0 && (
         <div className="panel grid gap-3 p-6">
@@ -89,7 +94,7 @@ export default function LearnHubPage() {
               )}
               <div className="flex flex-wrap gap-2">
                 {(p.documentAvailable || p.cards > 0) && !p.purged && (
-                  <Link href={`/d/${p.token}/learn`} className="btn btn-primary">
+                  <Link href={`/d/${p.token}/learn`} prefetch className="btn btn-primary">
                     Flashcards{p.due > 0 ? ` · ${p.due} due` : ""}
                   </Link>
                 )}

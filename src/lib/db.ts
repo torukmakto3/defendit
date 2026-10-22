@@ -207,6 +207,8 @@ const ADDED_COLUMNS: [string, string, string][] = [
   ["sessions", "grading_progress", "TEXT"],
   // Phrased first question, encrypted, computed while the upload is saved.
   ["defense_requests", "question_prefetch_enc", "TEXT"],
+  // NULL: a deck saved before this column. 0: a deck is still being written. 1: the deck is complete.
+  ["deliverables", "study_deck_ready", "INTEGER"],
 ];
 
 let dbPromise: Promise<Db> | null = null;
