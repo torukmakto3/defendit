@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { gradeSession } from "../src/lib/grading";
+import * as llm from "../src/lib/llm";
 import { detectNonAnswer } from "../src/lib/non-answer";
 import { buildInterviewPlan } from "../src/lib/probes";
+import { buildSignedReceipt } from "../src/lib/receipt";
 import { scoreDefense } from "../src/lib/score";
 import type { Claim, ProbeType, TurnRecord } from "../src/lib/types";
 
@@ -66,21 +68,66 @@ describe("detectNonAnswer", () => {
 });
 
 describe("gradeSession non-answers", () => {
-  it("scores an all-I-don't-know defense at 0 on every dimension", async () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("scores an all-I-don't-know defense at 0 without calling the graders", async () => {
+    const spy = vi.spyOn(llm, "completeJson");
     const plan = buildInterviewPlan({ claims, difficulty: "standard", seed: "idk" });
     const turns = turnsFor(plan, () => "I don't know.");
     const grades = await gradeSession({ difficulty: "standard", claims, plan, turns });
+    expect(spy).not.toHaveBeenCalled();
     const scored = scoreDefense(grades, plan);
     expect(scored.score).toBe(0);
     expect(scored.claimScores.every((n) => n === 0)).toBe(true);
     expect(scored.disputedProbeIds).toEqual([]);
-    for (const grade of grades) {
-      expect(grade.claimGrades).toHaveLength(plan.probes.length);
-      for (const row of grade.claimGrades) {
-        expect(row.scores).toEqual({ accuracy: 0, reasoning: 0, transfer: 0, errorDetection: 0, ownership: 0 });
-        expect(row.band).toBe("Weak");
-      }
+    expect(grades).toHaveLength(1);
+    expect(grades[0].modelId).toBe("non-answer");
+    expect(grades[0].provider).toBe("rule");
+    expect(grades[0].temperature).toBeUndefined();
+    expect(grades[0].seed).toBeUndefined();
+    expect(grades[0].claimGrades).toHaveLength(plan.probes.length);
+    for (const row of grades[0].claimGrades) {
+      expect(row.scores).toEqual({ accuracy: 0, reasoning: 0, transfer: 0, errorDetection: 0, ownership: 0 });
+      expect(row.band).toBe("Weak");
+      expect(row.reason).toMatch(/^Non-answer \(refusal\)/);
     }
+    const signed = buildSignedReceipt({
+      difficulty: "standard",
+      sha256: "ab".repeat(32),
+      byteLength: 32,
+      grades,
+      plan,
+      claimScores: scored.claimScores,
+      integrity: {
+        status: "Clear",
+        observations: [],
+        avgLatencyMs: 0,
+        latencyVariance: 0,
+        pasteEvents: 0,
+        focusBlurEvents: 0,
+      },
+    });
+    expect(signed.payload.score).toBe(0);
+    expect(signed.payload.outcome).toBe("Not defended");
+    expect(signed.payload.modelVersions).toEqual(["rule:non-answer"]);
+    expect(signed.payload.graders).toBeUndefined();
+    expect(signed.payload.bands).toEqual({ strong: 0, partial: 0, weak: plan.probes.length });
+    expect(signed.payload.rubricVersion).toBe("defend-it-rubric-v0.5");
+  });
+
+  it("still calls the council when one answer is a refusal and the others are real", async () => {
+    const spy = vi.spyOn(llm, "completeJson");
+    const plan = buildInterviewPlan({ claims, difficulty: "standard", seed: "mix-call" });
+    const turns = turnsFor(plan, (probeId) => {
+      if (probeId === plan.probes[0].id) return "I don't know.";
+      return "Churn near 1.2% is the figure I would recheck, because if it doubled the payback would stretch.";
+    });
+    const grades = await gradeSession({ difficulty: "standard", claims, plan, turns });
+    expect(spy).toHaveBeenCalled();
+    expect(grades.map((grade) => grade.modelId)).not.toContain("non-answer");
+    expect(scoreDefense(grades, plan).score).toBeGreaterThan(0);
   });
 
   it("scores a correct answer in Portuguese, and one that uses synonyms, above zero", async () => {

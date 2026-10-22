@@ -39,7 +39,7 @@ export function createOpenAICompatProvider(opts: {
       const res = await fetch(`${base}/chat/completions`, {
         method: "POST",
         headers,
-        // Below the 60s route budget, so a slow model fails cleanly instead of the function being killed.
+        // Callers pass a deadline inside the route budget. This fallback covers a call with no signal.
         signal: req.signal ?? AbortSignal.timeout(Number(process.env.LLM_TIMEOUT_MS || "45000")),
         body: JSON.stringify({
           model: opts.model,

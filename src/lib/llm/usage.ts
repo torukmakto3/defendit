@@ -464,6 +464,13 @@ function committedUsd(scope: Scope): number {
   return scope.persistedUsd + scope.voiceUsd + pending;
 }
 
+/** Settled dollars queued in the current scope. Zero when no scope is open. */
+export function scopeSettledUsd(): number {
+  const scope = scopes.getStore();
+  if (!scope) return 0;
+  return scope.pending.filter((call) => !call.reserved).reduce((sum, call) => sum + call.usage.costUsd, 0);
+}
+
 function isOptional(scope: Scope, purpose: string, modelId: string): boolean {
   if (purpose === "speakable_rewrite") return true;
   if (purpose === "learn_turn") {
@@ -610,6 +617,7 @@ export async function claimBudgetHold(db: Db, input: ClaimBudgetHoldInput): Prom
 
 async function lookupSession(scope: Scope): Promise<string | null> {
   if (scope.reserveSessionId) return scope.reserveSessionId;
+  if (!scope.sessionId && !scope.requestId) return null;
   const db = await getDb();
   const row = scope.sessionId
     ? await db.get<{ id: string }>(`SELECT id FROM sessions WHERE id = ?`, [scope.sessionId])

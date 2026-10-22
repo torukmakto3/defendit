@@ -14,7 +14,10 @@ export function createMockProvider(modelId = "mock-defend-v1"): LlmProvider {
     async complete(req: LlmRequest): Promise<LlmResponse> {
       const user = req.messages.filter((m) => m.role === "user").pop()?.content ?? "";
       const purpose = req.purpose ?? "generic";
-      if (purpose === "grade") await waitForGrade(req, modelId);
+      if (purpose === "grade") {
+        throwIfTransientGrader(modelId);
+        await waitForGrade(req, modelId);
+      }
 
       let content: string;
       if (req.json) {
@@ -41,6 +44,32 @@ export function createMockProvider(modelId = "mock-defend-v1"): LlmProvider {
  * `MOCK_GRADER_DELAY_MS` pauses every grade. `MOCK_GRADER_HANG_MODEL` pauses
  * one model until the per-grader abort fires.
  */
+const transientCounts = new Map<string, number>();
+let transientSpecSeen = "";
+
+/**
+ * Test hook. `MOCK_GRADER_TRANSIENT` is `status:code` (for example `503:overloaded`).
+ * The first `MOCK_GRADER_TRANSIENT_TIMES` grade calls for `MOCK_GRADER_TRANSIENT_MODEL`
+ * (or every model, when that is unset) throw before any delay. Unset in normal mock mode.
+ */
+function throwIfTransientGrader(modelId: string): void {
+  const spec = process.env.MOCK_GRADER_TRANSIENT?.trim() ?? "";
+  if (spec !== transientSpecSeen) {
+    transientSpecSeen = spec;
+    transientCounts.clear();
+  }
+  if (!spec) return;
+  const only = process.env.MOCK_GRADER_TRANSIENT_MODEL?.trim();
+  if (only && only !== modelId) return;
+  const limit = Number(process.env.MOCK_GRADER_TRANSIENT_TIMES ?? "1");
+  const times = Number.isFinite(limit) && limit > 0 ? limit : 1;
+  const seen = transientCounts.get(modelId) ?? 0;
+  if (seen >= times) return;
+  transientCounts.set(modelId, seen + 1);
+  const [status, code] = spec.split(":");
+  throw new Error(`liquid error ${status}: ${code || "unknown"}`);
+}
+
 async function waitForGrade(req: LlmRequest, modelId: string): Promise<void> {
   const hang = process.env.MOCK_GRADER_HANG_MODEL === modelId;
   const delay = hang ? 5_000 : Number(process.env.MOCK_GRADER_DELAY_MS || "0");
