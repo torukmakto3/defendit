@@ -60,7 +60,7 @@ function fakePostgres() {
     async transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T> {
       const txInserts: Hold[] = [];
       const deletedBefore = new Map<string, string>();
-      let release: (() => void) | null = null;
+      const gate: { unlock: (() => void) | null } = { unlock: null };
       let preLockHolds: Hold[] | null = null;
 
       const tx: Db = {
@@ -72,7 +72,7 @@ function fakePostgres() {
           statements.push(sql);
           if (!sql.includes("FOR UPDATE")) return undefined;
           if (sql.includes("budget_holds") || sql.includes("INSERT")) preLockHolds = committed.slice();
-          release = await acquire();
+          gate.unlock = await acquire();
           if (String(params[0]) !== session.id) return undefined;
           return { id: session.id } as U;
         },
@@ -84,9 +84,9 @@ function fakePostgres() {
           }
           if (sql.includes("INSERT INTO budget_holds")) {
             const combined = sql.includes("FOR UPDATE");
-            if (combined && !release) {
+            if (combined && !gate.unlock) {
               preLockHolds = committed.slice();
-              release = await acquire();
+              gate.unlock = await acquire();
             }
             const snapshot = combined && preLockHolds ? preLockHolds : committed.slice();
             const sessionId = String(params[4]);
@@ -127,7 +127,7 @@ function fakePostgres() {
         committed.splice(0, committed.length, ...kept, ...txInserts);
         return out;
       } finally {
-        release?.();
+        gate.unlock?.();
       }
     },
   };
