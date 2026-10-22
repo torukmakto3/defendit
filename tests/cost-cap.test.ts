@@ -72,16 +72,20 @@ describe("cost tier and rates", () => {
     expect(getCostTier({ email: "person@fund.example" })).toBe("consumer");
   });
 
-  it("uses $0.75 and $3 unless a tier variable or SESSION_BUDGET_USD is set", () => {
+  it("uses $0.75 and $3 unless the matching per-plan variable is set", () => {
     delete process.env.SESSION_BUDGET_USD;
     delete process.env.SESSION_BUDGET_USD_CONSUMER;
     delete process.env.SESSION_BUDGET_USD_ENTERPRISE;
     expect(budgetUsdForTier("consumer")).toBe(0.75);
     expect(budgetUsdForTier("enterprise")).toBe(3);
 
+    // A leftover single cap must not replace the consumer default.
+    process.env.SESSION_BUDGET_USD = "3";
+    expect(budgetUsdForTier("consumer")).toBe(0.75);
+    expect(budgetUsdForTier("enterprise")).toBe(3);
     process.env.SESSION_BUDGET_USD = "1.25";
-    expect(budgetUsdForTier("consumer")).toBe(1.25);
-    expect(budgetUsdForTier("enterprise")).toBe(1.25);
+    expect(budgetUsdForTier("consumer")).toBe(0.75);
+    expect(budgetUsdForTier("enterprise")).toBe(3);
 
     process.env.SESSION_BUDGET_USD_CONSUMER = "0.5";
     process.env.SESSION_BUDGET_USD_ENTERPRISE = "4";

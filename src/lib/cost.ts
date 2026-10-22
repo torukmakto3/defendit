@@ -35,16 +35,17 @@ function costTierFromEmail(user: { email: string } | null | undefined): CostTier
 }
 
 /**
- * Cap for a tier. A tier-specific variable wins, then an explicit
- * `SESSION_BUDGET_USD`, then the tier default ($0.75 consumer, $3 enterprise).
+ * Cap for a tier. `SESSION_BUDGET_USD_CONSUMER` / `SESSION_BUDGET_USD_ENTERPRISE`
+ * win when set. Otherwise the tier default applies ($0.75 consumer, $3
+ * enterprise). A legacy `SESSION_BUDGET_USD` does not replace those defaults.
+ * It is only the fallback for sessions stored before per-plan caps
+ * (`sessions.budget_usd` is null); see `sessionBudgetUsd`.
  */
 export function budgetUsdForTier(tier: CostTier): number {
   const specific = readUsd(
     tier === "enterprise" ? process.env.SESSION_BUDGET_USD_ENTERPRISE : process.env.SESSION_BUDGET_USD_CONSUMER,
   );
   if (specific !== null) return specific;
-  const fallback = readUsd(process.env.SESSION_BUDGET_USD);
-  if (fallback !== null) return fallback;
   switch (tier) {
     case "consumer":
       return CONSUMER_DEFAULT_USD;

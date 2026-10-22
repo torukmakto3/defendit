@@ -26,12 +26,13 @@ import type { LlmUsage } from "./types";
  * that defense. Before each call the scope inserts a `budget_holds` row. The
  * insert lands only when spent calls, reported voice dollars, and holds newer
  * than two minutes, plus this call, still fit. A hold older than that is
- * ignored, so a killed request cannot block the defense. Two requests on the
- * same session cannot both pass that insert. Optional
- * work is skipped when the reservation does not land. Required work moves to
- * the cheap model, and a defense with no grade yet still gets one grader so
- * it can finish. Until the session row exists, the same check is in-memory
- * for calls that share this scope.
+ * ignored, so a killed request cannot block the defense. On Postgres the
+ * session row is locked (`SELECT ... FOR UPDATE`) in its own statement before
+ * those sums, so a hold committed by the request that held the lock is
+ * visible. Optional work is skipped when the reservation does not land.
+ * Required work moves to the cheap model, and a defense with no grade yet
+ * still gets one grader so it can finish. Until the session row exists, the
+ * same check is in-memory for calls that share this scope.
  */
 
 const DEFAULT_BUDGET_USD = 3;
@@ -222,8 +223,8 @@ export async function flushLlmScope(ids: { sessionId?: string; requestId?: strin
  * Reserve room for a call that is about to be sent.
  * Inside one scope the in-memory hold is taken before the first await, so
  * parallel graders in this request see each other. The session row then
- * confirms it with a conditional update, which is what stops a second
- * request on the same session. Outside a scope there is nothing to cap.
+ * confirms it with a locked insert, which is what stops a second request on
+ * the same session. Outside a scope there is nothing to cap.
  */
 export async function beginBudget(input: {
   purpose?: string;
@@ -529,40 +530,82 @@ function holdCutoffIso(): string {
   return new Date(Date.now() - HOLD_TTL_MS).toISOString();
 }
 
-function claimSql(dialect: "sqlite" | "postgres"): string {
-  const lock = dialect === "postgres" ? " FOR UPDATE" : "";
-  return `WITH locked AS (
-  SELECT id, mode, request_id, voice_cost_usd, budget_usd
-  FROM sessions WHERE id = ?${lock}
-)
-INSERT INTO budget_holds (id, session_id, usd, grades, created_at)
-SELECT ?, locked.id, ?, ?, ?
-FROM locked
-WHERE (
+/** Sums and insert. The session row is already locked when this runs on Postgres. */
+const INSERT_HOLD_SQL = `INSERT INTO budget_holds (id, session_id, usd, grades, created_at)
+SELECT ?, s.id, ?, ?, ?
+FROM sessions s
+WHERE s.id = ?
+AND (
   (
     (SELECT COALESCE(SUM(c.cost_usd), 0) FROM llm_calls c
-      WHERE (locked.mode = 'defend' AND c.request_id = locked.request_id)
-         OR (locked.mode <> 'defend' AND c.session_id = locked.id))
-    + COALESCE(locked.voice_cost_usd, 0)
+      WHERE (s.mode = 'defend' AND c.request_id = s.request_id)
+         OR (s.mode <> 'defend' AND c.session_id = s.id))
+    + COALESCE(s.voice_cost_usd, 0)
     + COALESCE((
         SELECT SUM(h.usd) FROM budget_holds h
-        WHERE h.session_id = locked.id AND h.created_at > ?
+        WHERE h.session_id = s.id AND h.created_at > ?
       ), 0)
     + ?
-  ) <= COALESCE(locked.budget_usd, ?) + 0.000001
+  ) <= COALESCE(s.budget_usd, ?) + 0.000001
   OR (
     ? = 1
     AND COALESCE((
       SELECT SUM(h.grades) FROM budget_holds h
-      WHERE h.session_id = locked.id AND h.created_at > ?
+      WHERE h.session_id = s.id AND h.created_at > ?
     ), 0) = 0
     AND NOT EXISTS (
       SELECT 1 FROM llm_calls g
       WHERE g.purpose = 'grade'
-        AND (g.session_id = locked.id OR g.request_id = locked.request_id)
+        AND (g.session_id = s.id OR g.request_id = s.request_id)
     )
   )
 )`;
+
+export interface ClaimBudgetHoldInput {
+  sessionId: string;
+  holdId: string;
+  estimate: number;
+  gradeDelta: number;
+  allowOver: number;
+  budgetFallback: number;
+  now?: string;
+  cutoff?: string;
+}
+
+/**
+ * Insert one hold if the cap still has room.
+ * Postgres locks the session row first, as its own statement, then sums.
+ * A single statement cannot see a hold the previous lock holder just
+ * committed: under READ COMMITTED that statement keeps the snapshot it took
+ * before it waited. SQLite has no `FOR UPDATE`; the same transaction still
+ * runs there, without the lock clause.
+ */
+export async function claimBudgetHold(db: Db, input: ClaimBudgetHoldInput): Promise<boolean> {
+  const cutoff = input.cutoff ?? holdCutoffIso();
+  const now = input.now ?? new Date().toISOString();
+  return db.transaction(async (tx) => {
+    if (tx.dialect === "postgres") {
+      const locked = await tx.get<{ id: string }>(`SELECT id FROM sessions WHERE id = ? FOR UPDATE`, [
+        input.sessionId,
+      ]);
+      if (!locked) return false;
+    }
+    await tx.run(`DELETE FROM budget_holds WHERE session_id = ? AND created_at <= ?`, [input.sessionId, cutoff]);
+    const result = await tx.run(INSERT_HOLD_SQL, [
+      input.holdId,
+      input.estimate,
+      input.gradeDelta,
+      now,
+      input.sessionId,
+      cutoff,
+      input.estimate,
+      input.budgetFallback,
+      input.allowOver,
+      cutoff,
+    ]);
+    await refreshReserveTotals(tx, input.sessionId, cutoff);
+    return result.changes === 1;
+  });
 }
 
 async function lookupSession(scope: Scope): Promise<string | null> {
@@ -582,7 +625,7 @@ async function lookupSession(scope: Scope): Promise<string | null> {
   return row.id;
 }
 
-/** One insert. `changes === 0` means the cap would not hold. Holds older than two minutes do not count. */
+/** One insert. `false` means the cap would not hold. Holds older than two minutes do not count. */
 async function claimReserve(
   sessionId: string,
   holdId: string,
@@ -591,24 +634,14 @@ async function claimReserve(
   allowOver: number,
   budgetFallback: number,
 ): Promise<boolean> {
-  const db = await getDb();
-  const cutoff = holdCutoffIso();
-  const now = new Date().toISOString();
-  await db.run(`DELETE FROM budget_holds WHERE session_id = ? AND created_at <= ?`, [sessionId, cutoff]);
-  const result = await db.run(claimSql(db.dialect), [
+  return claimBudgetHold(await getDb(), {
     sessionId,
     holdId,
     estimate,
     gradeDelta,
-    now,
-    cutoff,
-    estimate,
-    budgetFallback,
     allowOver,
-    cutoff,
-  ]);
-  await refreshReserveTotals(db, sessionId, cutoff);
-  return result.changes === 1;
+    budgetFallback,
+  });
 }
 
 async function holdOnSession(

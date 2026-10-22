@@ -143,13 +143,34 @@ export function cheapModelId(): string {
   );
 }
 
+let warnedCompatPrimary = "";
+
+/**
+ * On an OpenAI-compatible server the cheap call is `OPENAI_COMPAT_CHEAP_MODEL`
+ * when that is set. Otherwise it stays on the primary compat model
+ * (`OPENAI_COMPAT_MODEL`). That one-model fallback is deliberate until there
+ * is a product decision to switch it; the warning makes the choice visible.
+ */
+function cheapestCompatProvider(): LlmProvider {
+  const cheap = process.env.OPENAI_COMPAT_CHEAP_MODEL?.trim();
+  if (cheap) return createCompatProviderFromEnv(cheap);
+  const primary = process.env.OPENAI_COMPAT_MODEL?.trim() || "local-model";
+  if (warnedCompatPrimary !== primary) {
+    warnedCompatPrimary = primary;
+    console.warn(
+      `[llm] OPENAI_COMPAT_CHEAP_MODEL is unset; a capped defense uses the primary compat model (${primary}).`,
+    );
+  }
+  return createCompatProviderFromEnv();
+}
+
 /** Cheapest configured model, untracked. Mock mode is the offline stand-in for that pin. */
 export function getCheapestLlm(): LlmProvider {
   if (isMockLlm()) return createMockProvider(cheapModelId());
   const env = process.env;
   const model = cheapModelId();
   if (env.OLLAMA_BASE_URL || preferProvider() === "ollama") return createOllamaProvider(env.OLLAMA_MODEL || model);
-  if (env.OPENAI_COMPAT_BASE_URL) return createCompatProviderFromEnv();
+  if (env.OPENAI_COMPAT_BASE_URL) return cheapestCompatProvider();
   if (env.LIQUID_API_KEY) return guardRetention(createLiquidProvider(env.LIQUID_API_KEY, model));
   if (env.GROQ_API_KEY) return guardRetention(createGroqProvider(env.GROQ_API_KEY, model));
   if (env.OPENROUTER_API_KEY) return guardRetention(createOpenRouterProvider(env.OPENROUTER_API_KEY, model));

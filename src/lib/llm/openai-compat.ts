@@ -187,14 +187,15 @@ export function createOllamaProvider(
   });
 }
 
-export function createCompatProviderFromEnv(): LlmProvider {
+export function createCompatProviderFromEnv(modelOverride?: string): LlmProvider {
   const baseUrl = process.env.OPENAI_COMPAT_BASE_URL!;
+  const override = modelOverride?.trim();
   return createOpenAICompatProvider({
-    id: process.env.OPENAI_COMPAT_MODEL || "compat-model",
+    id: override || process.env.OPENAI_COMPAT_MODEL || "compat-model",
     provider: "openai-compat",
     apiKey: process.env.OPENAI_COMPAT_API_KEY,
     baseUrl,
-    model: process.env.OPENAI_COMPAT_MODEL || "local-model",
+    model: override || process.env.OPENAI_COMPAT_MODEL || "local-model",
     retention: isLocalUrl(baseUrl) ? "local" : "unverified",
   });
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getGradingCouncil, getPrimaryLlm } from "../src/lib/llm";
+import { getCheapestLlm, getGradingCouncil, getPrimaryLlm } from "../src/lib/llm";
 
 const LLM_ENV = [
   "MOCK_LLM",
@@ -15,6 +15,8 @@ const LLM_ENV = [
   "ANTHROPIC_API_KEY",
   "OLLAMA_BASE_URL",
   "OPENAI_COMPAT_BASE_URL",
+  "OPENAI_COMPAT_MODEL",
+  "OPENAI_COMPAT_CHEAP_MODEL",
   "LLM_ALLOW_UNVERIFIED_RETENTION",
   "LIQUID_BASE_URL",
   "VERCEL",
@@ -170,6 +172,19 @@ describe("council and deployment safety", () => {
     process.env.LIQUID_API_KEY = "liq_test";
     process.env.LIQUID_BASE_URL = "https://proxy.example.com/v1";
     expect(getPrimaryLlm().retention).toBe("unverified");
+  });
+
+  it("uses the primary compat model as the cheap model unless a separate one is set", () => {
+    process.env.OPENAI_COMPAT_BASE_URL = "http://127.0.0.1:9/v1";
+    process.env.OPENAI_COMPAT_MODEL = "primary-model-for-cap";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(getCheapestLlm().id).toBe("primary-model-for-cap");
+    expect(warn.mock.calls.map((call) => String(call[0])).join("\n")).toContain(
+      "OPENAI_COMPAT_CHEAP_MODEL is unset; a capped defense uses the primary compat model (primary-model-for-cap).",
+    );
+    process.env.OPENAI_COMPAT_CHEAP_MODEL = "small-local";
+    expect(getCheapestLlm().id).toBe("small-local");
+    warn.mockRestore();
   });
 
   it("keeps provider error bodies out of thrown errors", async () => {
