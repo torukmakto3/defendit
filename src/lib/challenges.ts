@@ -1,14 +1,7 @@
 import { normalizeEmail, type User } from "./auth";
-import {
-  assertPaidChallengesOpen,
-  billingEnabled,
-  consumePaidCredit,
-  creditLedger,
-  holdPaidCredit,
-  refundPaidCredit,
-  type RefundReason,
-} from "./billing";
+import { assertPaidChallengesOpen, billingEnabled } from "./billing";
 import { challengesEnabled, TIER_LEGEND, tierForScore, type ResultTier } from "./challenge-tier";
+import { consumeCredit, grantCredits, holdCredit, refundCredit } from "./credits";
 import { appUrl } from "./config";
 import { getDb, type Db } from "./db";
 import { HttpError } from "./errors";
@@ -21,8 +14,9 @@ import type { Difficulty, ReceiptOutcome, SignedReceipt } from "./types";
  * Challenge links. A challenge is a sponsored defense: the claimer uploads
  * and defends through the normal flow, and the sponsor covers the cost.
  * Beta challenges (`sponsor_type=beta`) are free and badged "Sponsored by
- * DefendIT". Paid challenges are a stub ledger behind BILLING_ENABLED and
- * never call a payment provider.
+ * DefendIT". Paid challenges hold a credit through `src/lib/credits.ts`
+ * while BILLING_ENABLED is on, and never call a payment provider. A refund
+ * returns that credit. The creator cannot claim their own link.
  *
  * Credits and sponsorship do not depend on posting or sharing. Share clicks
  * are counted and then ignored by every gate.
@@ -61,7 +55,7 @@ function envInt(name: string, fallback: number): number {
   return Math.floor(n);
 }
 
-function envUsd(name: string, fallback: number): number {
+function envNumber(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw == null || raw.trim() === "") return fallback;
   const n = Number(raw);
@@ -90,12 +84,13 @@ export function globalDailyCap(): number {
 }
 
 /**
- * USD the beta may commit. Each open or claimed beta challenge reserves one
- * defense budget (`SESSION_BUDGET_USD`, default $3). Defended ones count
- * their actual model cost. Provisional.
+ * Euro cap for sponsored beta defenses (`BETA_BUDGET_EUR`, default 150).
+ * Each open or claimed beta challenge reserves one defense budget
+ * (`SESSION_BUDGET_USD`, default 3). Defended ones count their recorded
+ * model cost. The comparison is numeric: model cost is still stored in USD.
  */
-export function betaBudgetUsd(): number {
-  return envUsd("CHALLENGE_BETA_BUDGET_USD", 30);
+export function betaBudgetEur(): number {
+  return envNumber("BETA_BUDGET_EUR", 150);
 }
 
 function unclaimedDays(): number {
@@ -260,8 +255,8 @@ export async function challengeEvents(
 export async function expireDueChallenges(db?: Db): Promise<number> {
   const conn = db ?? (await getDb());
   const now = new Date().toISOString();
-  const due = await conn.all<{ id: string }>(
-    `SELECT id FROM challenges
+  const due = await conn.all<{ id: string; creator_user_id: string }>(
+    `SELECT id, creator_user_id FROM challenges
      WHERE (status = 'open' AND expires_at < ?)
         OR (status = 'claimed' AND finish_by IS NOT NULL AND finish_by < ?)`,
     [now, now],
@@ -273,7 +268,17 @@ export async function expireDueChallenges(db?: Db): Promise<number> {
         OR (status = 'claimed' AND finish_by IS NOT NULL AND finish_by < ?)`,
     [now, now],
   );
-  for (const row of due) await refundPaidCredit(conn, row.id, "expiry");
+  for (const row of due) {
+    await refundCredit({
+      userId: row.creator_user_id,
+      kind: "challenge",
+      amount: 1,
+      idempotencyKey: `refund:challenge:${row.id}`,
+      refId: row.id,
+      detail: "expiry",
+      db: conn,
+    });
+  }
   return due.length;
 }
 
@@ -446,7 +451,7 @@ export async function createChallenge(input: CreateChallengeInput): Promise<Crea
         throw new HttpError(403, "The daily challenge limit has been reached.");
       }
       const committed = await betaCommittedUsd(tx);
-      if (committed + sessionBudgetUsd() > betaBudgetUsd()) {
+      if (committed + sessionBudgetUsd() > betaBudgetEur()) {
         throw new HttpError(403, "The DefendIT beta challenge budget is used up.");
       }
     }
@@ -466,7 +471,16 @@ export async function createChallenge(input: CreateChallengeInput): Promise<Crea
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
       [id, slug, input.user.id, targetHint, subject, sourceUrl, note, difficulty, sponsorType, expiresAt, now],
     );
-    if (sponsorType === "paid") await holdPaidCredit(tx, id);
+    if (sponsorType === "paid") {
+      await holdCredit({
+        userId: input.user.id,
+        kind: "challenge",
+        amount: 1,
+        idempotencyKey: `hold:challenge:${id}`,
+        refId: id,
+        db: tx,
+      });
+    }
     await recordEvent(tx, id, "created", input.user.id, { sponsor: sponsorType });
     return { id, slug, expiresAt, sponsorType };
   });
@@ -663,7 +677,15 @@ export async function revokeChallenge(slug: string, user: User): Promise<void> {
     [new Date().toISOString(), row.id],
   );
   if (updated.changes !== 1) throw new HttpError(409, "Only an open challenge can be revoked.");
-  await refundPaidCredit(db, row.id, "revoke");
+  await refundCredit({
+    userId: row.creator_user_id,
+    kind: "challenge",
+    amount: 1,
+    idempotencyKey: `refund:challenge:${row.id}`,
+    refId: row.id,
+    detail: "revoke",
+    db,
+  });
 }
 
 export async function chooseVisibility(opts: {
@@ -694,11 +716,26 @@ export async function chooseVisibility(opts: {
   if (updated.changes !== 1) throw new HttpError(409, "A visibility choice was already saved.");
 
   if (visibility === "private") {
-    await refundPaidCredit(db, row.id, "decline");
+    await refundCredit({
+      userId: row.creator_user_id,
+      kind: "challenge",
+      amount: 1,
+      idempotencyKey: `refund:challenge:${row.id}`,
+      refId: row.id,
+      detail: "decline",
+      db,
+    });
     await recordEvent(db, row.id, "kept_private", opts.user.id);
     return { resultPath: null };
   }
-  await consumePaidCredit(db, row.id);
+  await consumeCredit({
+    userId: row.creator_user_id,
+    kind: "challenge",
+    amount: 1,
+    idempotencyKey: `consume:challenge:${row.id}`,
+    refId: row.id,
+    db,
+  });
   await recordEvent(db, row.id, "published", opts.user.id, { visibility });
   return { resultPath: row.receipt_id ? `/r/${row.receipt_id}` : null };
 }
@@ -1017,18 +1054,31 @@ export async function noteChallengeDefended(
   ids: { sessionId: string; deliverableId: string; receiptId: string },
 ): Promise<void> {
   const db = await getDb();
-  const row = await db.get<{ id: string; status: string }>(
-    `SELECT id, status FROM challenges WHERE request_id = ?`,
+  const row = await db.get<{ id: string; status: string; claimed_by_user_id: string | null }>(
+    `SELECT id, status, claimed_by_user_id FROM challenges WHERE request_id = ?`,
     [requestId],
   );
   if (!row) return;
+  if (row.status !== "claimed" && row.status !== "defended") return;
   await db.run(
     `UPDATE challenges
      SET status = 'defended', session_id = ?, deliverable_id = ?, receipt_id = ?
      WHERE request_id = ? AND status IN ('claimed', 'defended')`,
     [ids.sessionId, ids.deliverableId, ids.receiptId, requestId],
   );
-  if (row.status === "claimed") await recordEvent(db, row.id, "defended", null);
+  if (row.status === "claimed") await recordEvent(db, row.id, "defended", row.claimed_by_user_id);
+  // #39 owns the wallet rules. Completing a defense you were challenged into
+  // grants one challenge credit, once, whether or not the result is shared.
+  if (row.claimed_by_user_id) {
+    await grantCredits({
+      userId: row.claimed_by_user_id,
+      kind: "challenge",
+      amount: 1,
+      idempotencyKey: `onward-challenge:${row.id}`,
+      refId: row.id,
+      db,
+    });
+  }
 }
 
 export async function challengeCompletionHint(
@@ -1043,15 +1093,23 @@ export async function challengeCompletionHint(
   return { slug: row.slug, needsChoice: row.visibility == null };
 }
 
-export async function ledgerForSlug(slug: string) {
+export async function ledgerForSlug(
+  slug: string,
+): Promise<{ action: string; reason: string | null; amount: number }[]> {
   const db = await getDb();
   const row = await loadBySlug(db, slug);
   if (!row) return [];
-  return creditLedger(db, row.id);
+  const entries = await db.all<{ reason: string; detail: string | null; amount: number | string }>(
+    `SELECT reason, detail, amount FROM credit_ledger WHERE ref_id = ? ORDER BY created_at, id`,
+    [row.id],
+  );
+  return entries.map((entry) => ({
+    action: entry.reason,
+    reason: entry.detail,
+    amount: Number(entry.amount),
+  }));
 }
 
 export function paidChallengesEnabled(): boolean {
   return billingEnabled();
 }
-
-export type { RefundReason };

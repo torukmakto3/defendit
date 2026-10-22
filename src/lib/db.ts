@@ -333,15 +333,6 @@ CREATE TABLE IF NOT EXISTS challenge_events (
   created_at TEXT NOT NULL
 );
 
--- Stub ledger for a paid challenge credit. No payment provider is contacted.
-CREATE TABLE IF NOT EXISTS challenge_credits (
-  id TEXT PRIMARY KEY,
-  challenge_id TEXT NOT NULL,
-  action TEXT NOT NULL,
-  reason TEXT,
-  created_at TEXT NOT NULL
-);
-
 -- A user who opts out cannot claim, and their email and handles cannot be targeted.
 CREATE TABLE IF NOT EXISTS challenge_opt_outs (
   user_id TEXT PRIMARY KEY REFERENCES users(id),
@@ -360,7 +351,8 @@ CREATE INDEX IF NOT EXISTS idx_challenges_request ON challenges(request_id);
 CREATE INDEX IF NOT EXISTS idx_challenges_receipt ON challenges(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_challenges_created ON challenges(created_at);
 CREATE INDEX IF NOT EXISTS idx_challenge_events_challenge ON challenge_events(challenge_id, event);
-CREATE INDEX IF NOT EXISTS idx_challenge_credits_challenge ON challenge_credits(challenge_id);
+CREATE INDEX IF NOT EXISTS idx_credit_ledger_user ON credit_ledger(user_id, kind);
+CREATE INDEX IF NOT EXISTS idx_credit_ledger_ref ON credit_ledger(ref_id);
 `;
 
 /** Columns added after a table first shipped: [table, column, definition]. */

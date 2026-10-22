@@ -11,6 +11,7 @@ import {
   createChallenge,
   chooseVisibility,
   revokeChallenge,
+  betaBudgetEur,
   expireDueChallenges,
   getPublicChallenge,
   ledgerForSlug,
@@ -20,6 +21,7 @@ import {
   recordShareClick,
   setOptOut,
 } from "../src/lib/challenges";
+import { getBalance, grantCredits, holdCredit, refundCredit } from "../src/lib/credits";
 import { getDb } from "../src/lib/db";
 import { HttpError } from "../src/lib/errors";
 import {
@@ -48,7 +50,7 @@ const ENV_KEYS = [
   "CHALLENGE_DAILY_PER_CREATOR",
   "CHALLENGE_OPEN_PER_DEFENDER",
   "CHALLENGE_GLOBAL_DAILY_CAP",
-  "CHALLENGE_BETA_BUDGET_USD",
+  "BETA_BUDGET_EUR",
   "CHALLENGE_MIN_ACCOUNT_AGE_HOURS",
   "CHALLENGE_CREATE_LIMIT",
   "CHALLENGE_CLAIM_LIMIT",
@@ -71,7 +73,7 @@ beforeAll(() => {
   process.env.CHALLENGE_DAILY_PER_CREATOR = "10";
   process.env.CHALLENGE_OPEN_PER_DEFENDER = "1";
   process.env.CHALLENGE_GLOBAL_DAILY_CAP = "100";
-  process.env.CHALLENGE_BETA_BUDGET_USD = "1000";
+  process.env.BETA_BUDGET_EUR = "1000";
   process.env.CHALLENGE_MIN_ACCOUNT_AGE_HOURS = "0";
   process.env.CHALLENGE_CREATE_LIMIT = "30";
   process.env.CHALLENGE_CLAIM_LIMIT = "30";
@@ -150,16 +152,64 @@ describe("challenge links", () => {
   });
 
   it("refuses a paid challenge while billing is off and writes no credit", async () => {
-    const before = await (await getDb()).get<{ n: number }>(`SELECT COUNT(*) AS n FROM challenge_credits`);
+    const before = await (await getDb()).get<{ n: number }>(`SELECT COUNT(*) AS n FROM credit_ledger`);
     const user = await signIn(nextEmail("paid-off"));
     await expect(
       createChallenge({ user, subject: SUBJECT, difficulty: "standard", sponsorType: "paid" }),
     ).rejects.toMatchObject({ status: 402 });
-    const after = await (await getDb()).get<{ n: number }>(`SELECT COUNT(*) AS n FROM challenge_credits`);
+    const after = await (await getDb()).get<{ n: number }>(`SELECT COUNT(*) AS n FROM credit_ledger`);
     expect(Number(after?.n)).toBe(Number(before?.n));
-    const billing = readFileSync(join(process.cwd(), "src/lib/billing.ts"), "utf8");
-    expect(billing).not.toMatch(/from ["']stripe["']/);
-    expect(billing).not.toMatch(/require\(["']stripe["']\)/);
+    for (const file of ["src/lib/billing.ts", "src/lib/credits.ts"]) {
+      const source = readFileSync(join(process.cwd(), file), "utf8");
+      expect(source).not.toMatch(/from ["']stripe["']/);
+      expect(source).not.toMatch(/require\(["']stripe["']\)/);
+    }
+  });
+
+  it("defaults the beta budget to €150", () => {
+    delete process.env.BETA_BUDGET_EUR;
+    expect(betaBudgetEur()).toBe(150);
+  });
+
+  it("grants once, and a refund returns the held credit", async () => {
+    const user = await signIn(nextEmail("wallet"));
+    const key = `grant:${user.id}`;
+    await grantCredits({ userId: user.id, kind: "challenge", amount: 1, idempotencyKey: key });
+    await grantCredits({ userId: user.id, kind: "challenge", amount: 1, idempotencyKey: key });
+    expect((await getBalance(user.id)).challenge).toBe(1);
+
+    const refId = `ref-${user.id}`;
+    await holdCredit({
+      userId: user.id,
+      kind: "challenge",
+      amount: 1,
+      idempotencyKey: `hold:${refId}`,
+      refId,
+    });
+    expect((await getBalance(user.id)).challenge).toBe(0);
+    await refundCredit({
+      userId: user.id,
+      kind: "challenge",
+      amount: 1,
+      idempotencyKey: `refund:${refId}`,
+      refId,
+      detail: "revoke",
+    });
+    await refundCredit({
+      userId: user.id,
+      kind: "challenge",
+      amount: 1,
+      idempotencyKey: `refund:${refId}`,
+      refId,
+      detail: "revoke",
+    });
+    expect((await getBalance(user.id)).challenge).toBe(1);
+    const rows = await (await getDb()).all<{ reason: string; detail: string | null }>(
+      `SELECT reason, detail FROM credit_ledger WHERE user_id = ? ORDER BY created_at, id`,
+      [user.id],
+    );
+    expect(rows.map((row) => row.reason).sort()).toEqual(["grant", "hold", "refund"]);
+    expect(rows.some((row) => /card/i.test(`${row.reason} ${row.detail ?? ""}`))).toBe(false);
   });
 
   it("lets the first signed-in adult claim, and tells the next person it is taken", async () => {
@@ -250,13 +300,13 @@ describe("challenge links", () => {
     ).rejects.toThrow(/daily challenge limit/i);
 
     process.env.CHALLENGE_GLOBAL_DAILY_CAP = "100";
-    process.env.CHALLENGE_BETA_BUDGET_USD = "0";
+    process.env.BETA_BUDGET_EUR = "0";
     const budgetUser = await signIn(nextEmail("budget"));
     await expect(
       createChallenge({ user: budgetUser, subject: "Over budget", difficulty: "standard" }),
     ).rejects.toThrow(/budget/i);
 
-    process.env.CHALLENGE_BETA_BUDGET_USD = "1000";
+    process.env.BETA_BUDGET_EUR = "1000";
     const challenger = await signIn(nextEmail("two-links"));
     const a = await createChallenge({ user: challenger, subject: "Slot A", difficulty: "standard" });
     const b = await createChallenge({ user: challenger, subject: "Slot B", difficulty: "standard" });
@@ -319,12 +369,15 @@ describe("challenge links", () => {
     await expect(
       claimChallenge({ slug: expired.slug, user: claimer, ip: nextIp(), adultConfirmed: true }),
     ).rejects.toThrow(/expired/i);
-    expect((await ledgerForSlug(expired.slug)).map((row) => row.action)).toEqual(["hold", "refund"]);
-    expect((await ledgerForSlug(expired.slug)).some((row) => row.reason === "expiry")).toBe(true);
+    const expiredLedger = await ledgerForSlug(expired.slug);
+    expect(expiredLedger.map((row) => row.action).sort()).toEqual(["hold", "refund"]);
+    expect(expiredLedger.some((row) => row.reason === "expiry")).toBe(true);
+    expect(expiredLedger.reduce((sum, row) => sum + row.amount, 0)).toBe(0);
 
     await revokeChallenge(revoked.slug, creator);
     expect((await getPublicChallenge(revoked.slug, null))?.status).toBe("revoked");
     expect((await ledgerForSlug(revoked.slug)).some((row) => row.reason === "revoke")).toBe(true);
+    expect((await getBalance(creator.id)).challenge).toBe(0);
     await expect(
       claimChallenge({ slug: revoked.slug, user: claimer, ip: nextIp(), adultConfirmed: true }),
     ).rejects.toThrow(/revoked/i);
@@ -363,7 +416,9 @@ describe("challenge links", () => {
     expect(hiddenJson).not.toContain(TRANSCRIPT_SECRET);
     expect(hiddenJson).not.toContain(`"score":${hidden.receipt.payload.score}`);
     const ledger = await ledgerForSlug(hidden.created.slug);
-    expect(ledger.map((row) => row.action)).toEqual(["hold", "consume"]);
+    expect(ledger.map((row) => row.action).sort()).toEqual(["consume", "grant", "hold"]);
+    expect((await getBalance(hidden.defender.id)).challenge).toBe(1);
+    expect((await getBalance(hidden.creator.id)).challenge).toBe(-1);
 
     const kept = await run("Private subject line", "private", "paid");
     const privateGate = await receiptGate(kept.receipt.payload.id, null);
@@ -380,6 +435,8 @@ describe("challenge links", () => {
     const defenderGate = await receiptGate(kept.receipt.payload.id, kept.defender);
     expect(defenderGate.includeReceipt).toBe(true);
     expect((await ledgerForSlug(kept.created.slug)).some((row) => row.reason === "decline")).toBe(true);
+    expect((await getBalance(kept.creator.id)).challenge).toBe(0);
+    expect((await getBalance(kept.defender.id)).challenge).toBe(1);
 
     const names = (await challengeEvents(published.created.slug)).map((row) => row.event);
     expect(names).toEqual(expect.arrayContaining(["created", "viewed", "accepted", "defended", "published"]));
@@ -388,7 +445,8 @@ describe("challenge links", () => {
     await recordResultView(published.receipt.payload.id, null);
     const after = (await challengeEvents(published.created.slug)).map((row) => row.event);
     expect(after).toEqual(expect.arrayContaining(["share_clicked", "result_viewed"]));
-    expect(await ledgerForSlug(published.created.slug)).toEqual([]);
+    expect(await ledgerForSlug(published.created.slug)).toEqual([{ action: "grant", reason: null, amount: 1 }]);
+    expect((await getBalance(published.defender.id)).challenge).toBe(1);
   }, 60_000);
 
   it("closes the defense window after the finish deadline", async () => {
