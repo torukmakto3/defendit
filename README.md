@@ -119,6 +119,18 @@ Frontier keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) still work. Optional **Jev
 
 Never commit `.env` or `data/signing-key.json`.
 
+### Environment
+
+The rest of the flags are in `.env.example`.
+
+| Variable | Purpose |
+|---|---|
+| `ADMIN_EMAILS` | Comma-separated emails that can open `/admin` |
+| `ANALYTICS_ENABLED` | First-party funnel. On unless set to `false` or `0` |
+| `BETA_BUDGET_EUR` | Shared beta budget in euros. Default `150` |
+| `CHALLENGES_ENABLED` | Challenge links. Off unless `1` or `true` |
+| `STATS_TOKEN` | Bearer token for `GET /api/stats`. Unset answers 404. The body is counts only: sign-ups, defenses, pass rate by tier, receipts, Learn opens, beta budget, measured cost, and challenges |
+
 ### Voice later
 
 ```bash

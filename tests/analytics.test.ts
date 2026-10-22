@@ -430,7 +430,9 @@ describe("defense wiring", () => {
 
   it("records tier on defend start and completion, and skips learn and a Do Not Track start", async () => {
     const db = await getDb();
-    await db.run(`DELETE FROM analytics_events WHERE name IN ('defense_started', 'defense_completed')`);
+    await db.run(
+      `DELETE FROM analytics_events WHERE name IN ('defense_started', 'defense_completed', 'learn_opened')`,
+    );
     const user = await signIn("analytics-defend@fund.example");
     const ingest = await creatorIngest({ user, fileName: "m.md", buffer: memo, difficulty: "standard" });
     await startSession({
@@ -443,6 +445,7 @@ describe("defense wiring", () => {
     expect(await events("defense_started")).toHaveLength(0);
     await startSession({ token: ingest.token, user, mode: "learn" });
     expect(await events("defense_started")).toHaveLength(0);
+    expect(await events("learn_opened")).toHaveLength(1);
 
     const session = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
     const startedRows = await events("defense_started");

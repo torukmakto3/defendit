@@ -2,9 +2,8 @@
  * First-party funnel events. `track()` lives in `analytics-store.ts` so this
  * module stays free of the database and can be type-imported from the client.
  *
- * Challenge call sites are not on main. PR #44 (`cursor/challenge-links-5695`)
- * should call `trackChallenge` at `CHALLENGE_TRACK_SITES`. Those events no-op
- * unless `CHALLENGES_ENABLED` is `1` or `true`, the same guard as challenge links.
+ * Challenge events no-op unless `CHALLENGES_ENABLED` is `1` or `true`.
+ * Call `trackChallenge` at `CHALLENGE_TRACK_SITES` in `src/lib/challenges.ts`.
  */
 
 export const ANALYTICS_EVENTS = [
@@ -14,6 +13,7 @@ export const ANALYTICS_EVENTS = [
   "defense_started",
   "defense_completed",
   "receipt_shared",
+  "learn_opened",
   "challenge_created",
   "challenge_opened",
   "challenge_accepted",
@@ -59,6 +59,7 @@ const EVENTS_WITH_USER = new Set<AnalyticsEventName>([
   "sign_in_completed",
   "defense_started",
   "defense_completed",
+  "learn_opened",
   "challenge_created",
   "challenge_opened",
   "challenge_accepted",
@@ -71,6 +72,7 @@ const EVENTS_WITH_USER = new Set<AnalyticsEventName>([
 const EVENTS_WITH_SUBJECT = new Set<AnalyticsEventName>([
   "defense_started",
   "defense_completed",
+  "learn_opened",
   "receipt_shared",
   "challenge_created",
   "challenge_opened",
@@ -215,6 +217,7 @@ export function sanitizeProps(name: AnalyticsEventName, props: unknown): Record<
       if (sponsor) out.sponsor = sponsor;
       break;
     }
+    case "learn_opened":
     case "challenge_opened":
     case "challenge_accepted":
     case "challenge_declined":

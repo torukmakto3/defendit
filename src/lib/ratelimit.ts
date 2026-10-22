@@ -164,4 +164,6 @@ export const LIMITS = {
   challengeReportPerIp: budget("CHALLENGE_REPORT_LIMIT", 10, "CHALLENGE_REPORT_WINDOW_SEC", 60 * 60),
   // One global bucket. The key is not an IP, so the beacon does not store addresses.
   analyticsBeacon: { limit: 600, windowSec: 60 },
+  // Daily traction dashboard. The bucket key includes the client IP, same as login limits.
+  statsRead: { limit: 60, windowSec: 60 * 60 },
 } as const;

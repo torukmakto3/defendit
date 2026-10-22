@@ -635,6 +635,13 @@ export async function startSession(opts: {
       props: { tier: request.difficulty },
       headers: opts.analyticsHeaders,
     });
+  } else {
+    await track({
+      name: "learn_opened",
+      userId: opts.user.id,
+      subjectId: sessionId,
+      headers: opts.analyticsHeaders,
+    });
   }
   return { sessionId, plan, channel, startedAt };
 }
