@@ -3,12 +3,14 @@
  * `prices.list({ lookup_keys, expand: ['data.product'] })` and cached for a
  * few minutes. There are no price-id environment variables.
  *
- * Checkout sells the one-time keys only. The plan and meter names are reserved
- * for the integration that is still coming.
+ * Checkout sells pay-as-you-go, packs, Pro, and Team. Enterprise base is sold
+ * by Quote. The extra-unit price is the overage fallback until a meter exists.
  */
 
 import Stripe from "stripe";
 import { HttpError } from "./errors";
+import type { Sku } from "./plans";
+import { stripeSdk } from "./stripe-client";
 
 export const STRIPE_LOOKUP_KEYS = {
   defense: "dit_defense_payg",
@@ -19,20 +21,26 @@ export const STRIPE_LOOKUP_KEYS = {
   proYearly: "dit_pro_yearly",
   teamMonthly: "dit_team_monthly",
   enterpriseBase: "dit_enterprise_base",
+  enterpriseExtraUnit: "dit_enterprise_extra_unit",
 } as const;
 
-/** Usage meter name. Not reported yet. */
+/** Usage meter name. The meter itself is not created yet. */
 export const DEFENSE_OVERAGE_METER = "defense_overage";
 
-/** Pay-as-you-go and packs. Subscriptions are not Checkout products yet. */
-export const ONE_TIME_LOOKUP_KEYS = {
+export function meterEventName(): string {
+  const value = process.env.STRIPE_METER_EVENT_NAME?.trim() ?? "";
+  return value || DEFENSE_OVERAGE_METER;
+}
+
+const CHECKOUT_LOOKUP_KEYS = {
   defense: STRIPE_LOOKUP_KEYS.defense,
   challenge: STRIPE_LOOKUP_KEYS.challenge,
   pack3: STRIPE_LOOKUP_KEYS.pack3,
   pack8: STRIPE_LOOKUP_KEYS.pack8,
+  subscription_month: STRIPE_LOOKUP_KEYS.proMonthly,
+  subscription_year: STRIPE_LOOKUP_KEYS.proYearly,
+  team_month: STRIPE_LOOKUP_KEYS.teamMonthly,
 } as const;
-
-export type OneTimeSku = keyof typeof ONE_TIME_LOOKUP_KEYS;
 
 const PRICE_CACHE_MS = 5 * 60 * 1000;
 
@@ -59,10 +67,54 @@ export interface StripePriceClient {
 
 let override: StripePriceClient | null = null;
 let cached: { fingerprint: string; at: number; prices: Map<string, ResolvedStripePrice> } | null = null;
-let stripeClient: { key: string; stripe: Stripe } | null = null;
 
-export function checkoutLookupKey(sku: OneTimeSku): string {
-  return ONE_TIME_LOOKUP_KEYS[sku];
+export function lookupKeyForSku(sku: Sku): string | null {
+  switch (sku) {
+    case "defense":
+    case "challenge":
+    case "pack3":
+    case "pack8":
+    case "subscription_month":
+    case "subscription_year":
+    case "team_month":
+      return CHECKOUT_LOOKUP_KEYS[sku];
+    case "enterprise_month":
+      return STRIPE_LOOKUP_KEYS.enterpriseBase;
+    default: {
+      const unknown: never = sku;
+      return unknown;
+    }
+  }
+}
+
+export function checkoutLookupKey(sku: keyof typeof CHECKOUT_LOOKUP_KEYS): string {
+  return CHECKOUT_LOOKUP_KEYS[sku];
+}
+
+/** Map a catalog lookup key back to an app sku. The extra-unit price is not a grant. */
+export function skuForLookupKey(lookupKey: string): Sku | null {
+  switch (lookupKey) {
+    case STRIPE_LOOKUP_KEYS.defense:
+      return "defense";
+    case STRIPE_LOOKUP_KEYS.challenge:
+      return "challenge";
+    case STRIPE_LOOKUP_KEYS.pack3:
+      return "pack3";
+    case STRIPE_LOOKUP_KEYS.pack8:
+      return "pack8";
+    case STRIPE_LOOKUP_KEYS.proMonthly:
+      return "subscription_month";
+    case STRIPE_LOOKUP_KEYS.proYearly:
+      return "subscription_year";
+    case STRIPE_LOOKUP_KEYS.teamMonthly:
+      return "team_month";
+    case STRIPE_LOOKUP_KEYS.enterpriseBase:
+      return "enterprise_month";
+    case STRIPE_LOOKUP_KEYS.enterpriseExtraUnit:
+      return null;
+    default:
+      return null;
+  }
 }
 
 /** Vitest injects a fake catalog. Pass null to use Stripe again. */
@@ -93,12 +145,11 @@ export async function resolvePrices(lookupKeys: readonly string[]): Promise<Map<
   return prices;
 }
 
-export async function resolveCheckoutPrice(sku: OneTimeSku): Promise<ResolvedStripePrice> {
-  const prices = await resolvePrices(Object.values(ONE_TIME_LOOKUP_KEYS));
-  const price = prices.get(ONE_TIME_LOOKUP_KEYS[sku]);
-  if (!price) {
-    throw new HttpError(502, `Stripe catalog is missing lookup key ${ONE_TIME_LOOKUP_KEYS[sku]}.`);
-  }
+export async function resolveCheckoutPrice(sku: keyof typeof CHECKOUT_LOOKUP_KEYS): Promise<ResolvedStripePrice> {
+  const key = CHECKOUT_LOOKUP_KEYS[sku];
+  const prices = await resolvePrices([key]);
+  const price = prices.get(key);
+  if (!price) throw new HttpError(502, `Stripe catalog is missing lookup key ${key}.`);
   return price;
 }
 
@@ -149,12 +200,7 @@ function readProduct(product: ListedPrice["product"]): { id: string | null; name
 
 function priceClient(): StripePriceClient {
   if (override) return override;
-  const key = process.env.STRIPE_SECRET_KEY?.trim() ?? "";
-  if (!key) throw new HttpError(501, "Stripe is not configured");
-  if (!stripeClient || stripeClient.key !== key) {
-    stripeClient = { key, stripe: new Stripe(key, { typescript: true, maxNetworkRetries: 1 }) };
-  }
-  const stripe = stripeClient.stripe;
+  const stripe = stripeSdk();
   return {
     async list(lookupKeys) {
       try {

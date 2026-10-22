@@ -1,81 +1,95 @@
 # Payments
 
-Stripe Checkout sells the consumer price list. It is off until Luis has a Stripe **test** account and sets the variables below. Nothing in this repo is a live key.
+Stripe Checkout in test mode. `BILLING_ENABLED` is the only switch. While it is off, the beta grant and the €150 budget behave as they do today, `/pricing` is hidden, and every Stripe route answers **402 Billing is not enabled**. No card is required.
 
-## Two switches
+Turning it on opens Checkout and applies the wallet gate (paid defenses, Learn slot caps). Customers are classic Stripe Customers (`cus_…`), stored on `billing_profiles.stripe_customer_id`. Subscriptions are stored on `user_plans.stripe_subscription_id`. Accounts v2 is not used: Checkout, the portal, invoices, and the meter’s customer mapping all take a classic customer id.
 
-`BILLING_ENABLED` is the wallet gate from the credit ledger.
+## What Checkout sells
 
-- Off (unset, `false`, or anything other than `1` or `true`): the one-time beta grant still applies, Learn uploads are not capped, and a defense after the free allowance says those free defenses are used up. Sponsored defenses still count against `BETA_BUDGET_EUR` (default 150).
-- On: a defense needs a credit, and Learn projects stop at the account's slot limit.
-
-`PAYMENTS_ENABLED` is Stripe Checkout.
-
-- Off: `/pricing` is not shown, the dashboard has no buy buttons, and `/api/billing/checkout` and `/api/billing/webhook` answer 404.
-- On: a signed-in user can start Checkout. Credits are added only by the webhook.
-
-The two flags are independent on purpose. The ledger tests turn the wallet gate on without calling Stripe, and Checkout can be tested without changing who may spend the beta grant. Set **both** when buyers should pay and the gate should apply. Leave **both** off for the beta. Turning on payments does not change the beta grant or the €150 budget.
-
-`/api/admin/billing/simulate` is still the local stand-in. It writes the ledger and does not call Stripe.
-
-## What a payment grants
-
-Prices are EUR and include VAT. A defense and a challenge each cost 1 credit.
-
-| Product | Lookup key | Price | Ledger |
+| Lookup key | SKU | Price | Mode |
 |---|---|---|---|
-| One defense | `dit_defense_payg` | €4 | 1 defense credit (`source: purchase`) |
-| One challenge for someone else | `dit_challenge_payg` | €3 | 1 challenge credit (`source: purchase`) |
-| 3-credit pack | `dit_pack_3` | €10 | 3 flexible credits, usable for a defense or a challenge |
-| 8-credit pack | `dit_pack_8` | €20 | 8 flexible credits, same |
+| `dit_defense_payg` | defense | €4 VAT included | payment |
+| `dit_challenge_payg` | challenge | €3 VAT included | payment |
+| `dit_pack_3` | pack3 | €10 VAT included, 3 flex credits | payment |
+| `dit_pack_8` | pack8 | €20 VAT included, 8 flex credits | payment |
+| `dit_pro_monthly` | subscription_month | €11/month VAT included | subscription |
+| `dit_pro_yearly` | subscription_year | €99/year VAT included, 12 periods at once | subscription |
+| `dit_team_monthly` | team_month | €149/month, VAT added | subscription |
 
-Checkout asks Stripe for those four lookup keys (`prices.list`, expanding `data.product`) and caches the result for five minutes. A missing key, two prices for one key, or an amount that is not the EUR price above fails the request and is not cached. There is no `STRIPE_PRICE_*` variable.
+`dit_enterprise_base` (€490/month, VAT added, 200 defenses) is not in Checkout. It is sold by quote. `dit_enterprise_extra_unit` (€2.50, VAT added) is the invoice-item fallback for Enterprise overage. The `defense_overage` meter is not created and no meter events are sent.
 
-Pack credits are the ledger's `flex` kind, so they pay for either action. `dit_pro_monthly`, `dit_pro_yearly`, `dit_team_monthly`, `dit_enterprise_base`, and the `defense_overage` meter are reserved in `src/lib/stripe-prices.ts`. Checkout does not sell them yet.
+Prices are loaded with `prices.list({ lookup_keys, expand: ['data.product'] })` and cached for five minutes. There are no `STRIPE_PRICE_*` variables and no price ids in production code. A missing key fails closed.
 
-Checkout is created on the server for a signed-in user, in `payment` mode only. `client_reference_id` and `metadata` (`user_id`, `sku`, `lookup_key`) tie the session to that account. The line item uses the price id Stripe returned for that lookup key. Success and cancel pages are `/billing/success` and `/billing/cancel`. The success page does not grant credits.
+The test-mode catalog (account `acct_1UNDfOBIumCL91iA`, all `livemode: false`) is in `docs/stripe-sandbox-ids.json` and `tests/fixtures/stripe/sandbox-catalog.json`. Those ids are for docs and tests. Production resolves by lookup key.
 
-## Webhook
+## Checkout
 
-`POST /api/billing/webhook` runs on the Node runtime and verifies `Stripe-Signature` against the raw body. Event ids are stored in `stripe_events`. A repeat does not grant again.
+`POST /api/billing/checkout` with `{ "sku" }` from a signed-in user. The server creates a hosted Session:
 
-- `checkout.session.completed` with `mode=payment` grants a one-time product.
-- `checkout.session.completed` with `mode=subscription` does not grant. `invoice.paid` does, including the first invoice and each renewal (`billing_reason` `subscription_create` or `subscription_cycle`).
-- `customer.subscription.deleted` (and an update whose status is canceled) marks the plan canceled. Credits already granted stay. The next period is not granted.
-- `charge.refunded` claws back unused credits from that payment only. The balance never goes below zero. If some of those credits were already spent or held, the account is flagged (`billing_profiles.flag_reason = refund_credits_already_spent`) and the dashboard says so. Beta credits are a different source and are not taken.
-- `charge.succeeded` stores the card fingerprint when Stripe sends one. A buyer cannot claim a challenge they created, including one paid with the same card. That check is `assertNotSelfClaim` and does not call Stripe.
+- No `payment_method_types` (dynamic payment methods).
+- `adaptive_pricing.enabled` is false (EUR only).
+- `metadata` `{ user_id, sku }` on the Session, on `subscription_data`, and on `payment_intent_data`.
+- `client_reference_id` is the user id.
+- `subscription_data.billing_mode.type` is `flexible` for Pro and Team.
+- `automatic_tax` only when `STRIPE_TAX_ENABLED=true` (default off).
+- `tax_id_collection` is on.
+- An existing `cus_…` is reused. Otherwise payment mode sets `customer_email` and `customer_creation: always`.
+- Success URL is `/dashboard?checkout={CHECKOUT_SESSION_ID}`. Cancel is `/billing/cancel`.
+
+`POST /api/billing/portal` opens the Customer Portal for the stored customer. Return URL is `/dashboard`. Set `STRIPE_PORTAL_CONFIGURATION_ID` to pin a configuration. The sandbox default `bpc_1UTNuQBIumCL91iAG7sGZYLQ` is not hard-coded. The portal can show invoices, update the payment method, email, address, and tax id, cancel at period end, and switch Pro monthly and yearly. Team and Enterprise are not switchable there.
+
+## Webhooks
+
+`POST /api/billing/webhook`. Node runtime, raw body, `Stripe.webhooks.constructEvent`. A bad signature is 400.
+
+The same Stripe event id is acknowledged once. Credits are keyed on the Checkout session id (`stripe:cs_…`) or the invoice id (`stripe:in_…`), so a new event id for the same object does not grant again.
+
+| Event | Effect |
+|---|---|
+| `checkout.session.completed` | Store the customer. One-time sku, `payment_status=paid`: grant from the line’s lookup key. Subscription mode: store the subscription and grant nothing. |
+| `checkout.session.async_payment_succeeded` | Same grant as completed, same session id. |
+| `checkout.session.async_payment_failed` | No grant. A notice on the dashboard. |
+| `invoice.paid` | `subscription_create`, `subscription_cycle`, or `subscription_update`. Renew from `parent.subscription_details.metadata` (not `invoice.metadata`). Pro +10 defenses, +5 challenges, 10 Learn slots. A year is 12 periods. Team +50. Enterprise +200. |
+| `invoice.payment_failed` | `past_due` and a portal notice. Credits stay. |
+| `customer.subscription.updated` | Sync plan, interval, status, `cancel_at_period_end`. No grant. |
+| `customer.subscription.deleted` | Plan returns to pay as you go. Unused subscription defenses and challenges expire. Purchased, pack, and beta credits stay. |
+| `charge.refunded` | Claw back unspent credits from that purchase. Never below zero. Flag the account if some were already spent. |
+| `charge.dispute.created` | Same clawback, and flag the account. |
+| `invoice.created` | If the customer has unbilled Enterprise overage rows, add `dit_enterprise_extra_unit` × that count. |
+| `invoice.finalized` | Ignored. `invoice.paid` is the grant. |
+| `credit_note.created` | Logged. No ledger change. |
+| `cash_balance.funds_available` | Logged. `invoice.paid` is the settlement. |
+| `customer_cash_balance_transaction.created` | Logged. |
+| `payment_method.attached` / `payment_method.detached` | Logged. |
+| `charge.succeeded` | Stores the card fingerprint used to block a self-claim. |
+
+The line check compares lookup key, or the catalog price id when the line has no lookup key. It does not compare `amount_total`.
 
 ## Environment
 
 | Variable | Purpose |
 |---|---|
-| `PAYMENTS_ENABLED` | `1` or `true` turns Checkout on. Default off. |
-| `BILLING_ENABLED` | `1` or `true` turns the wallet gate on. Default off. |
-| `STRIPE_MODE` | `test` (default) or `live`. |
-| `STRIPE_SECRET_KEY` | Secret key. Use a test key (`sk_test_…`). |
-| `STRIPE_WEBHOOK_SECRET` | Signing secret from `stripe listen` or the dashboard endpoint. |
-| `STRIPE_ALLOW_LIVE` | Must be exactly `true` or the process refuses to start when payments are on and the key is live, or `STRIPE_MODE=live`. |
+| `BILLING_ENABLED` | `1` or `true` turns the wallet gate and Checkout on. Default off. Routes answer 402 when off. |
+| `STRIPE_SECRET_KEY` | Restricted key. Sandbox key in preview and dev. |
+| `STRIPE_WEBHOOK_SECRET` | `whsec_…` for this endpoint. |
+| `STRIPE_MODE` | `test` by default. |
+| `STRIPE_TAX_ENABLED` | `true` enables `automatic_tax`. Default off. |
+| `STRIPE_METER_EVENT_NAME` | Optional. Default `defense_overage`. Not sent. |
+| `STRIPE_PORTAL_CONFIGURATION_ID` | Optional portal configuration id. |
+| `APP_URL` | Origin for success, cancel, and portal return URLs. |
+| `STRIPE_ALLOW_LIVE` | Must be exactly `true` to allow `sk_live_`, `rk_live_`, or `STRIPE_MODE=live`. Leave unset. |
 
-`APP_URL` (already used for other links) is the absolute origin of the success and cancel URLs.
+`NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` is not used.
 
-The server refuses to start when `PAYMENTS_ENABLED` is on and `STRIPE_SECRET_KEY` begins with `sk_live_`, or `STRIPE_MODE=live`, unless `STRIPE_ALLOW_LIVE=true`. A live key left in the environment while payments are off does not block the beta.
+The restricted key needs permission to write Checkout Sessions, Customers, Subscriptions, the customer portal, Invoices, and Invoice Items, and to read Products, Prices, Charges, Refunds, and Events.
 
-## Testing with the Stripe CLI
+A live key while billing is off does not block the beta. With billing on, the process refuses to start unless `STRIPE_ALLOW_LIVE=true`.
 
-Do this after Luis has a test account. No live mode.
-
-1. Install the [Stripe CLI](https://docs.stripe.com/stripe-cli) and `stripe login` against the test account.
-2. In the test-mode catalog, the one-time prices already use the lookup keys in the table above. Checkout reads them at runtime. Do not copy price ids into the environment.
-3. Put the test secret key in `STRIPE_SECRET_KEY`. Leave `STRIPE_MODE=test`.
-4. Set `PAYMENTS_ENABLED=true`. Set `BILLING_ENABLED=true` as well if the wallet gate should apply while you click through.
-5. `npm run dev`, then in another terminal:
+## Local listener
 
 ```bash
-stripe listen --forward-to localhost:3000/api/billing/webhook
+stripe listen --forward-to localhost:3000/api/billing/webhook \
+  --events checkout.session.completed,checkout.session.async_payment_succeeded,checkout.session.async_payment_failed,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted,charge.refunded,charge.dispute.created,invoice.created,invoice.finalized,credit_note.created,cash_balance.funds_available,customer_cash_balance_transaction.created,payment_method.attached,payment_method.detached
 ```
 
-6. Copy the `whsec_…` the CLI prints into `STRIPE_WEBHOOK_SECRET` and restart `npm run dev`.
-7. Sign in, open `/pricing`, and buy a product with [test card](https://docs.stripe.com/testing) `4242 4242 4242 4242`. The dashboard updates when the CLI forwards `checkout.session.completed` or `invoice.paid`.
-8. Refund the payment from the Dashboard or `stripe refunds create`. Unused credits come off the wallet. Spent credits flag the account and do not drive the balance negative.
-
-`npm test` mocks Checkout and never calls Stripe. The signature, duplicate event, each product, renewal, refund, and live-key refusal are covered there.
+Put the printed `whsec_…` in `STRIPE_WEBHOOK_SECRET`. Set `BILLING_ENABLED=true` and the sandbox restricted key. The dev server must restart so the startup check sees the key.

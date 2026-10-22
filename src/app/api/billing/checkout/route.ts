@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { handleError, jsonError, requireUser } from "@/lib/http";
 import { createCheckout } from "@/lib/payments";
-import { isSku } from "@/lib/plans";
-import { liveStripeRefused, paymentsEnabled } from "@/lib/stripe-config";
+import { billingEnabled, isSku } from "@/lib/plans";
+import { liveStripeRefused } from "@/lib/stripe-config";
 
 export const runtime = "nodejs";
 
@@ -13,7 +13,7 @@ const schema = z.object({
 
 /** Signed-in Checkout Session. Credits land in the webhook, not here. */
 export async function POST(req: Request) {
-  if (!paymentsEnabled()) return jsonError(404, "Not found");
+  if (!billingEnabled()) return jsonError(402, "Billing is not enabled");
   if (liveStripeRefused()) return jsonError(403, "Live Stripe keys are refused.");
   const guard = await requireUser(req);
   if (guard.response) return guard.response;

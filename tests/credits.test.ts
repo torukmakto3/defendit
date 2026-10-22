@@ -50,13 +50,30 @@ const checkoutFixture = JSON.parse(
   readFileSync(join(__dirname, "fixtures", "stripe", "checkout.session.completed.json"), "utf8"),
 ) as {
   id: string;
-  data: { object: { client_reference_id: string; amount_total: number; currency: string; metadata: { user_id: string } } };
+  data: {
+    object: {
+      id: string;
+      client_reference_id: string;
+      amount_total: number;
+      currency: string;
+      metadata: { user_id: string };
+      line_items: { data: { price: { id: string; lookup_key: string } }[] };
+    };
+  };
 };
 const invoiceFixture = JSON.parse(
   readFileSync(join(__dirname, "fixtures", "stripe", "invoice.paid.json"), "utf8"),
 ) as {
   id: string;
-  data: { object: { amount_paid: number; currency: string; metadata: { user_id: string } } };
+  data: {
+    object: {
+      amount_paid: number;
+      currency: string;
+      metadata: { user_id: string; sku: string };
+      parent: { subscription_details: { metadata: { user_id: string; sku: string } } };
+      lines: { data: { pricing: { price_details: { price: { lookup_key: string } } } }[] };
+    };
+  };
 };
 
 const ANSWER =
@@ -1322,7 +1339,6 @@ describe("billing stub", () => {
     globalThis.fetch = originalFetch;
     calls.length = 0;
     delete process.env.BILLING_ENABLED;
-    delete process.env.PAYMENTS_ENABLED;
     delete process.env.STRIPE_SECRET_KEY;
     delete process.env.STRIPE_WEBHOOK_SECRET;
   });
@@ -1344,15 +1360,17 @@ describe("billing stub", () => {
     expect(payments).not.toMatch(/fetch\s*\(/);
     const example = readFileSync(join(__dirname, "..", ".env.example"), "utf8");
     expect(example).toContain("BILLING_ENABLED=false");
-    expect(example).toContain("PAYMENTS_ENABLED=false");
+    expect(example).not.toContain("PAYMENTS_ENABLED");
     expect(example).toContain("STRIPE_SECRET_KEY");
+    expect(example).toContain("STRIPE_TAX_ENABLED=false");
     expect(example).not.toMatch(/sk_live_[A-Za-z0-9]{8,}/);
+    expect(example).not.toContain("STRIPE_PRICE_");
 
     spyFetch();
     const { user, cookie } = await signIn("billing-off@fund.example");
     for (const flag of [undefined, "false"] as const) {
-      if (flag === undefined) delete process.env.PAYMENTS_ENABLED;
-      else process.env.PAYMENTS_ENABLED = flag;
+      if (flag === undefined) delete process.env.BILLING_ENABLED;
+      else process.env.BILLING_ENABLED = flag;
       const checkoutRes = await checkout(
         new Request("http://localhost/api/billing/checkout", {
           method: "POST",
@@ -1360,13 +1378,13 @@ describe("billing stub", () => {
           body: JSON.stringify({ sku: "defense" }),
         }),
       );
-      expect(checkoutRes.status).toBe(404);
-      expect(await checkoutRes.json()).toEqual({ error: "Not found" });
+      expect(checkoutRes.status).toBe(402);
+      expect(await checkoutRes.json()).toEqual({ error: "Billing is not enabled" });
       const hook = await webhook(
         new Request("http://localhost/api/billing/webhook", { method: "POST", body: "{}" }),
       );
-      expect(hook.status).toBe(404);
-      expect(await hook.json()).toEqual({ error: "Not found" });
+      expect(hook.status).toBe(402);
+      expect(await hook.json()).toEqual({ error: "Billing is not enabled" });
     }
     expect(calls).toEqual([]);
 
@@ -1382,7 +1400,7 @@ describe("billing stub", () => {
 
   it("still makes no network call when payments are on, because Stripe is not configured", async () => {
     spyFetch();
-    process.env.PAYMENTS_ENABLED = "true";
+    process.env.BILLING_ENABLED = "true";
     const { cookie } = await signIn("billing-on@fund.example");
     const checkoutRes = await checkout(
       new Request("http://localhost/api/billing/checkout", {
@@ -1416,17 +1434,24 @@ describe("billing stub", () => {
 
     const priced = structuredClone(pack);
     priced.id = "evt_bad_price";
-    priced.data.object.amount_total = 999;
-    await expect(applyBillingEvent(priced)).rejects.toMatchObject({ status: 400 });
-    const currency = structuredClone(pack);
-    currency.id = "evt_bad_currency";
-    currency.data.object.currency = "usd";
-    await expect(applyBillingEvent(currency)).rejects.toMatchObject({ status: 400 });
+    priced.data.object.id = "cs_bad_price";
+    priced.data.object.line_items.data[0].price.lookup_key = "dit_pack_8";
+    await expect(applyBillingEvent(priced)).rejects.toMatchObject({
+      status: 400,
+      message: "Price does not match the plan.",
+    });
+    const cheap = structuredClone(pack);
+    cheap.id = "evt_cheap_amount";
+    cheap.data.object.id = "cs_test_pack3";
+    cheap.data.object.amount_total = 999;
+    cheap.data.object.currency = "usd";
+    const cheapResult = await applyBillingEvent(cheap);
+    expect(cheapResult.duplicate).toBe(true);
     expect((await getBalance(buyer.user.id)).flex).toBe(3);
 
     const member = await signIn("fixture-sub@fund.example");
     const invoice = structuredClone(invoiceFixture);
-    invoice.data.object.metadata.user_id = member.user.id;
+    invoice.data.object.parent.subscription_details.metadata.user_id = member.user.id;
     await applyBillingEvent(invoice);
     let balance = await getBalance(member.user.id);
     expect(balance.defense).toBe(10);

@@ -29,8 +29,8 @@ interface Wallet {
   plan: { name: string; costTier: string; status: string };
   learn: { active: number; limit: number | null };
   billingEnabled: boolean;
-  paymentsEnabled: boolean;
   billingFlag: string | null;
+  paymentNotice: string | null;
   products: { sku: string; name: string; priceLabel: string; detail: string }[];
   prices: {
     defense: string;
@@ -157,12 +157,16 @@ function WalletPanel({ wallet }: { wallet: Wallet }) {
           A refund covered credits that were already used. The balance was not taken below zero.
         </p>
       )}
-      {wallet.paymentsEnabled && wallet.products.length > 0 && (
+      {wallet.paymentNotice && <p className="mt-2 text-sm text-danger">{wallet.paymentNotice}</p>}
+      {wallet.billingEnabled && wallet.products.length > 0 && (
         <div className="mt-5">
           <h3 className="text-sm font-semibold">Buy credits</h3>
           <p className="mt-1 text-sm text-[var(--ink-2)]">
-            Prices include VAT. Pack credits work for a defense or a challenge. A challenge you buy can&apos;t be
-            claimed by your own account. <Link href="/pricing" className="text-[var(--moss)] underline">Pricing</Link>
+            Consumer prices include VAT. Team has VAT added. Pack credits work for a defense or a challenge. A
+            challenge you buy can&apos;t be claimed by your own account.{" "}
+            <Link href="/pricing" className="text-[var(--moss)] underline">
+              Pricing
+            </Link>
           </p>
           <ul className="mt-3 grid gap-3 sm:grid-cols-2">
             {wallet.products.map((product) => (

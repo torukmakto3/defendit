@@ -6,11 +6,22 @@
       "id": "cs_test_pack3",
       "client_reference_id": "usr_replace",
       "payment_status": "paid",
+      "mode": "payment",
       "amount_total": 1000,
       "currency": "eur",
       "metadata": {
         "sku": "pack3",
         "user_id": "usr_replace"
+      },
+      "line_items": {
+        "data": [
+          {
+            "price": {
+              "id": "price_dit_pack_3",
+              "lookup_key": "dit_pack_3"
+            }
+          }
+        ]
       }
     }
   }

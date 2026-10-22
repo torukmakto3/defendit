@@ -14,8 +14,9 @@ export default async function PricingPage() {
     <div className="shell max-w-3xl">
       <h1 className="text-3xl font-bold sm:text-4xl">Pricing</h1>
       <p className="mt-3 text-[var(--ink-2)]">
-        Prices are in EUR and include VAT. A defense and a challenge each cost 1 credit. Pack credits can be used
-        for either. You can&apos;t claim a challenge bought by your own account.
+        Prices are in EUR. Defenses, challenges, packs, and Pro include VAT. Team has VAT added. A defense and a
+        challenge each cost 1 credit. Pack credits can be used for either. You can&apos;t claim a challenge bought
+        by your own account. Enterprise is sold separately.
       </p>
       <ul className="mt-6 grid gap-4">
         {products.map((product) => (

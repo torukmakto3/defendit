@@ -175,7 +175,7 @@ export interface GrantCreditsInput {
 export interface AssignedPlan {
   plan: Plan;
   interval: BillingInterval | null;
-  status: "active" | "canceled" | "none";
+  status: "active" | "past_due" | "canceled" | "none";
   /** consumer or enterprise. The cost-cap reads this. It is not enforced here. */
   costTier: CostCapTier;
   periodId: string | null;
@@ -692,7 +692,8 @@ async function assignedPlan(db: Db, userId: string): Promise<AssignedPlan> {
   }
   const plan = getPlan(row.plan_id);
   const interval = row.interval === "month" || row.interval === "year" ? row.interval : null;
-  const status = row.status === "active" || row.status === "canceled" ? row.status : "none";
+  const status =
+    row.status === "active" || row.status === "past_due" || row.status === "canceled" ? row.status : "none";
   return { plan, interval, status, costTier: plan.costTier, periodId: row.period_id };
 }
 
@@ -1128,6 +1129,7 @@ export async function renewPlan(input: {
   planId: PlanId;
   interval: BillingInterval;
   periodId: string;
+  subscriptionId?: string | null;
 }): Promise<void> {
   const plan = getPlan(input.planId);
   const periods = periodsForInterval(input.interval);
@@ -1167,8 +1169,18 @@ export async function renewPlan(input: {
          status = 'active',
          period_id = excluded.period_id,
          current_period_end = excluded.current_period_end,
+         stripe_subscription_id = COALESCE(?, user_plans.stripe_subscription_id),
+         cancel_at_period_end = 0,
          updated_at = excluded.updated_at`,
-      [input.userId, input.planId, input.interval, input.periodId, periodEnd(input.interval), now],
+      [
+        input.userId,
+        input.planId,
+        input.interval,
+        input.periodId,
+        periodEnd(input.interval),
+        now,
+        input.subscriptionId ?? null,
+      ],
     );
   });
 }
@@ -1180,6 +1192,84 @@ export async function cancelPlan(userId: string): Promise<void> {
     new Date().toISOString(),
     userId,
   ]);
+}
+
+/**
+ * Record the Stripe subscription without granting a period. `invoice.paid`
+ * is the only grant. A later renewal keeps the period id this row already has
+ * until `renewPlan` replaces it.
+ */
+export async function attachSubscription(input: {
+  userId: string;
+  planId: PlanId;
+  interval: BillingInterval;
+  subscriptionId: string;
+  status: "active" | "past_due" | "canceled";
+  cancelAtPeriodEnd: boolean;
+  periodEnd?: string | null;
+}): Promise<void> {
+  const now = new Date().toISOString();
+  const db = await getDb();
+  await db.run(
+    `INSERT INTO user_plans
+      (user_id, plan_id, interval, status, period_id, current_period_end, stripe_subscription_id, cancel_at_period_end, updated_at)
+     VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)
+     ON CONFLICT (user_id) DO UPDATE SET
+       plan_id = excluded.plan_id,
+       interval = excluded.interval,
+       status = excluded.status,
+       current_period_end = COALESCE(excluded.current_period_end, user_plans.current_period_end),
+       stripe_subscription_id = excluded.stripe_subscription_id,
+       cancel_at_period_end = excluded.cancel_at_period_end,
+       updated_at = excluded.updated_at`,
+    [
+      input.userId,
+      input.planId,
+      input.interval,
+      input.status,
+      input.periodEnd ?? null,
+      input.subscriptionId,
+      input.cancelAtPeriodEnd ? 1 : 0,
+      now,
+    ],
+  );
+}
+
+/** Mark a payment failure. Credits already granted stay. */
+export async function markPlanPastDue(userId: string): Promise<void> {
+  const db = await getDb();
+  await db.run(
+    `UPDATE user_plans SET status = 'past_due', updated_at = ? WHERE user_id = ? AND status = 'active'`,
+    [new Date().toISOString(), userId],
+  );
+}
+
+/**
+ * Subscription ended. Unused subscription defenses and challenges expire.
+ * Purchased, pack, and beta credits stay. The plan returns to pay as you go.
+ */
+export async function endPaidPlan(userId: string, subscriptionId: string): Promise<void> {
+  const periodId = `end:${subscriptionId}`;
+  await withTx(undefined, async (tx) => {
+    await lockWallet(tx, userId);
+    await expireSource(tx, userId, "defense", periodId);
+    await expireSource(tx, userId, "challenge", periodId);
+    const now = new Date().toISOString();
+    await tx.run(
+      `INSERT INTO user_plans
+        (user_id, plan_id, interval, status, period_id, current_period_end, stripe_subscription_id, cancel_at_period_end, updated_at)
+       VALUES (?, 'payg', NULL, 'canceled', ?, NULL, ?, 0, ?)
+       ON CONFLICT (user_id) DO UPDATE SET
+         plan_id = 'payg',
+         interval = NULL,
+         status = 'canceled',
+         period_id = excluded.period_id,
+         cancel_at_period_end = 0,
+         stripe_subscription_id = COALESCE(user_plans.stripe_subscription_id, excluded.stripe_subscription_id),
+         updated_at = excluded.updated_at`,
+      [userId, periodId, subscriptionId, now],
+    );
+  });
 }
 
 function renewalEntry(
@@ -1807,7 +1897,7 @@ export async function walletView(userId: string): Promise<WalletView> {
       pack3: formatEur(PACKS.pack3.priceCents),
       pack8: formatEur(PACKS.pack8.priceCents),
       subscriptionMonth: formatEur(sub.priceCents.month ?? 0),
-      note: "Prices include VAT.",
+      note: "Consumer prices include VAT. Team and Enterprise have VAT added.",
     },
     history,
   };

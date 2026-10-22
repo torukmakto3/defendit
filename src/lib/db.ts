@@ -255,12 +255,18 @@ CREATE TABLE IF NOT EXISTS user_plans (
   status TEXT NOT NULL,
   period_id TEXT,
   current_period_end TEXT,
+  stripe_subscription_id TEXT,
+  cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS billing_profiles (
   user_id TEXT PRIMARY KEY REFERENCES users(id),
   card_fingerprint TEXT,
+  stripe_customer_id TEXT,
+  flagged_at TEXT,
+  flag_reason TEXT,
+  payment_notice TEXT,
   updated_at TEXT NOT NULL
 );
 
@@ -470,6 +476,9 @@ const ADDED_COLUMNS: [string, string, string][] = [
   ["billing_profiles", "flagged_at", "TEXT"],
   ["billing_profiles", "flag_reason", "TEXT"],
   ["billing_profiles", "stripe_customer_id", "TEXT"],
+  ["billing_profiles", "payment_notice", "TEXT"],
+  ["user_plans", "stripe_subscription_id", "TEXT"],
+  ["user_plans", "cancel_at_period_end", "INTEGER NOT NULL DEFAULT 0"],
   // Monotonic integrity totals. A reload restores these; a later report cannot lower them.
   ["sessions", "paste_events", "INTEGER NOT NULL DEFAULT 0"],
   ["sessions", "focus_blur_events", "INTEGER NOT NULL DEFAULT 0"],

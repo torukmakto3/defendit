@@ -1,6 +1,7 @@
 /**
- * Price list and plan allowances (EUR, VAT included).
- * The UI reads this module. It does not hard-code prices.
+ * Price list and plan allowances (EUR).
+ * Consumer prices include VAT. Team and Enterprise are exclusive of VAT.
+ * The UI reads this module. It does not hard-code Stripe price ids.
  *
  * A defense and a challenge each cost 1 credit. Pack credits are flexible:
  * they can pay for either. Subscription challenge credits do not roll over.
@@ -84,6 +85,8 @@ export interface Plan {
   priceCents: { month: number | null; year: number | null };
   /** Cents charged for a defense past the included amount. null: no overage. */
   overageCents: number | null;
+  /** Consumer prices include VAT. Team and Enterprise add VAT. */
+  taxBehavior: "inclusive" | "exclusive";
 }
 
 const CONSUMER = COST_CAP_USD.consumer;
@@ -102,6 +105,7 @@ const PLANS: Record<PlanId, Plan> = {
     learnSlots: BETA_GRANT.learnSlots,
     priceCents: { month: null, year: null },
     overageCents: null,
+    taxBehavior: "inclusive",
   },
   payg: {
     id: "payg",
@@ -115,6 +119,7 @@ const PLANS: Record<PlanId, Plan> = {
     learnSlots: null,
     priceCents: { month: null, year: null },
     overageCents: null,
+    taxBehavior: "inclusive",
   },
   subscription: {
     id: "subscription",
@@ -128,6 +133,7 @@ const PLANS: Record<PlanId, Plan> = {
     learnSlots: 10,
     priceCents: { month: 1100, year: 9900 },
     overageCents: null,
+    taxBehavior: "inclusive",
   },
   team: {
     id: "team",
@@ -141,6 +147,7 @@ const PLANS: Record<PlanId, Plan> = {
     learnSlots: null,
     priceCents: { month: 14900, year: null },
     overageCents: null,
+    taxBehavior: "exclusive",
   },
   enterprise: {
     id: "enterprise",
@@ -154,6 +161,7 @@ const PLANS: Record<PlanId, Plan> = {
     learnSlots: null,
     priceCents: { month: 49000, year: null },
     overageCents: 250,
+    taxBehavior: "exclusive",
   },
 };
 
