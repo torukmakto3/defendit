@@ -1,0 +1,32 @@
+{
+  "account": { "name": "DefendIT sandbox", "stripe_context": "acct_1UNDfOBIumCL91iA", "livemode": false },
+  "created_at": "2026-10-22T17:45:00+02:00",
+  "planner_guide_id": "iguide_61Vclp2NXEzP4rLWV41BIumCL91iA",
+  "products": {
+    "dit_defense":          { "name": "DefendIT defense",                  "tax_code": "txcd_10103000" },
+    "dit_challenge":        { "name": "DefendIT challenge",                "tax_code": "txcd_10103000" },
+    "dit_credit_pack":      { "name": "DefendIT credit pack",              "tax_code": "txcd_10103000" },
+    "dit_pro":              { "name": "DefendIT Pro",                      "tax_code": "txcd_10103000" },
+    "dit_team":             { "name": "DefendIT Team",                     "tax_code": "txcd_10103001" },
+    "dit_enterprise":       { "name": "DefendIT Enterprise",               "tax_code": "txcd_10103001" },
+    "dit_enterprise_extra": { "name": "DefendIT Enterprise extra defense", "tax_code": "txcd_10103001" }
+  },
+  "prices": {
+    "dit_defense_payg":          { "id": "price_1UTNtuBIumCL91iAj0fkLVCn", "product": "dit_defense",          "eur_cents": 400,   "type": "one_time",       "tax_behavior": "inclusive", "app_sku": "defense",            "grants": { "defense": 1 } },
+    "dit_challenge_payg":        { "id": "price_1UTNtwBIumCL91iASCUvP95w", "product": "dit_challenge",        "eur_cents": 300,   "type": "one_time",       "tax_behavior": "inclusive", "app_sku": "challenge",          "grants": { "challenge": 1 } },
+    "dit_pack_3":                { "id": "price_1UTNtzBIumCL91iA6kZ9iJXu", "product": "dit_credit_pack",      "eur_cents": 1000,  "type": "one_time",       "tax_behavior": "inclusive", "app_sku": "pack3",              "grants": { "flex": 3 } },
+    "dit_pack_8":                { "id": "price_1UTNu1BIumCL91iAtQRBsLln", "product": "dit_credit_pack",      "eur_cents": 2000,  "type": "one_time",       "tax_behavior": "inclusive", "app_sku": "pack8",              "grants": { "flex": 8 } },
+    "dit_pro_monthly":           { "id": "price_1UTNu5BIumCL91iAo6o44hbC", "product": "dit_pro",              "eur_cents": 1100,  "type": "recurring/month", "tax_behavior": "inclusive", "app_sku": "subscription_month", "grants_per_month": { "defense": 10, "challenge": 5, "learn_slots": 10 } },
+    "dit_pro_yearly":            { "id": "price_1UTNu7BIumCL91iAVe8etueb", "product": "dit_pro",              "eur_cents": 9900,  "type": "recurring/year",  "tax_behavior": "inclusive", "app_sku": "subscription_year",  "grants_per_month": { "defense": 10, "challenge": 5, "learn_slots": 10 }, "note": "metadata grant_interval=month (assumed monthly refill; confirm with Luis)" },
+    "dit_team_monthly":          { "id": "price_1UTNu9BIumCL91iAo2hSClrc", "product": "dit_team",             "eur_cents": 14900, "type": "recurring/month", "tax_behavior": "exclusive", "app_sku": "team_month",         "grants_per_month": { "defense": 50 } },
+    "dit_enterprise_base":       { "id": "price_1UTNuCBIumCL91iAvLLueg4H", "product": "dit_enterprise",       "eur_cents": 49000, "type": "recurring/month", "tax_behavior": "exclusive", "app_sku": "enterprise_month",   "grants_per_month": { "defense": 200 } },
+    "dit_enterprise_extra_unit": { "id": "price_1UTNuEBIumCL91iAoo5gEENr", "product": "dit_enterprise_extra", "eur_cents": 250,   "type": "one_time",       "tax_behavior": "exclusive", "app_sku": "enterprise_overage", "note": "Fallback for overage as invoice items. Use until the meter exists." }
+  },
+  "not_created": {
+    "billing_meter_defense_overage": "The Stripe connector exposes no /v1/billing/meters endpoints. Create it in Dashboard > Billing > Meters (event_name defense_overage, aggregation sum, customer mapping by stripe_customer_id) or with the CTO's sandbox restricted key.",
+    "dit_enterprise_overage (metered price, EUR 2.50, recurring.meter=<meter id>)": "Needs the meter ID first. Price on product dit_enterprise_extra, recurring monthly, usage_type metered, tax_behavior exclusive."
+  },
+  "customer_portal_configuration": { "id": "bpc_1UTNuQBIumCL91iAG7sGZYLQ", "is_default": true, "return_url": "https://defendit.me/dashboard", "features": "invoice history, payment method update, email/address/tax ID update, cancel at period end, switch Pro monthly<->yearly with prorations" },
+  "webhook_endpoints": "none created (by design)",
+  "tax_settings": "status pending: head_office missing (Luis's address). No registrations. automatic_tax not enabled anywhere."
+}

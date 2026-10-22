@@ -6,9 +6,33 @@
       "id": "in_test_sub",
       "amount_paid": 1100,
       "currency": "eur",
+      "billing_reason": "subscription_create",
       "metadata": {
-        "user_id": "usr_replace",
-        "sku": "subscription_month"
+        "user_id": "usr_decoy",
+        "sku": "defense"
+      },
+      "parent": {
+        "subscription_details": {
+          "metadata": {
+            "user_id": "usr_replace",
+            "sku": "subscription_month"
+          },
+          "subscription": "sub_test"
+        }
+      },
+      "lines": {
+        "data": [
+          {
+            "pricing": {
+              "price_details": {
+                "price": {
+                  "id": "price_dit_pro_monthly",
+                  "lookup_key": "dit_pro_monthly"
+                }
+              }
+            }
+          }
+        ]
       }
     }
   }

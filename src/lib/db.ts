@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "async_hooks";
 import { mkdirSync } from "fs";
 import { dirname, join } from "path";
 import type BetterSqlite3 from "better-sqlite3";
@@ -255,12 +256,21 @@ CREATE TABLE IF NOT EXISTS user_plans (
   status TEXT NOT NULL,
   period_id TEXT,
   current_period_end TEXT,
+  stripe_subscription_id TEXT,
+  cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+  current_period_start TEXT,
+  grant_anchor TEXT,
+  last_granted_period_index INTEGER,
   updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS billing_profiles (
   user_id TEXT PRIMARY KEY REFERENCES users(id),
   card_fingerprint TEXT,
+  stripe_customer_id TEXT,
+  flagged_at TEXT,
+  flag_reason TEXT,
+  payment_notice TEXT,
   updated_at TEXT NOT NULL
 );
 
@@ -396,6 +406,41 @@ CREATE TABLE IF NOT EXISTS demo_passes (
   expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- Credits granted for one Stripe event, one row per kind. A refund claws
+-- back from these rows and never from the beta grant.
+CREATE TABLE IF NOT EXISTS stripe_grants (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  event_id TEXT NOT NULL,
+  sku TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  source TEXT NOT NULL,
+  credits INTEGER NOT NULL,
+  checkout_session_id TEXT,
+  invoice_id TEXT,
+  payment_intent_id TEXT,
+  charge_id TEXT,
+  refunded_at TEXT,
+  clawed_credits INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_stripe_grants_event ON stripe_grants(event_id);
+CREATE INDEX IF NOT EXISTS idx_stripe_grants_payment_intent ON stripe_grants(payment_intent_id);
+CREATE INDEX IF NOT EXISTS idx_stripe_grants_charge ON stripe_grants(charge_id);
+CREATE INDEX IF NOT EXISTS idx_stripe_grants_invoice ON stripe_grants(invoice_id);
+
+-- Last Stripe event time for a subscription. terminal = 1 after delete or cancel,
+-- and a later invoice or checkout must not set the plan active again.
+-- refills_stopped = 1 after a full refund or a dispute. It does not cancel
+-- the subscription. A later paid invoice clears it and grants.
+CREATE TABLE IF NOT EXISTS stripe_subscription_state (
+  subscription_id TEXT PRIMARY KEY,
+  last_event_created INTEGER NOT NULL,
+  terminal INTEGER NOT NULL DEFAULT 0,
+  refills_stopped INTEGER NOT NULL DEFAULT 0
+);
 `;
 
 /** Stats filters on these session columns. Skip when an older table lacks them. */
@@ -443,11 +488,23 @@ const ADDED_COLUMNS: [string, string, string][] = [
   // Retention of the file is unchanged.
   ["defense_requests", "learn_closed_at", "TEXT"],
   ["credit_wallets", "learn_open", "INTEGER NOT NULL DEFAULT 0"],
+  // Set when a card refund could not take back credits that were already spent.
+  ["billing_profiles", "flagged_at", "TEXT"],
+  ["billing_profiles", "flag_reason", "TEXT"],
+  ["billing_profiles", "stripe_customer_id", "TEXT"],
+  ["billing_profiles", "payment_notice", "TEXT"],
+  ["user_plans", "stripe_subscription_id", "TEXT"],
+  ["user_plans", "cancel_at_period_end", "INTEGER NOT NULL DEFAULT 0"],
+  ["user_plans", "current_period_start", "TEXT"],
+  ["user_plans", "grant_anchor", "TEXT"],
+  ["user_plans", "last_granted_period_index", "INTEGER"],
   // Monotonic integrity totals. A reload restores these; a later report cannot lower them.
   ["sessions", "paste_events", "INTEGER NOT NULL DEFAULT 0"],
   ["sessions", "focus_blur_events", "INTEGER NOT NULL DEFAULT 0"],
   // Set on a sample-demo receipt. Null on a normal receipt, which is kept.
   ["receipts", "purge_after", "TEXT"],
+  ["stripe_grants", "clawed_credits", "INTEGER NOT NULL DEFAULT 0"],
+  ["stripe_subscription_state", "refills_stopped", "INTEGER NOT NULL DEFAULT 0"],
 ];
 
 let dbPromise: Promise<Db> | null = null;
@@ -489,7 +546,8 @@ async function openSqlite(): Promise<Db> {
 }
 
 function sqliteAdapter(raw: BetterSqlite3.Database): Db {
-  let depth = 0;
+  const open = new AsyncLocalStorage<true>();
+  let tail: Promise<void> = Promise.resolve();
   const db: Db = {
     dialect: "sqlite",
     async all<T>(sql: string, params: Param[] = []) {
@@ -503,21 +561,27 @@ function sqliteAdapter(raw: BetterSqlite3.Database): Db {
       return { changes: r.changes };
     },
     async transaction<T>(fn: (tx: Db) => Promise<T>) {
-      // better-sqlite3 is synchronous and single-connection; nested calls
-      // join the outer transaction.
-      if (depth > 0) return fn(db);
-      depth++;
-      raw.exec("BEGIN");
-      try {
-        const out = await fn(db);
-        raw.exec("COMMIT");
-        return out;
-      } catch (e) {
-        raw.exec("ROLLBACK");
-        throw e;
-      } finally {
-        depth--;
-      }
+      // One connection. A call already inside this transaction joins it.
+      // A second top-level call waits until the open one commits.
+      if (open.getStore()) return fn(db);
+      const run = tail.then(() =>
+        open.run(true, async () => {
+          raw.exec("BEGIN IMMEDIATE");
+          try {
+            const out = await fn(db);
+            raw.exec("COMMIT");
+            return out;
+          } catch (e) {
+            raw.exec("ROLLBACK");
+            throw e;
+          }
+        }),
+      );
+      tail = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run;
     },
   };
   return db;

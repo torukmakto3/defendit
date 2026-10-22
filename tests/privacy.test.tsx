@@ -137,6 +137,9 @@ describe("privacy page", () => {
     expect(html).toContain("does not receive interview content");
     expect(html).toContain("standard contractual clauses");
     expect(html).toContain("does not record the country");
+    expect(html).toContain("Stripe");
+    expect(html).toContain("card fingerprint");
+    expect(html).toContain("do not store the card number");
   });
 
   it("keeps the draft marker and the legal-review note in the source only", () => {

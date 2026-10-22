@@ -66,6 +66,31 @@ Uploads: `./uploads/`
 Signing key (auto-generated): `./data/signing-key.json`  
 Public key: `/.well-known/defend-it-pubkey.json`
 
+### Stripe (test mode)
+
+Billing stays off until `BILLING_ENABLED=true`. There is no second payments flag and no price-id variable. Luis supplies the restricted key and the webhook signing secret later. Until then leave the secrets empty.
+
+Set these when turning Checkout on in test mode:
+
+| Variable | What to set |
+|---|---|
+| `BILLING_ENABLED` | `true` to sell. Unset or `false` hides pricing and Stripe routes answer 402. |
+| `STRIPE_SECRET_KEY` | Restricted key (`rk_test_…`). `sk_live_` and `rk_live_` refuse to start unless `STRIPE_ALLOW_LIVE=true`. |
+| `STRIPE_WEBHOOK_SECRET` | `whsec_…` for the endpoint. Locally, `stripe listen` prints it. |
+| `STRIPE_MODE` | `test` (the default). |
+| `STRIPE_TAX_ENABLED` | Unset or `false`. Automatic tax stays off until a registration exists. |
+| `STRIPE_METER_EVENT_NAME` | Optional. Defaults to `defense_overage`. No meter events are sent yet. |
+| `STRIPE_PORTAL_CONFIGURATION_ID` | Optional. Leave unset to use the account default. |
+| `APP_URL` | Absolute origin for Checkout success, cancel, and the portal return. |
+
+Do not set `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`. Checkout is hosted. Prices resolve by lookup key (`dit_defense_payg`, `dit_challenge_payg`, `dit_pack_3`, `dit_pack_8`, `dit_pro_monthly`, `dit_pro_yearly`, `dit_team_monthly`, `dit_enterprise_base`, `dit_enterprise_extra_unit`).
+
+Webhook events the endpoint must receive: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated`, `customer.subscription.deleted`, `charge.refunded`, `charge.dispute.created`, `invoice.created`, `invoice.finalized`, `credit_note.created`, `cash_balance.funds_available`, `customer_cash_balance_transaction.created`, `payment_method.attached`, `payment_method.detached`.
+
+Yearly Pro (`dit_pro_yearly`) refills each month from `invoice.paid` (month 0) and the existing purge cron. The balance tops up to 10 defenses, 5 challenges, and 10 Learn projects. Unused monthly defenses and challenges do not roll over.
+
+The restricted key needs write access to Checkout Sessions, Customers, Subscriptions, the customer portal, Invoices, and Invoice Items, and read access to Products, Prices, Charges, Refunds, and Events. Details are in `docs/payments.md`.
+
 ### Sign in
 
 Locally, the sign-in card shows an on-screen magic link (no email provider required). Production sign-in is Google.
