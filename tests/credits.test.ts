@@ -15,7 +15,10 @@ import {
   beginDefenseCredit,
   closeLearnProject,
   consumeCredit,
+  costTierForUser,
+  costTierForUserPlan,
   countActiveLearnProjects,
+  ensureBetaGrant,
   getBalance,
   getUserPlan,
   grantBetaIfFirstGoogleSignIn,
@@ -130,15 +133,24 @@ async function ledgerCount(userId: string): Promise<number> {
 }
 
 describe("beta grant", () => {
-  it("does not grant on a magic-link sign-in", async () => {
+  it("grants on first need for a magic-link account, once", async () => {
     const { user } = await signIn("magic-only@fund.example");
     const db = await getDb();
     expect(await db.get(`SELECT user_id FROM beta_grants WHERE user_id = ?`, [user.id])).toBeUndefined();
     expect(await ledgerCount(user.id)).toBe(0);
+
+    const first = await ensureBetaGrant(user.id);
+    expect(first.granted).toBe(true);
     const balance = await getBalance(user.id);
-    expect(balance.defense).toBe(0);
-    expect(balance.challenge).toBe(0);
-    expect(balance.learnSlots).toBe(0);
+    expect(balance.defense).toBe(3);
+    expect(balance.challenge).toBe(2);
+    expect(balance.learnSlots).toBe(3);
+
+    expect(await ensureBetaGrant(user.id)).toEqual({ granted: false });
+    expect(await grantBetaIfFirstGoogleSignIn(user.id)).toEqual({ granted: false });
+    expect((await getBalance(user.id)).defense).toBe(3);
+    const grants = await db.all(`SELECT user_id FROM beta_grants WHERE user_id = ?`, [user.id]);
+    expect(grants).toHaveLength(1);
   });
 
   it("grants 3 defenses, 2 challenges, and 3 Learn slots once per Google account", async () => {
@@ -203,10 +215,15 @@ describe("ledger", () => {
   it("holds, consumes, and refunds back to credit", async () => {
     expect(REFUND_DESTINATION).toBe("credit");
     const { user } = await signIn("ledger@fund.example");
-    await expect(
-      holdCredit({ userId: user.id, kind: "defense", idempotencyKey: "hold-empty" }),
-    ).rejects.toMatchObject({ status: 402 });
-    expect(await ledgerCount(user.id)).toBe(0);
+    process.env.BILLING_ENABLED = "1";
+    try {
+      await expect(
+        holdCredit({ userId: user.id, kind: "defense", idempotencyKey: "hold-empty" }),
+      ).rejects.toMatchObject({ status: 402 });
+      expect(await ledgerCount(user.id)).toBe(0);
+    } finally {
+      delete process.env.BILLING_ENABLED;
+    }
 
     const granted = await grantCredits({
       userId: user.id,
@@ -335,6 +352,10 @@ describe("plans", () => {
   it("renews a subscription without stacking unused credits", async () => {
     const { user } = await signIn("sub@fund.example");
     expect((await getUserPlan(user.id)).costTier).toBe("consumer");
+    expect(await costTierForUser(user.id)).toBe("consumer");
+    expect(costTierForUserPlan("team")).toBe("enterprise");
+    expect(costTierForUserPlan("subscription")).toBe("consumer");
+    expect(costTierForUserPlan("not-a-plan")).toBe("consumer");
     await simulateRenewal({ userId: user.id, sku: "subscription_month", idempotencyKey: "period-1" });
     const assigned = await getUserPlan(user.id);
     expect(assigned.plan.costTier).toBe("consumer");
@@ -388,6 +409,9 @@ describe("plans", () => {
   });
 
   it("stops a team at the included defenses and bills enterprise overage to the ledger", async () => {
+    const previous = process.env.BILLING_ENABLED;
+    process.env.BILLING_ENABLED = "1";
+    try {
     const team = await signIn("team@fund.example");
     await simulateRenewal({ userId: team.user.id, sku: "team_month", idempotencyKey: "team-1" });
     const teamPlan = await getUserPlan(team.user.id);
@@ -431,6 +455,10 @@ describe("plans", () => {
       [ent.user.id],
     );
     expect(overage).toMatchObject({ amount_cents: 250, currency: "eur" });
+    } finally {
+      if (previous === undefined) delete process.env.BILLING_ENABLED;
+      else process.env.BILLING_ENABLED = previous;
+    }
   });
 });
 
@@ -462,6 +490,15 @@ describe("beta budget and sponsorship", () => {
       ).rejects.toThrow(/beta budget/);
       expect((await getBalance(user.id)).defense).toBe(1);
 
+      await refundCredit({
+        userId: user.id,
+        entryIdempotencyKey: "budget-hold-1",
+        idempotencyKey: "budget-refund-1",
+      });
+      const again = await holdCredit({ userId: user.id, kind: "defense", idempotencyKey: "budget-hold-3" });
+      expect(again.sponsored).toBe(true);
+      expect(again.budgetCents).toBe(30);
+
       await grantCredits({
         userId: user.id,
         kind: "defense",
@@ -474,6 +511,59 @@ describe("beta budget and sponsorship", () => {
       const paid = await holdCredit({ userId: user.id, kind: "defense", idempotencyKey: "budget-hold-paid" });
       expect(paid.sponsored).toBe(false);
       expect(paid.source).toBe("purchase");
+      const counter = await db.get<{ spent_cents: number }>(
+        `SELECT spent_cents FROM credit_budget WHERE id = 'beta'`,
+      );
+      const summed = await db.get<{ n: number }>(
+        `SELECT COALESCE(SUM(budget_cents), 0) AS n FROM credit_ledger`,
+      );
+      expect(Number(counter?.spent_cents)).toBe(Number(summed?.n));
+      expect(Number(counter?.spent_cents)).toBeLessThanOrEqual(Math.round(Number(process.env.BETA_BUDGET_EUR) * 100));
+    } finally {
+      if (previousBudget === undefined) delete process.env.BETA_BUDGET_EUR;
+      else process.env.BETA_BUDGET_EUR = previousBudget;
+      if (previousDefense === undefined) delete process.env.BETA_DEFENSE_EUR;
+      else process.env.BETA_DEFENSE_EUR = previousDefense;
+    }
+  });
+
+  it("lets only one of two accounts take the last slice of the beta budget", async () => {
+    const previousBudget = process.env.BETA_BUDGET_EUR;
+    const previousDefense = process.env.BETA_DEFENSE_EUR;
+    process.env.BETA_DEFENSE_EUR = "0.30";
+    const db = await getDb();
+    const spent = await db.get<{ n: number }>(`SELECT COALESCE(SUM(budget_cents), 0) AS n FROM credit_ledger`);
+    const cap = Number(spent?.n ?? 0) + 30;
+    process.env.BETA_BUDGET_EUR = (cap / 100).toFixed(2);
+    try {
+      const first = await signIn("budget-race-a@fund.example");
+      const second = await signIn("budget-race-b@fund.example");
+      for (const [user, key] of [
+        [first.user, "race-a"],
+        [second.user, "race-b"],
+      ] as const) {
+        await grantCredits({
+          userId: user.id,
+          kind: "defense",
+          amount: 1,
+          reason: "grant",
+          source: "beta",
+          sponsored: true,
+          idempotencyKey: key,
+        });
+      }
+      const results = await Promise.allSettled([
+        holdCredit({ userId: first.user.id, kind: "defense", idempotencyKey: "race-hold-a" }),
+        holdCredit({ userId: second.user.id, kind: "defense", idempotencyKey: "race-hold-b" }),
+      ]);
+      const won = results.filter((result) => result.status === "fulfilled");
+      expect(won).toHaveLength(1);
+      const counter = await db.get<{ spent_cents: number }>(
+        `SELECT spent_cents FROM credit_budget WHERE id = 'beta'`,
+      );
+      const summed = await db.get<{ n: number }>(`SELECT COALESCE(SUM(budget_cents), 0) AS n FROM credit_ledger`);
+      expect(Number(counter?.spent_cents)).toBe(Number(summed?.n));
+      expect(Number(counter?.spent_cents)).toBeLessThanOrEqual(cap);
     } finally {
       if (previousBudget === undefined) delete process.env.BETA_BUDGET_EUR;
       else process.env.BETA_BUDGET_EUR = previousBudget;
@@ -596,7 +686,26 @@ describe("challenged defenses", () => {
 });
 
 describe("learn slots", () => {
+  it("does not cap uploads while billing is off", async () => {
+    delete process.env.BILLING_ENABLED;
+    const { user } = await signIn("learn-open@fund.example");
+    await grantCredits({
+      userId: user.id,
+      kind: "learn_slot",
+      amount: 1,
+      reason: "grant",
+      source: "beta",
+      idempotencyKey: "learn-open-slot",
+    });
+    await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" });
+    await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" });
+    expect(await countActiveLearnProjects(user.id)).toBe(2);
+  });
+
   it("frees a slot on close without changing document retention", async () => {
+    const previous = process.env.BILLING_ENABLED;
+    process.env.BILLING_ENABLED = "1";
+    try {
     const { user } = await signIn("learn@fund.example");
     await grantCredits({
       userId: user.id,
@@ -635,34 +744,141 @@ describe("learn slots", () => {
     expect(listed.map((project) => project.token)).toContain(third.token);
     expect(listed.map((project) => project.token)).not.toContain(first.token);
     await expect(closeLearnProject(user.id, "missing-token")).rejects.toMatchObject({ status: 404 });
+    const open = await (await getDb()).get<{ learn_open: number }>(
+      `SELECT learn_open FROM credit_wallets WHERE user_id = ?`,
+      [user.id],
+    );
+    expect(Number(open?.learn_open)).toBe(await countActiveLearnProjects(user.id));
+    } finally {
+      if (previous === undefined) delete process.env.BILLING_ENABLED;
+      else process.env.BILLING_ENABLED = previous;
+    }
+  });
+
+  it("lets only one of two simultaneous uploads take the last Learn slot", async () => {
+    const previous = process.env.BILLING_ENABLED;
+    process.env.BILLING_ENABLED = "1";
+    try {
+      const { user } = await signIn("learn-race@fund.example");
+      await grantCredits({
+        userId: user.id,
+        kind: "learn_slot",
+        amount: 1,
+        reason: "grant",
+        source: "beta",
+        idempotencyKey: "learn-race-slot",
+      });
+      const results = await Promise.allSettled([
+        creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" }),
+        creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" }),
+      ]);
+      expect(await countActiveLearnProjects(user.id)).toBe(1);
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      const open = await (await getDb()).get<{ learn_open: number }>(
+        `SELECT learn_open FROM credit_wallets WHERE user_id = ?`,
+        [user.id],
+      );
+      expect(Number(open?.learn_open ?? 0)).toBe(await countActiveLearnProjects(user.id));
+    } finally {
+      if (previous === undefined) delete process.env.BILLING_ENABLED;
+      else process.env.BILLING_ENABLED = previous;
+    }
   });
 });
 
 describe("defense gate", () => {
-  it("leaves an empty local wallet on the free path", async () => {
-    const { user, cookie } = await signIn("free-path@fund.example");
-    const ingest = await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" });
-    const res = await startDefend(
-      new Request("http://localhost/api/sessions/start", {
-        method: "POST",
-        headers: { cookie, "content-type": "application/json" },
-        body: JSON.stringify({ token: ingest.token, mode: "defend", accommodation: true }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    expect((await getBalance(user.id)).defense).toBe(0);
-    expect(await ledgerCount(user.id)).toBe(0);
+  it("grants beta credits on the first defense for a magic-link user, even when the server is deployed", async () => {
+    const previousVercel = process.env.VERCEL;
+    const previousBilling = process.env.BILLING_ENABLED;
+    delete process.env.BILLING_ENABLED;
+    try {
+      const { user, cookie } = await signIn("deployed-magic@fund.example");
+      expect(await ledgerCount(user.id)).toBe(0);
+      process.env.VERCEL = "1";
+      const ingest = await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" });
+      const res = await startDefend(
+        new Request("http://localhost/api/sessions/start", {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json" },
+          body: JSON.stringify({ token: ingest.token, mode: "defend", accommodation: true }),
+        }),
+      );
+      expect(res.status).toBe(200);
+      const balance = await getBalance(user.id);
+      expect(balance.defense).toBe(2);
+      expect(balance.challenge).toBe(2);
+      expect(balance.learnSlots).toBe(3);
+      expect(balance.held.defense).toBe(1);
+      const grants = await (await getDb()).all(`SELECT user_id FROM beta_grants WHERE user_id = ?`, [user.id]);
+      expect(grants).toHaveLength(1);
+    } finally {
+      if (previousVercel === undefined) delete process.env.VERCEL;
+      else process.env.VERCEL = previousVercel;
+      if (previousBilling === undefined) delete process.env.BILLING_ENABLED;
+      else process.env.BILLING_ENABLED = previousBilling;
+    }
   });
 
-  it("requires a defense credit once the wallet exists, and refunds a failed start", async () => {
+  it("keeps defending while billing is off after the grant is spent, and stops only for the beta budget", async () => {
+    const previousBudget = process.env.BETA_BUDGET_EUR;
+    const previousDefense = process.env.BETA_DEFENSE_EUR;
+    delete process.env.BILLING_ENABLED;
+    try {
+      const { user, cookie } = await signIn("extend-beta@fund.example");
+      await ensureBetaGrant(user.id);
+      await grantCredits({
+        userId: user.id,
+        kind: "defense",
+        amount: -3,
+        reason: "admin_adjust",
+        source: "beta",
+        idempotencyKey: "drain-extend",
+      });
+      const ingest = await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" });
+      const continued = await startDefend(
+        new Request("http://localhost/api/sessions/start", {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json" },
+          body: JSON.stringify({ token: ingest.token, mode: "defend", accommodation: true }),
+        }),
+      );
+      expect(continued.status).toBe(200);
+      expect((await getBalance(user.id)).defense).toBe(0);
+      expect((await getBalance(user.id)).held.defense).toBe(1);
+
+      process.env.BETA_DEFENSE_EUR = "0.30";
+      const db = await getDb();
+      const spent = await db.get<{ n: number }>(`SELECT COALESCE(SUM(budget_cents), 0) AS n FROM credit_ledger`);
+      process.env.BETA_BUDGET_EUR = (Number(spent?.n ?? 0) / 100).toFixed(2);
+      const paused = await startDefend(
+        new Request("http://localhost/api/sessions/start", {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json" },
+          body: JSON.stringify({ token: "missing", mode: "defend", accommodation: true }),
+        }),
+      );
+      expect(paused.status).toBe(402);
+      expect(await paused.json()).toMatchObject({ error: expect.stringMatching(/beta budget/) });
+    } finally {
+      if (previousBudget === undefined) delete process.env.BETA_BUDGET_EUR;
+      else process.env.BETA_BUDGET_EUR = previousBudget;
+      if (previousDefense === undefined) delete process.env.BETA_DEFENSE_EUR;
+      else process.env.BETA_DEFENSE_EUR = previousDefense;
+    }
+  });
+
+  it("requires a defense credit once billing is on and the grant is spent, and refunds a failed start", async () => {
+    const previous = process.env.BILLING_ENABLED;
+    process.env.BILLING_ENABLED = "1";
     const blocked = await signIn("gated@fund.example");
+    await ensureBetaGrant(blocked.user.id);
     await grantCredits({
       userId: blocked.user.id,
-      kind: "learn_slot",
-      amount: 1,
-      reason: "grant",
-      source: "admin",
-      idempotencyKey: "slot-only",
+      kind: "defense",
+      amount: -3,
+      reason: "admin_adjust",
+      source: "beta",
+      idempotencyKey: "drain-gated",
     });
     const denied = await startDefend(
       new Request("http://localhost/api/sessions/start", {
@@ -672,8 +888,11 @@ describe("defense gate", () => {
       }),
     );
     expect(denied.status).toBe(402);
+    expect(await denied.json()).toMatchObject({ error: expect.stringMatching(/defense credit/) });
     const sessions = await (await getDb()).get(`SELECT id FROM sessions WHERE user_id = ?`, [blocked.user.id]);
     expect(sessions).toBeUndefined();
+    if (previous === undefined) delete process.env.BILLING_ENABLED;
+    else process.env.BILLING_ENABLED = previous;
 
     const payer = await signIn("refund-start@fund.example");
     await grantCredits({
@@ -692,7 +911,7 @@ describe("defense gate", () => {
       }),
     );
     expect(failed.ok).toBe(false);
-    expect((await getBalance(payer.user.id)).defense).toBe(1);
+    expect((await getBalance(payer.user.id)).defense).toBe(4);
 
     const ingest = await creatorIngest({
       user: payer.user,
@@ -709,7 +928,7 @@ describe("defense gate", () => {
     });
     await attachDefenseCredit(payer.user.id, reserved!.idempotencyKey, session.sessionId);
     await abortDefenseCredit(payer.user.id, reserved!.idempotencyKey, session.sessionId);
-    expect((await getBalance(payer.user.id)).defense).toBe(1);
+    expect((await getBalance(payer.user.id)).defense).toBe(4);
     await expect(
       completeDefendSession({ sessionId: session.sessionId, user: payer.user }),
     ).rejects.toMatchObject({ status: 402 });
@@ -734,12 +953,12 @@ describe("defense gate", () => {
       }),
     );
     expect(res.status).toBe(200);
-    expect((await getBalance(user.id)).defense).toBe(0);
+    expect((await getBalance(user.id)).defense).toBe(3);
     expect((await getBalance(user.id)).held.defense).toBe(1);
     const body = (await res.json()) as { sessionId: string; plan: { probes: { id: string }[] } };
     await defendToReceipt(body, user);
     const balance = await getBalance(user.id);
-    expect(balance.defense).toBe(0);
+    expect(balance.defense).toBe(3);
     expect(balance.held.defense).toBe(0);
   });
 });

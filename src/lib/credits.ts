@@ -28,7 +28,14 @@
  * Draw order for a defense: subscription, purchase, overage, admin, then
  * flexible packs, then sponsored beta credits. Sponsored defense holds
  * count `BETA_DEFENSE_EUR` (default 0.30) against `BETA_BUDGET_EUR`
- * (default 150). Challenge holds do not.
+ * (default 150). Challenge holds do not. While `BILLING_ENABLED` is off,
+ * a signed-in user is never refused a defense for an empty wallet: the
+ * one-time beta grant is applied on first need, and a further defense
+ * still runs until that global budget is spent.
+ *
+ * #42 reads the cost-cap tier from `costTierForUser(userId)` or
+ * `costTierForUserPlan(planId)`. `consumer` is $0.75 and `enterprise` is
+ * $3 (`src/lib/plans.ts`). This module does not enforce the cap.
  */
 
 import { getDb, type Db } from "./db";
@@ -50,7 +57,6 @@ import {
   type Plan,
   type PlanId,
 } from "./plans";
-import { isDeployed } from "./secrets";
 
 export const REFUND_DESTINATION = "credit" as const;
 
@@ -403,11 +409,46 @@ function pickBucket(buckets: Map<string, number>, purpose: SpendKind, amount: nu
   return null;
 }
 
-async function spentBudgetCents(db: Db): Promise<number> {
-  const row = await db.get<{ n: number | string | null }>(
-    `SELECT COALESCE(SUM(budget_cents), 0) AS n FROM credit_ledger`,
+const BETA_BUDGET_ID = "beta";
+
+/**
+ * Claim `costCents` of the global beta budget, or return false when it would
+ * pass the cap. One conditional UPDATE, so a second account blocks on the
+ * `credit_budget` row in Postgres and sees the first write. SQLite applies
+ * the same statement under its writer lock.
+ */
+async function reserveBetaBudget(tx: Db, costCents: number): Promise<boolean> {
+  if (costCents < 0) return false;
+  await tx.run(
+    `INSERT INTO credit_budget (id, spent_cents)
+     VALUES (?, COALESCE((SELECT SUM(budget_cents) FROM credit_ledger), 0))
+     ON CONFLICT (id) DO NOTHING`,
+    [BETA_BUDGET_ID],
   );
-  return num(row?.n);
+  const updated = await tx.run(
+    `UPDATE credit_budget
+     SET spent_cents = spent_cents + ?
+     WHERE id = ? AND spent_cents + ? <= ?`,
+    [costCents, BETA_BUDGET_ID, costCents, betaBudgetCents()],
+  );
+  return updated.changes === 1;
+}
+
+/** Give budget back. Call before the refund row is inserted, so the seed SUM does not already include it. */
+async function releaseBetaBudget(tx: Db, costCents: number): Promise<void> {
+  if (costCents <= 0) return;
+  await tx.run(
+    `INSERT INTO credit_budget (id, spent_cents)
+     VALUES (?, COALESCE((SELECT SUM(budget_cents) FROM credit_ledger), 0))
+     ON CONFLICT (id) DO NOTHING`,
+    [BETA_BUDGET_ID],
+  );
+  await tx.run(
+    `UPDATE credit_budget
+     SET spent_cents = CASE WHEN spent_cents >= ? THEN spent_cents - ? ELSE 0 END
+     WHERE id = ?`,
+    [costCents, costCents, BETA_BUDGET_ID],
+  );
 }
 
 async function assignedPlan(db: Db, userId: string): Promise<AssignedPlan> {
@@ -528,6 +569,24 @@ export async function holdCredit(input: HoldCreditInput): Promise<LedgerEntry> {
       return mapRow(existing);
     }
     let slot = pickBucket(await loadBuckets(tx, input.userId), input.kind, amount);
+    // Billing off: an empty defense wallet still spends, and the only stop is the global budget.
+    if (!slot && input.kind === "defense" && !billingEnabled()) {
+      await insertEntry(tx, {
+        userId: input.userId,
+        kind: "defense",
+        reason: "grant",
+        amount: 1,
+        idempotencyKey: `beta-extend:${input.idempotencyKey}`,
+        source: "beta",
+        purpose: null,
+        refType: "beta_extend",
+        refId: input.idempotencyKey,
+        sponsored: true,
+        budgetCents: null,
+        periodId: null,
+      });
+      slot = pickBucket(await loadBuckets(tx, input.userId), input.kind, amount);
+    }
     if (!slot && input.kind === "defense") {
       slot = await maybeOverage(tx, input.userId, input.idempotencyKey);
     }
@@ -542,8 +601,7 @@ export async function holdCredit(input: HoldCreditInput): Promise<LedgerEntry> {
     let budgetCents: number | null = null;
     if (slot.sponsored && input.kind === "defense") {
       const cost = betaDefenseCents();
-      const spent = await spentBudgetCents(tx);
-      if (spent + cost > betaBudgetCents()) {
+      if (!(await reserveBetaBudget(tx, cost))) {
         throw new HttpError(402, "The beta budget is used up, so sponsored defenses are paused.");
       }
       budgetCents = cost;
@@ -635,7 +693,7 @@ export async function consumeCredit(input: ConsumeCreditInput): Promise<LedgerEn
     let budgetCents: number | null = null;
     if (slot.sponsored && kind === "defense") {
       const cost = betaDefenseCents();
-      if ((await spentBudgetCents(tx)) + cost > betaBudgetCents()) {
+      if (!(await reserveBetaBudget(tx, cost))) {
         throw new HttpError(402, "The beta budget is used up, so sponsored defenses are paused.");
       }
       budgetCents = cost;
@@ -689,6 +747,7 @@ export async function refundCredit(input: RefundCreditInput): Promise<LedgerEntr
     const restoring = -num(economic.amount);
     if (restoring <= 0) throw new HttpError(400, "That entry has no credit to return.");
     const budget = economic.budget_cents == null ? null : -num(economic.budget_cents);
+    if (budget != null && budget < 0) await releaseBetaBudget(tx, -budget);
     return insertEntry(tx, {
       userId: input.userId,
       kind: economic.kind as LedgerKind,
@@ -719,18 +778,13 @@ async function economicEntry(tx: Db, entry: LedgerRow, userId: string): Promise<
   throw new HttpError(400, "Only a hold or a consumed credit can be refunded.");
 }
 
-/** True once an account must spend a credit to defend. Empty local wallets stay on the free path. */
-export async function accountUsesCredits(userId: string): Promise<boolean> {
-  if (billingEnabled() || isDeployed()) return true;
-  const db = await getDb();
-  const ledger = await db.get(`SELECT id FROM credit_ledger WHERE user_id = ? LIMIT 1`, [userId]);
-  if (ledger) return true;
-  const plan = await db.get(`SELECT user_id FROM user_plans WHERE user_id = ? AND status = 'active'`, [userId]);
-  return !!plan;
-}
-
-/** First Google sign-in only. The `beta_grants` primary key rejects a second grant. */
-export async function grantBetaIfFirstGoogleSignIn(userId: string): Promise<{ granted: boolean }> {
+/**
+ * One beta grant per account, for every sign-in path. The `beta_grants`
+ * primary key rejects a second grant. Called from Google sign-in and again
+ * on first need (wallet or a defense), so an existing magic-link session
+ * is covered the next time it spends.
+ */
+export async function ensureBetaGrant(userId: string): Promise<{ granted: boolean }> {
   return withTx(undefined, async (tx) => {
     await lockWallet(tx, userId);
     const inserted = await tx.run(
@@ -771,13 +825,27 @@ export async function grantBetaIfFirstGoogleSignIn(userId: string): Promise<{ gr
   });
 }
 
+/** Google sign-in calls this. It is the same once-per-account grant as `ensureBetaGrant`. */
+export async function grantBetaIfFirstGoogleSignIn(userId: string): Promise<{ granted: boolean }> {
+  return ensureBetaGrant(userId);
+}
+
 export async function getUserPlan(userId: string): Promise<AssignedPlan> {
   return assignedPlan(await getDb(), userId);
 }
 
-/** What #38 can read without owning the wallet. Admins are not rewritten here. */
+/**
+ * Map a stored plan id to the cost-cap tier. #42 can call this with
+ * `getUserPlan(userId).plan.id`, or call `costTierForUser` with the user id.
+ * Unknown ids are consumer. Admins are not rewritten here. The cap is not enforced.
+ */
 export function costTierForUserPlan(planId: string): CostCapTier {
   return costTierForPlan(planId);
+}
+
+/** The tier #42 should use for this account: the assigned plan's `costTier`. */
+export async function costTierForUser(userId: string): Promise<CostCapTier> {
+  return (await getUserPlan(userId)).costTier;
 }
 
 export async function renewPlan(input: {
@@ -973,11 +1041,15 @@ export async function linkChallengedDefense(input: {
   }
 }
 
-/** Hold one defense credit, or return null when this account is still on the free path. */
+/**
+ * Hold one defense credit. Applies the beta grant first, for whichever way
+ * the user signed in. While billing is off, an empty wallet is topped up
+ * inside `holdCredit` and the only refusal is the global beta budget.
+ */
 export async function beginDefenseCredit(
   userId: string,
-): Promise<{ idempotencyKey: string; sponsored: boolean } | null> {
-  if (!(await accountUsesCredits(userId))) return null;
+): Promise<{ idempotencyKey: string; sponsored: boolean }> {
+  await ensureBetaGrant(userId);
   const idempotencyKey = `defense-hold:${userId}:${newId("hold")}`;
   const entry = await holdCredit({
     userId,
@@ -1102,9 +1174,10 @@ export async function refundStaleDefenseHolds(): Promise<number> {
   return rows.length;
 }
 
-export async function learnSlotLimit(userId: string): Promise<number | null> {
-  const assigned = await getUserPlan(userId);
-  const ledger = await sumKind(await getDb(), userId, "learn_slot");
+export async function learnSlotLimit(userId: string, db?: Db): Promise<number | null> {
+  const conn = db ?? (await getDb());
+  const assigned = await assignedPlan(conn, userId);
+  const ledger = await sumKind(conn, userId, "learn_slot");
   if (
     assigned.status === "active" &&
     assigned.plan.learnSlots == null &&
@@ -1130,24 +1203,66 @@ export async function countActiveLearnProjects(userId: string, db?: Db): Promise
   return num(row?.n);
 }
 
-export async function assertLearnSlotAvailable(userId: string): Promise<void> {
-  const limit = await learnSlotLimit(userId);
-  if (limit == null) return;
-  const active = await countActiveLearnProjects(userId);
-  if (active >= limit) {
-    throw new HttpError(402, "Learn project slots are full. Close one to open another.");
+/**
+ * While billing is off, Learn uploads are not capped. The beta grant's 3
+ * slots would otherwise count every file the account ever keeps open.
+ * When billing is on, the cap is one conditional UPDATE of `learn_open`
+ * on the caller's wallet row. Pass `db` from the transaction that inserts
+ * the project so the counter and the row commit together.
+ */
+export async function assertLearnSlotAvailable(userId: string, db?: Db): Promise<void> {
+  if (!billingEnabled()) return;
+  const claim = async (tx: Db) => {
+    const limit = await learnSlotLimit(userId, tx);
+    if (limit == null) return;
+    await lockWallet(tx, userId);
+    await tx.run(
+      `UPDATE credit_wallets
+       SET learn_open = (
+         SELECT COUNT(*) FROM defense_requests r
+         WHERE r.creator_user_id = ? AND r.learn_closed_at IS NULL
+           AND EXISTS (SELECT 1 FROM deliverables d WHERE d.request_id = r.id)
+       )
+       WHERE user_id = ? AND learn_open < (
+         SELECT COUNT(*) FROM defense_requests r
+         WHERE r.creator_user_id = ? AND r.learn_closed_at IS NULL
+           AND EXISTS (SELECT 1 FROM deliverables d WHERE d.request_id = r.id)
+       )`,
+      [userId, userId, userId],
+    );
+    const claimed = await tx.run(
+      `UPDATE credit_wallets
+       SET learn_open = learn_open + 1
+       WHERE user_id = ? AND learn_open < ?`,
+      [userId, limit],
+    );
+    if (claimed.changes !== 1) {
+      throw new HttpError(402, "Learn project slots are full. Close one to open another.");
+    }
+  };
+  if (db) {
+    await claim(db);
+    return;
   }
+  await withTx(undefined, claim);
 }
 
 /** Free a Learn slot. Does not change document retention or delete the receipt. */
 export async function closeLearnProject(userId: string, token: string): Promise<void> {
-  const db = await getDb();
-  const closed = await db.run(
-    `UPDATE defense_requests SET learn_closed_at = ?
-     WHERE token = ? AND creator_user_id = ? AND learn_closed_at IS NULL`,
-    [new Date().toISOString(), token, userId],
-  );
-  if (closed.changes !== 1) throw new HttpError(404, "Project not found");
+  await withTx(undefined, async (tx) => {
+    const closed = await tx.run(
+      `UPDATE defense_requests SET learn_closed_at = ?
+       WHERE token = ? AND creator_user_id = ? AND learn_closed_at IS NULL`,
+      [new Date().toISOString(), token, userId],
+    );
+    if (closed.changes !== 1) throw new HttpError(404, "Project not found");
+    await tx.run(
+      `UPDATE credit_wallets
+       SET learn_open = CASE WHEN learn_open > 0 THEN learn_open - 1 ELSE 0 END
+       WHERE user_id = ?`,
+      [userId],
+    );
+  });
 }
 
 export function ledgerLabel(entry: {
@@ -1202,6 +1317,7 @@ export interface WalletView {
 }
 
 export async function walletView(userId: string): Promise<WalletView> {
+  await ensureBetaGrant(userId);
   const [balance, plan, active, limit, history] = await Promise.all([
     getBalance(userId),
     getUserPlan(userId),
