@@ -9,6 +9,7 @@ YYYY-MM-DD BLOCKED — what stopped the work · what the next agent needs
 
 ## Log
 
+2026-10-22 DONE — Terms, how it works, and FAQ, plus the #48 footer links and the out-of-credits terms line. Card refunds, disputes, subscription-end expiry, and the customer portal are future tense. Yearly credits are “as shown at checkout”. Voice follows channelFor. The operator is DefendIT, and /privacy’s contact name uses OPERATOR_NAME. · cursor/legal-pages-terms-faq-68db · tsc, eslint, vitest (351)
 2026-10-22 DONE — The operator on the terms, the FAQ, and `operator.ts` is DefendIT. The placeholder contact email and its legal-review comment stay. /privacy was not edited. · cursor/legal-pages-terms-faq-68db · tsc, eslint, vitest (351)
 2026-10-22 DONE — Terms, how it works, and FAQ, plus the #48 footer links and the out-of-credits terms line. Card refunds, disputes, subscription-end expiry, and the customer portal are future tense. Yearly credits are “as shown at checkout”. Voice follows channelFor. /privacy was not edited. · cursor/legal-pages-terms-faq-68db · tsc, eslint, vitest (351)
 2026-10-22 DONE — Terms and FAQ describe abuse limits as a keyed IP hash, the same rule as the privacy page. The #48 footer links Terms, Privacy, How it works, and FAQ. /privacy was not edited. · cursor/legal-pages-terms-faq-68db · tsc, eslint, vitest (341)

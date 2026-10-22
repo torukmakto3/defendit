@@ -137,6 +137,8 @@ describe("public pages", () => {
     expect(how).toContain("text option for accessibility");
     expect(faq).toContain("Can I speak the answers?");
     expect(faq).toContain("text option for accessibility");
+    expect(faq).toContain("use the text option");
+    expect(faq).not.toContain("you answer on the page");
     expect(how).toContain("/r/[id]");
     expect(how).toContain("/verify/[id]");
     expect(how).toContain("SHA-256");
@@ -180,7 +182,7 @@ describe("public pages", () => {
     expect(terms).toContain("When card payments open");
     expect(terms).toContain("are not in effect");
     expect(terms).toContain("produced by AI models");
-    expect(terms).toContain("Article 22");
+    expect(terms).toContain("Article 22 GDPR");
     expect(terms).toContain("not kept after the defense");
     expect(terms).toContain('href="/privacy"');
     expect(terms).toContain("keyed hash");

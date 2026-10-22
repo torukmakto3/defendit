@@ -154,7 +154,7 @@ export default function TermsPage() {
           <a className="text-[var(--blueprint)] underline" href={`mailto:${OPERATOR_EMAIL}`}>
             {OPERATOR_EMAIL}
           </a>
-          . That review is the one in Article 22.
+          . That review is the one in Article 22 GDPR.
         </p>
         <p>
           The raw uploaded file is not kept after the defense. What else is kept, and for how long,

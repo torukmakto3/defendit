@@ -113,7 +113,7 @@ export default function FaqPage() {
         <p>
           Standard can be typed or spoken. Hard and Expert are spoken, unless you choose the text
           option for accessibility. A spoken interview starts when voice is configured. Otherwise
-          you answer on the page.
+          use the text option.
         </p>
       </LegalSection>
 
