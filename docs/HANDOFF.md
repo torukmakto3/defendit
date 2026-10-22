@@ -9,6 +9,7 @@ YYYY-MM-DD BLOCKED — what stopped the work · what the next agent needs
 
 ## Log
 
+2026-10-22 DONE — Rebased the titleblock polish onto 8c55ee9 (#57). Homepage polish stays in home-page.tsx with the landing beacon, the visit-count line, and the outline sample-demo button. The receipt keeps Copy and Share. /privacy keeps the page title and OPERATOR_NAME. The interview keeps the sample heading and the out-of-credits terms line. After screenshots include the site footer. · PR #54 · tsc, eslint (0 errors), vitest (403)
 2026-10-22 DONE — Rebased the titleblock polish onto c0b4fd9. Homepage polish lives in home-page.tsx and keeps the landing beacon, the visit-count line, and the sample-demo entry (outline, so Choose file or Defend now stays the filled action). The receipt keeps Copy and Share. /privacy uses the page title. · PR #54 · tsc, eslint (0 errors), vitest (395), production screenshots of /, /c/new, the interview, and the receipt
 2026-10-22 DONE — Segment buttons darken on hover and fade when disabled. The 44px control size was checked on accept, opt-out, report, Learn, the claimer file field, and the dashboard; nothing clips. Review shots are in docs/screenshots/pr54. Stays a draft until #48 and #49 land. · PR #54 · layout measured at 390, tsc, eslint (0 errors), vitest (313)
 2026-10-22 DONE — Titleblock polish on /, /c/new, the defense interview, and /r/[id]: DESIGN.md type scale, one filled action per screen, square panels. Grid and Rev B unchanged. · cursor/impeccable-polish-aeb2 · tsc, eslint, vitest (308), playwright (12), mock smoke
