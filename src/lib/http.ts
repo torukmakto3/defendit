@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { getUserFromRequest, isAdmin, type User } from "./auth";
-import { sha256Hex } from "./crypto";
 import { HttpError } from "./errors";
 import { ipRateKey, rateLimit } from "./ratelimit";
 
@@ -26,15 +25,6 @@ export function clientIp(req: Request): string {
 /** Rate-limit bucket for this request's address, or null when there is no usable salt. */
 export function ipLimitKey(scope: string, req: Request): string | null {
   return ipRateKey(scope, clientIp(req));
-}
-
-/**
- * The only exported hash of a client address. Rate-limit keys use this so
- * `rate_limits` never stores the raw IP. #48 replaces this body with
- * HMAC-SHA256 keyed by `IP_HASH_SALT`; call sites stay on this function.
- */
-export function hashedClientIp(req: Request): string {
-  return sha256Hex(clientIp(req));
 }
 
 /**

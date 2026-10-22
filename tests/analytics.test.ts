@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { POST as beacon } from "../src/app/api/analytics/route";
 import { POST as requestLink } from "../src/app/api/auth/request/route";
 import { POST as verifyLink } from "../src/app/api/auth/verify/route";
@@ -19,6 +19,8 @@ import { funnelReport, track, trackChallenge } from "../src/lib/analytics-store"
 import { consumeMagicLink, requestMagicLink, type User } from "../src/lib/auth";
 import { sha256Hex } from "../src/lib/crypto";
 import { getDb } from "../src/lib/db";
+import { ipLimitKey } from "../src/lib/http";
+import { ipHash, resetIpHashNotices } from "../src/lib/ip-hash";
 import {
   completeDefendSession,
   creatorIngest,
@@ -41,6 +43,8 @@ beforeAll(() => {
   process.env.DEFEND_IT_SIGNING_SEED = "33".repeat(32);
   delete process.env.DATABASE_URL;
   process.env.ANALYTICS_ENABLED = "true";
+  process.env.IP_HASH_SALT = "ab".repeat(32);
+  delete process.env.DEMO_IP_SALT;
   delete process.env.CHALLENGES_ENABLED;
   delete process.env.VERCEL;
   delete process.env.VERCEL_ENV;
@@ -71,6 +75,10 @@ async function seedBucket(key: string, count: number) {
      ON CONFLICT (bucket_key) DO UPDATE SET window_start = excluded.window_start, count = excluded.count`,
     [key, new Date().toISOString(), count],
   );
+}
+
+function clientRequest(ip: string) {
+  return new Request("http://localhost:3000/api/analytics", { headers: { "x-forwarded-for": ip } });
 }
 
 function beaconRequest(body: unknown, headers: Record<string, string> = {}) {
@@ -626,12 +634,14 @@ describe("beacon rate limits", () => {
     expect(res.status).toBe(204);
     expect((await events("receipt_shared")).length).toBe(before + 1);
     const db = await getDb();
-    const hash = sha256Hex(ip);
+    const key = ipLimitKey("analytics:m", clientRequest(ip));
+    expect(key).toBe(`analytics:m:ip:${ipHash(ip)}`);
+    expect(ipHash(ip)).not.toBe(sha256Hex(ip));
     const row = await db.get<{ bucket_key: string }>(
       `SELECT bucket_key FROM rate_limits WHERE bucket_key = ?`,
-      [`analytics:ip:${hash}:m`],
+      [key],
     );
-    expect(row?.bucket_key).toBe(`analytics:ip:${hash}:m`);
+    expect(row?.bucket_key).toBe(key);
     const leaked = await db.get<{ bucket_key: string }>(
       `SELECT bucket_key FROM rate_limits WHERE bucket_key LIKE ?`,
       [`%${ip}%`],
@@ -641,7 +651,9 @@ describe("beacon rate limits", () => {
 
   it("drops the 31st beacon from the same client in a minute", async () => {
     const ip = "203.0.113.11";
-    await seedBucket(`analytics:ip:${sha256Hex(ip)}:m`, 30);
+    const key = ipLimitKey("analytics:m", clientRequest(ip));
+    if (!key) throw new Error("expected a salt");
+    await seedBucket(key, 30);
     const before = (await events("receipt_shared")).length;
     const res = await beacon(
       beaconRequest({ name: "receipt_shared", props: { method: "copy" } }, { "x-forwarded-for": ip }),
@@ -652,7 +664,9 @@ describe("beacon rate limits", () => {
 
   it("drops a beacon after 300 from the same client in a day", async () => {
     const ip = "203.0.113.12";
-    await seedBucket(`analytics:ip:${sha256Hex(ip)}:d`, 300);
+    const key = ipLimitKey("analytics:d", clientRequest(ip));
+    if (!key) throw new Error("expected a salt");
+    await seedBucket(key, 300);
     const before = (await events("receipt_shared")).length;
     await beacon(
       beaconRequest({ name: "receipt_shared", props: { method: "copy" } }, { "x-forwarded-for": ip }),
@@ -693,7 +707,9 @@ describe("beacon rate limits", () => {
     }
 
     const minuteIp = "203.0.113.16";
-    await seedBucket(`analytics:ip:${sha256Hex(minuteIp)}:m`, 30);
+    const minuteKey = ipLimitKey("analytics:m", clientRequest(minuteIp));
+    if (!minuteKey) throw new Error("expected a salt");
+    await seedBucket(minuteKey, 30);
     const beforeEvents = (await events("receipt_shared")).length;
     const globalBefore = await bucketCount("analytics:beacon");
     await beacon(
@@ -703,7 +719,9 @@ describe("beacon rate limits", () => {
     expect(await bucketCount("analytics:beacon")).toBe(globalBefore);
 
     const dayIp = "203.0.113.17";
-    await seedBucket(`analytics:ip:${sha256Hex(dayIp)}:d`, 300);
+    const dayKey = ipLimitKey("analytics:d", clientRequest(dayIp));
+    if (!dayKey) throw new Error("expected a salt");
+    await seedBucket(dayKey, 300);
     const globalMid = await bucketCount("analytics:beacon");
     await beacon(
       beaconRequest({ name: "receipt_shared", props: { method: "share" } }, { "x-forwarded-for": dayIp }),
@@ -724,6 +742,68 @@ describe("beacon rate limits", () => {
       );
       expect((await events("receipt_shared")).length).toBe(before);
     } finally {
+      await db.run(`DELETE FROM rate_limits WHERE bucket_key = ?`, ["analytics:beacon"]);
+    }
+  });
+
+  it("skips IP buckets when ipHash returns null and still applies the global cap", async () => {
+    const ip = "203.0.113.18";
+    const minuteKey = ipLimitKey("analytics:m", clientRequest(ip));
+    const dayKey = ipLimitKey("analytics:d", clientRequest(ip));
+    if (!minuteKey || !dayKey) throw new Error("expected a salt");
+    await seedBucket(minuteKey, 30);
+    await seedBucket(dayKey, 300);
+
+    const savedSalt = process.env.IP_HASH_SALT;
+    const savedDemo = process.env.DEMO_IP_SALT;
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const db = await getDb();
+    try {
+      resetIpHashNotices();
+      delete process.env.IP_HASH_SALT;
+      delete process.env.DEMO_IP_SALT;
+      expect(ipHash(ip)).toBeNull();
+      expect(ipLimitKey("analytics:m", clientRequest(ip))).toBeNull();
+
+      async function sideKeys(): Promise<string[]> {
+        const rows = await db.all<{ bucket_key: string }>(
+          `SELECT bucket_key FROM rate_limits
+           WHERE bucket_key LIKE 'analytics:%' AND bucket_key != 'analytics:beacon'
+           ORDER BY bucket_key`,
+        );
+        return rows.map((row) => row.bucket_key);
+      }
+
+      const beforeEvents = (await events("receipt_shared")).length;
+      const globalBefore = await db.get<{ count: number | string }>(
+        `SELECT count FROM rate_limits WHERE bucket_key = ?`,
+        ["analytics:beacon"],
+      );
+      const keysBefore = await sideKeys();
+      await beacon(
+        beaconRequest({ name: "receipt_shared", props: { method: "copy" } }, { "x-forwarded-for": ip }),
+      );
+      expect((await events("receipt_shared")).length).toBe(beforeEvents + 1);
+      const globalAfter = await db.get<{ count: number | string }>(
+        `SELECT count FROM rate_limits WHERE bucket_key = ?`,
+        ["analytics:beacon"],
+      );
+      expect(Number(globalAfter?.count ?? 0)).toBe(Number(globalBefore?.count ?? 0) + 1);
+      expect(await sideKeys()).toEqual(keysBefore);
+
+      await seedBucket("analytics:beacon", 120);
+      const blockedBefore = (await events("receipt_shared")).length;
+      await beacon(
+        beaconRequest({ name: "receipt_shared", props: { method: "share" } }, { "x-forwarded-for": ip }),
+      );
+      expect((await events("receipt_shared")).length).toBe(blockedBefore);
+      expect(await sideKeys()).toEqual(keysBefore);
+    } finally {
+      if (savedSalt === undefined) delete process.env.IP_HASH_SALT;
+      else process.env.IP_HASH_SALT = savedSalt;
+      if (savedDemo === undefined) delete process.env.DEMO_IP_SALT;
+      else process.env.DEMO_IP_SALT = savedDemo;
+      spy.mockRestore();
       await db.run(`DELETE FROM rate_limits WHERE bucket_key = ?`, ["analytics:beacon"]);
     }
   });

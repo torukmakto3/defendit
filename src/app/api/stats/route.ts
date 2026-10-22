@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import { handleError, hashedClientIp, jsonError, limitOr429 } from "@/lib/http";
+import { handleError, ipLimitKey, jsonError, limitOr429 } from "@/lib/http";
 import { LIMITS } from "@/lib/ratelimit";
 import { parseStatsDays, statsBearerOk, statsReport, statsToken } from "@/lib/stats";
 
@@ -13,7 +13,7 @@ export async function GET(req: Request) {
   const secret = statsToken();
   if (!secret) return jsonError(404, "Not found", NO_STORE);
   try {
-    const limited = await limitOr429(`stats:${hashedClientIp(req)}`, LIMITS.statsRead);
+    const limited = await limitOr429(ipLimitKey("stats", req), LIMITS.statsRead);
     if (limited) {
       limited.headers.set("Cache-Control", "no-store");
       return limited;

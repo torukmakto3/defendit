@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { isClientAnalyticsEvent, trackingOptOut } from "@/lib/analytics";
 import { track } from "@/lib/analytics-store";
-import { hashedClientIp, sameOrigin } from "@/lib/http";
+import { ipLimitKey, sameOrigin } from "@/lib/http";
 import { LIMITS, rateLimit } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
@@ -17,26 +17,32 @@ function noStore() {
 /**
  * Anonymous beacon for landing views and receipt share clicks.
  * No cookies are read. DNT and Sec-GPC skip the write before any rate-limit
- * bucket is touched. Per-client buckets are keyed on a hash of the IP and
- * are checked before the global bucket, so a blocked client does not consume it.
+ * bucket is touched. Per-client buckets use `ipLimitKey`. When `ipHash`
+ * returns null those buckets are skipped. The global cap is charged after
+ * them, so a blocked client does not consume it, and it still applies with no salt.
  */
 export async function POST(req: Request) {
   try {
     if (!sameOrigin(req)) return noStore();
     if (trackingOptOut(req.headers)) return noStore();
-    const hash = hashedClientIp(req);
-    const perMinute = await rateLimit(
-      `analytics:ip:${hash}:m`,
-      LIMITS.analyticsBeaconPerIp.limit,
-      LIMITS.analyticsBeaconPerIp.windowSec,
-    );
-    if (!perMinute.ok) return noStore();
-    const perDay = await rateLimit(
-      `analytics:ip:${hash}:d`,
-      LIMITS.analyticsBeaconPerIpDay.limit,
-      LIMITS.analyticsBeaconPerIpDay.windowSec,
-    );
-    if (!perDay.ok) return noStore();
+    const perMinuteKey = ipLimitKey("analytics:m", req);
+    if (perMinuteKey) {
+      const perMinute = await rateLimit(
+        perMinuteKey,
+        LIMITS.analyticsBeaconPerIp.limit,
+        LIMITS.analyticsBeaconPerIp.windowSec,
+      );
+      if (!perMinute.ok) return noStore();
+    }
+    const perDayKey = ipLimitKey("analytics:d", req);
+    if (perDayKey) {
+      const perDay = await rateLimit(
+        perDayKey,
+        LIMITS.analyticsBeaconPerIpDay.limit,
+        LIMITS.analyticsBeaconPerIpDay.windowSec,
+      );
+      if (!perDay.ok) return noStore();
+    }
     const global = await rateLimit(
       "analytics:beacon",
       LIMITS.analyticsBeacon.limit,
@@ -52,8 +58,11 @@ export async function POST(req: Request) {
     };
     if (typeof body.name !== "string" || !isClientAnalyticsEvent(body.name)) return noStore();
     if (body.name === "landing_view") {
-      const fresh = await rateLimit(`analytics:landing:${hash}`, 1, LANDING_DEDUPE_SEC);
-      if (!fresh.ok) return noStore();
+      const landingKey = ipLimitKey("analytics:landing", req);
+      if (landingKey) {
+        const fresh = await rateLimit(landingKey, 1, LANDING_DEDUPE_SEC);
+        if (!fresh.ok) return noStore();
+      }
     }
     await track({
       name: body.name,

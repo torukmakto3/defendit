@@ -2,11 +2,13 @@ import Database from "better-sqlite3";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { GET } from "../src/app/api/stats/route";
 import { sha256Hex } from "../src/lib/crypto";
 import type { Db, Param } from "../src/lib/db";
 import { getDb } from "../src/lib/db";
+import { ipLimitKey } from "../src/lib/http";
+import { ipHash, resetIpHashNotices } from "../src/lib/ip-hash";
 import { statsBearerOk, statsReport, type StatsReport } from "../src/lib/stats";
 
 const NOW = new Date("2026-10-22T15:00:00.000Z");
@@ -377,6 +379,8 @@ describe("GET /api/stats", () => {
     process.env.DATABASE_PATH = join(dir, "stats.db");
     delete process.env.DATABASE_URL;
     process.env.STATS_TOKEN = "stats-test-token";
+    process.env.IP_HASH_SALT = "ab".repeat(32);
+    delete process.env.DEMO_IP_SALT;
     delete process.env.BETA_BUDGET_EUR;
   });
 
@@ -432,7 +436,10 @@ describe("GET /api/stats", () => {
 
     const db = await getDb();
     const ip = "203.0.113.50";
-    const key = `stats:${sha256Hex(ip)}`;
+    const key = ipLimitKey("stats", new Request("http://localhost:3000/api/stats", { headers: { "x-forwarded-for": ip } }));
+    expect(key).toBe(`stats:ip:${ipHash(ip)}`);
+    expect(ipHash(ip)).not.toBe(sha256Hex(ip));
+    if (!key) throw new Error("expected a salt");
     await db.run(
       `INSERT INTO rate_limits (bucket_key, window_start, count) VALUES (?, ?, ?)
        ON CONFLICT (bucket_key) DO UPDATE SET window_start = excluded.window_start, count = excluded.count`,
@@ -459,6 +466,39 @@ describe("GET /api/stats", () => {
         [`%${raw}%`],
       );
       expect(leaked).toBeUndefined();
+    }
+  });
+
+  it("skips the stats limit when ipHash returns null", async () => {
+    const savedSalt = process.env.IP_HASH_SALT;
+    const savedDemo = process.env.DEMO_IP_SALT;
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      resetIpHashNotices();
+      delete process.env.IP_HASH_SALT;
+      delete process.env.DEMO_IP_SALT;
+      const ip = "203.0.113.51";
+      expect(ipHash(ip)).toBeNull();
+      const db = await getDb();
+      const before = await db.get<{ n: number | string }>(`SELECT COUNT(*) AS n FROM rate_limits`);
+      const res = await call({
+        authorization: "Bearer stats-test-token",
+        "x-forwarded-for": ip,
+      });
+      expect(res.status).toBe(200);
+      const after = await db.get<{ n: number | string }>(`SELECT COUNT(*) AS n FROM rate_limits`);
+      expect(Number(after?.n)).toBe(Number(before?.n));
+      const leaked = await db.get<{ bucket_key: string }>(
+        `SELECT bucket_key FROM rate_limits WHERE bucket_key LIKE ?`,
+        [`%${ip}%`],
+      );
+      expect(leaked).toBeUndefined();
+    } finally {
+      if (savedSalt === undefined) delete process.env.IP_HASH_SALT;
+      else process.env.IP_HASH_SALT = savedSalt;
+      if (savedDemo === undefined) delete process.env.DEMO_IP_SALT;
+      else process.env.DEMO_IP_SALT = savedDemo;
+      spy.mockRestore();
     }
   });
 });
