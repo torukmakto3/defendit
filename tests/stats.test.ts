@@ -181,8 +181,11 @@ function seed(db: Database.Database, withChallenges: boolean) {
   insertChallenge.run("chg_open", "open", recent, null, SECRET_SUBJECT, "slugopen1");
   insertChallenge.run("chg_yes", "claimed", recent, recent, SECRET_SUBJECT, "slugyes01");
   insertChallenge.run("chg_no", "declined", recent, null, SECRET_SUBJECT, "slugno001");
+  insertChallenge.run("chg_done", "defended", recent, recent, SECRET_SUBJECT, "slugdone1");
+  insertChallenge.run("chg_exp", "expired", recent, null, SECRET_SUBJECT, "slugexp01");
   insertChallenge.run("chg_old_yes", "defended", old, recent, SECRET_SUBJECT, "slugold01");
   insertChallenge.run("chg_old_no", "declined", old, null, SECRET_SUBJECT, "slugold02");
+  insertChallenge.run("chg_old_exp", "expired", old, null, SECRET_SUBJECT, "slugold03");
 }
 
 function assertNoPii(body: unknown) {
@@ -258,7 +261,7 @@ describe("stats aggregates", () => {
         voice_usd: 0.05,
         with_measured_voice: 1,
       },
-      challenges: { sent: 3, accepted: 2, declined: 1 },
+      challenges: { sent: 5, accepted: 3, declined: 1, defended: 1, expired: 1 },
     });
     expect(report.window.pass_rate_by_tier).toEqual({
       standard: { passed: 0, completed: 1, rate: 0 },
@@ -278,7 +281,7 @@ describe("stats aggregates", () => {
         voice_usd: 0.025,
         with_measured_voice: 1,
       },
-      challenges: { sent: 5, accepted: 2, declined: 2 },
+      challenges: { sent: 8, accepted: 3, declined: 2, defended: 2, expired: 2 },
     });
     expect(report.all_time.pass_rate_by_tier.expert).toEqual({ passed: 1, completed: 1, rate: 1 });
     assertNoPii(report);
@@ -337,7 +340,13 @@ describe("stats aggregates", () => {
     expect(report.window.beta_budget.spent_cents).toBe(60);
     expect(report.all_time.beta_budget.spent_cents).toBe(7000);
     expect(report.all_time.cost_per_completed_defense.llm_usd).toBe(0.1);
-    expect(report.window.challenges).toEqual({ sent: 4, accepted: 4, declined: 4 });
+    expect(report.window.challenges).toEqual({
+      sent: 4,
+      accepted: 4,
+      declined: 4,
+      defended: 4,
+      expired: 4,
+    });
   });
 });
 
@@ -381,7 +390,13 @@ describe("GET /api/stats", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     const body = (await res.json()) as StatsReport;
     expect(body.range.days).toBe("all");
-    expect(body.window.challenges).toEqual({ sent: 0, accepted: 0, declined: 0 });
+    expect(body.window.challenges).toEqual({
+      sent: 0,
+      accepted: 0,
+      declined: 0,
+      defended: 0,
+      expired: 0,
+    });
     expect(body.all_time.beta_budget.total_eur).toBe(150);
     expect(body.all_time.pass_rate_by_tier.standard.rate).toBeNull();
     expect(Object.keys(body).sort()).toEqual(["all_time", "generated_at", "range", "window"]);

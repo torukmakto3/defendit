@@ -6,9 +6,8 @@ import { betaBudgetCents } from "./credits";
  * Read-only aggregates for the daily traction dashboard.
  * Counts only: no account ids, emails, file names, or document text.
  *
- * Challenge totals are null when the challenge tables are not installed,
- * so this keeps working on a database from before those tables and starts
- * returning numbers once they exist.
+ * Challenge totals are null only when the challenges table is missing.
+ * Sent, accepted, declined, defended, and expired are counts from that table.
  */
 
 const DIFFICULTIES = ["standard", "hard", "expert"] as const;
@@ -25,6 +24,8 @@ export interface ChallengeStats {
   sent: number;
   accepted: number;
   declined: number;
+  defended: number;
+  expired: number;
 }
 
 export interface StatsSlice {
@@ -249,7 +250,9 @@ async function challengeStats(db: Db, since: string | null): Promise<ChallengeSt
     const sent = await count(db, "challenges", "created_at", since);
     const accepted = await count(db, "challenges", "claimed_at", since, "claimed_at IS NOT NULL");
     const declined = await count(db, "challenges", "created_at", since, "status = 'declined'");
-    return { sent, accepted, declined };
+    const defended = await count(db, "challenges", "created_at", since, "status = 'defended'");
+    const expired = await count(db, "challenges", "created_at", since, "status = 'expired'");
+    return { sent, accepted, declined, defended, expired };
   } catch (e) {
     if (missingRelation(e)) return null;
     throw e;
