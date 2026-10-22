@@ -351,8 +351,6 @@ CREATE INDEX IF NOT EXISTS idx_challenges_request ON challenges(request_id);
 CREATE INDEX IF NOT EXISTS idx_challenges_receipt ON challenges(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_challenges_created ON challenges(created_at);
 CREATE INDEX IF NOT EXISTS idx_challenge_events_challenge ON challenge_events(challenge_id, event);
-CREATE INDEX IF NOT EXISTS idx_credit_ledger_user ON credit_ledger(user_id, kind);
-CREATE INDEX IF NOT EXISTS idx_credit_ledger_ref ON credit_ledger(ref_id);
 `;
 
 /** Columns added after a table first shipped: [table, column, definition]. */

@@ -174,42 +174,50 @@ describe("challenge links", () => {
   it("grants once, and a refund returns the held credit", async () => {
     const user = await signIn(nextEmail("wallet"));
     const key = `grant:${user.id}`;
-    await grantCredits({ userId: user.id, kind: "challenge", amount: 1, idempotencyKey: key });
-    await grantCredits({ userId: user.id, kind: "challenge", amount: 1, idempotencyKey: key });
+    await grantCredits({
+      userId: user.id,
+      kind: "challenge",
+      amount: 1,
+      reason: "grant",
+      idempotencyKey: key,
+    });
+    await grantCredits({
+      userId: user.id,
+      kind: "challenge",
+      amount: 1,
+      reason: "grant",
+      idempotencyKey: key,
+    });
     expect((await getBalance(user.id)).challenge).toBe(1);
 
     const refId = `ref-${user.id}`;
+    const holdKey = `hold:${refId}`;
     await holdCredit({
       userId: user.id,
       kind: "challenge",
       amount: 1,
-      idempotencyKey: `hold:${refId}`,
+      idempotencyKey: holdKey,
+      refType: "challenge",
       refId,
     });
     expect((await getBalance(user.id)).challenge).toBe(0);
     await refundCredit({
       userId: user.id,
-      kind: "challenge",
-      amount: 1,
+      entryIdempotencyKey: holdKey,
       idempotencyKey: `refund:${refId}`,
-      refId,
-      detail: "revoke",
     });
     await refundCredit({
       userId: user.id,
-      kind: "challenge",
-      amount: 1,
+      entryIdempotencyKey: holdKey,
       idempotencyKey: `refund:${refId}`,
-      refId,
-      detail: "revoke",
     });
     expect((await getBalance(user.id)).challenge).toBe(1);
-    const rows = await (await getDb()).all<{ reason: string; detail: string | null }>(
-      `SELECT reason, detail FROM credit_ledger WHERE user_id = ? ORDER BY created_at, id`,
+    const rows = await (await getDb()).all<{ reason: string }>(
+      `SELECT reason FROM credit_ledger WHERE user_id = ? ORDER BY created_at, id`,
       [user.id],
     );
     expect(rows.map((row) => row.reason).sort()).toEqual(["grant", "hold", "refund"]);
-    expect(rows.some((row) => /card/i.test(`${row.reason} ${row.detail ?? ""}`))).toBe(false);
+    expect(rows.some((row) => /card/i.test(row.reason))).toBe(false);
   });
 
   it("lets the first signed-in adult claim, and tells the next person it is taken", async () => {
@@ -347,6 +355,13 @@ describe("challenge links", () => {
   it("shows expired and revoked states and refunds a held paid credit", async () => {
     process.env.BILLING_ENABLED = "1";
     const creator = await signIn(nextEmail("life"));
+    await grantCredits({
+      userId: creator.id,
+      kind: "challenge",
+      amount: 2,
+      reason: "grant",
+      idempotencyKey: `life:${creator.id}`,
+    });
     const expired = await createChallenge({
       user: creator,
       subject: "Will expire",
@@ -371,13 +386,12 @@ describe("challenge links", () => {
     ).rejects.toThrow(/expired/i);
     const expiredLedger = await ledgerForSlug(expired.slug);
     expect(expiredLedger.map((row) => row.action).sort()).toEqual(["hold", "refund"]);
-    expect(expiredLedger.some((row) => row.reason === "expiry")).toBe(true);
     expect(expiredLedger.reduce((sum, row) => sum + row.amount, 0)).toBe(0);
 
     await revokeChallenge(revoked.slug, creator);
     expect((await getPublicChallenge(revoked.slug, null))?.status).toBe("revoked");
-    expect((await ledgerForSlug(revoked.slug)).some((row) => row.reason === "revoke")).toBe(true);
-    expect((await getBalance(creator.id)).challenge).toBe(0);
+    expect((await ledgerForSlug(revoked.slug)).map((row) => row.action).sort()).toEqual(["hold", "refund"]);
+    expect((await getBalance(creator.id)).challenge).toBe(2);
     await expect(
       claimChallenge({ slug: revoked.slug, user: claimer, ip: nextIp(), adultConfirmed: true }),
     ).rejects.toThrow(/revoked/i);
@@ -418,7 +432,7 @@ describe("challenge links", () => {
     const ledger = await ledgerForSlug(hidden.created.slug);
     expect(ledger.map((row) => row.action).sort()).toEqual(["consume", "grant", "hold"]);
     expect((await getBalance(hidden.defender.id)).challenge).toBe(1);
-    expect((await getBalance(hidden.creator.id)).challenge).toBe(-1);
+    expect((await getBalance(hidden.creator.id)).challenge).toBe(0);
 
     const kept = await run("Private subject line", "private", "paid");
     const privateGate = await receiptGate(kept.receipt.payload.id, null);
@@ -434,8 +448,12 @@ describe("challenge links", () => {
     expect(creatorView?.creatorPrivateNote).toMatch(/private/i);
     const defenderGate = await receiptGate(kept.receipt.payload.id, kept.defender);
     expect(defenderGate.includeReceipt).toBe(true);
-    expect((await ledgerForSlug(kept.created.slug)).some((row) => row.reason === "decline")).toBe(true);
-    expect((await getBalance(kept.creator.id)).challenge).toBe(0);
+    expect((await ledgerForSlug(kept.created.slug)).map((row) => row.action).sort()).toEqual([
+      "grant",
+      "hold",
+      "refund",
+    ]);
+    expect((await getBalance(kept.creator.id)).challenge).toBe(1);
     expect((await getBalance(kept.defender.id)).challenge).toBe(1);
 
     const names = (await challengeEvents(published.created.slug)).map((row) => row.event);
@@ -483,6 +501,15 @@ async function run(
   if (sponsorType === "paid") process.env.BILLING_ENABLED = "1";
   const creator = await signIn(nextEmail("run-c"));
   const defender = await signIn(nextEmail("run-d"));
+  if (sponsorType === "paid") {
+    await grantCredits({
+      userId: creator.id,
+      kind: "challenge",
+      amount: 1,
+      reason: "grant",
+      idempotencyKey: `run:${creator.id}:${subject}`,
+    });
+  }
   const created = await createChallenge({ user: creator, subject, difficulty: "standard", sponsorType });
   const claimed = await claimChallenge({ slug: created.slug, user: defender, ip: nextIp(), adultConfirmed: true });
   await getPublicChallenge(created.slug, null, { recordView: true });

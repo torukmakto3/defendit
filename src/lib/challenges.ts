@@ -1,7 +1,7 @@
 import { normalizeEmail, type User } from "./auth";
 import { assertPaidChallengesOpen, billingEnabled } from "./billing";
 import { challengesEnabled, TIER_LEGEND, tierForScore, type ResultTier } from "./challenge-tier";
-import { consumeCredit, grantCredits, holdCredit, refundCredit } from "./credits";
+import { assertNotSelfClaim, consumeCredit, holdCredit, linkChallengedDefense, refundCredit } from "./credits";
 import { appUrl } from "./config";
 import { getDb, type Db } from "./db";
 import { HttpError } from "./errors";
@@ -255,8 +255,8 @@ export async function challengeEvents(
 export async function expireDueChallenges(db?: Db): Promise<number> {
   const conn = db ?? (await getDb());
   const now = new Date().toISOString();
-  const due = await conn.all<{ id: string; creator_user_id: string }>(
-    `SELECT id, creator_user_id FROM challenges
+  const due = await conn.all<{ id: string; creator_user_id: string; sponsor_type: string }>(
+    `SELECT id, creator_user_id, sponsor_type FROM challenges
      WHERE (status = 'open' AND expires_at < ?)
         OR (status = 'claimed' AND finish_by IS NOT NULL AND finish_by < ?)`,
     [now, now],
@@ -268,18 +268,45 @@ export async function expireDueChallenges(db?: Db): Promise<number> {
         OR (status = 'claimed' AND finish_by IS NOT NULL AND finish_by < ?)`,
     [now, now],
   );
-  for (const row of due) {
-    await refundCredit({
-      userId: row.creator_user_id,
-      kind: "challenge",
-      amount: 1,
-      idempotencyKey: `refund:challenge:${row.id}`,
-      refId: row.id,
-      detail: "expiry",
-      db: conn,
-    });
-  }
+  for (const row of due) await refundChallengeHold(conn, row);
   return due.length;
+}
+
+function challengeHoldKey(challengeId: string): string {
+  return `hold:challenge:${challengeId}`;
+}
+
+/** Return a paid challenge hold to the challenger's credit balance. Beta holds nothing. */
+async function refundChallengeHold(
+  db: Db,
+  row: { id: string; creator_user_id: string; sponsor_type: string },
+): Promise<void> {
+  if (row.sponsor_type !== "paid") return;
+  const key = challengeHoldKey(row.id);
+  const hold = await db.get(`SELECT id FROM credit_ledger WHERE idempotency_key = ?`, [key]);
+  if (!hold) return;
+  await refundCredit({
+    userId: row.creator_user_id,
+    entryIdempotencyKey: key,
+    idempotencyKey: `refund:challenge:${row.id}`,
+    db,
+  });
+}
+
+async function consumeChallengeHold(
+  db: Db,
+  row: { id: string; creator_user_id: string; sponsor_type: string },
+): Promise<void> {
+  if (row.sponsor_type !== "paid") return;
+  const key = challengeHoldKey(row.id);
+  const hold = await db.get(`SELECT id FROM credit_ledger WHERE idempotency_key = ?`, [key]);
+  if (!hold) return;
+  await consumeCredit({
+    userId: row.creator_user_id,
+    holdIdempotencyKey: key,
+    idempotencyKey: `consume:challenge:${row.id}`,
+    db,
+  });
 }
 
 async function loadBySlug(db: Db, slug: string): Promise<ChallengeRow | undefined> {
@@ -476,7 +503,8 @@ export async function createChallenge(input: CreateChallengeInput): Promise<Crea
         userId: input.user.id,
         kind: "challenge",
         amount: 1,
-        idempotencyKey: `hold:challenge:${id}`,
+        idempotencyKey: challengeHoldKey(id),
+        refType: "challenge",
         refId: id,
         db: tx,
       });
@@ -622,6 +650,7 @@ export async function claimChallenge(opts: {
     if (row.creator_user_id === opts.user.id) {
       throw new HttpError(403, "You created this challenge. Send the link to someone else.");
     }
+    await assertNotSelfClaim({ creatorUserId: row.creator_user_id, claimerUserId: opts.user.id });
     const status = asStatus(row.status);
     if (status === "expired") throw new HttpError(410, "This challenge has expired.");
     if (status === "revoked") throw new HttpError(410, "This challenge was revoked.");
@@ -664,7 +693,14 @@ export async function claimChallenge(opts: {
     );
     await tx.run(`UPDATE challenges SET request_id = ? WHERE id = ?`, [requestId, row.id]);
     await recordEvent(tx, row.id, "accepted", opts.user.id);
-    return { token };
+    return { token, challengeId: row.id, requestId, challengerUserId: row.creator_user_id };
+  });
+
+  await linkChallengedDefense({
+    challengeId: result.challengeId,
+    challengerUserId: result.challengerUserId,
+    defenderUserId: opts.user.id,
+    requestId: result.requestId,
   });
 
   return { slug: opts.slug, token: result.token, defensePath: `/d/${result.token}` };
@@ -681,15 +717,7 @@ export async function revokeChallenge(slug: string, user: User): Promise<void> {
     [new Date().toISOString(), row.id],
   );
   if (updated.changes !== 1) throw new HttpError(409, "Only an open challenge can be revoked.");
-  await refundCredit({
-    userId: row.creator_user_id,
-    kind: "challenge",
-    amount: 1,
-    idempotencyKey: `refund:challenge:${row.id}`,
-    refId: row.id,
-    detail: "revoke",
-    db,
-  });
+  await refundChallengeHold(db, row);
 }
 
 export async function chooseVisibility(opts: {
@@ -720,26 +748,11 @@ export async function chooseVisibility(opts: {
   if (updated.changes !== 1) throw new HttpError(409, "A visibility choice was already saved.");
 
   if (visibility === "private") {
-    await refundCredit({
-      userId: row.creator_user_id,
-      kind: "challenge",
-      amount: 1,
-      idempotencyKey: `refund:challenge:${row.id}`,
-      refId: row.id,
-      detail: "decline",
-      db,
-    });
+    await refundChallengeHold(db, row);
     await recordEvent(db, row.id, "kept_private", opts.user.id);
     return { resultPath: null };
   }
-  await consumeCredit({
-    userId: row.creator_user_id,
-    kind: "challenge",
-    amount: 1,
-    idempotencyKey: `consume:challenge:${row.id}`,
-    refId: row.id,
-    db,
-  });
+  await consumeChallengeHold(db, row);
   await recordEvent(db, row.id, "published", opts.user.id, { visibility });
   return { resultPath: row.receipt_id ? `/r/${row.receipt_id}` : null };
 }
@@ -1054,6 +1067,18 @@ export async function noteChallengeSession(requestId: string, sessionId: string)
     `UPDATE challenges SET session_id = ? WHERE request_id = ? AND status = 'claimed'`,
     [sessionId, requestId],
   );
+  const row = await db.get<{ id: string; creator_user_id: string; claimed_by_user_id: string | null }>(
+    `SELECT id, creator_user_id, claimed_by_user_id FROM challenges WHERE request_id = ?`,
+    [requestId],
+  );
+  if (!row?.claimed_by_user_id) return;
+  await linkChallengedDefense({
+    challengeId: row.id,
+    challengerUserId: row.creator_user_id,
+    defenderUserId: row.claimed_by_user_id,
+    sessionId,
+    requestId,
+  });
 }
 
 export async function noteChallengeDefended(
@@ -1074,18 +1099,8 @@ export async function noteChallengeDefended(
     [ids.sessionId, ids.deliverableId, ids.receiptId, requestId],
   );
   if (row.status === "claimed") await recordEvent(db, row.id, "defended", row.claimed_by_user_id);
-  // #39 owns the wallet rules. Completing a defense you were challenged into
-  // grants one challenge credit, once, whether or not the result is shared.
-  if (row.claimed_by_user_id) {
-    await grantCredits({
-      userId: row.claimed_by_user_id,
-      kind: "challenge",
-      amount: 1,
-      idempotencyKey: `onward-challenge:${row.id}`,
-      refId: row.id,
-      db,
-    });
-  }
+  // The onward challenge credit is grantCredits inside finishDefenseCredit,
+  // once this defense is linked. Sharing is not an input.
 }
 
 export async function challengeCompletionHint(
@@ -1106,13 +1121,18 @@ export async function ledgerForSlug(
   const db = await getDb();
   const row = await loadBySlug(db, slug);
   if (!row) return [];
-  const entries = await db.all<{ reason: string; detail: string | null; amount: number | string }>(
-    `SELECT reason, detail, amount FROM credit_ledger WHERE ref_id = ? ORDER BY created_at, id`,
-    [row.id],
+  const entries = await db.all<{ reason: string; amount: number | string }>(
+    `SELECT reason, amount FROM credit_ledger
+     WHERE (ref_type = 'challenge' AND ref_id = ?)
+        OR (ref_type = 'hold' AND ref_id IN (
+          SELECT id FROM credit_ledger WHERE ref_type = 'challenge' AND ref_id = ? AND reason = 'hold'
+        ))
+     ORDER BY created_at, id`,
+    [row.id, row.id],
   );
   return entries.map((entry) => ({
     action: entry.reason,
-    reason: entry.detail,
+    reason: null,
     amount: Number(entry.amount),
   }));
 }
