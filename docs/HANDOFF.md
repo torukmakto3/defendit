@@ -9,6 +9,7 @@ YYYY-MM-DD BLOCKED — what stopped the work · what the next agent needs
 
 ## Log
 
+2026-10-22 DONE — Titleblock polish on /, /c/new, the defense interview, and /r/[id]: DESIGN.md type scale, one filled action per screen, square panels. Grid and Rev B unchanged. · cursor/impeccable-polish-aeb2 · tsc, eslint, vitest (308), playwright (12), mock smoke
 2026-10-22 DONE — Tab icon D is a path in day card on the ink tile, so the browser glyph matches the PNG and ICO and the 16px mark is light-on-ink. Roadmap bullet removed. · PR #56 · tsc, eslint, vitest (384), brand e2e
 2026-10-23 DONE — support@defendit.me for legal, privacy, score review, and deletion; hello@defendit.me for general FAQ contact. The placeholder email and its legal-review TODO are gone; draft marks on the legal pages stay. Webhook lists include charge.succeeded (17 events, matching HANDLED). · PR #58 · tsc, eslint, vitest (447), e2e (14)
 2026-10-22 DONE — Yearly refill stop is written in the refund transaction, and Stripe Checkout is rebased onto ef320ab (#46). Funnel analytics and the Stripe paragraph both stay. Billing stays off. · PR #47 · tsc, eslint, vitest (425)
