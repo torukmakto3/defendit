@@ -1,7 +1,7 @@
 import { normalizeEmail, type User } from "./auth";
 import { assertPaidChallengesOpen, billingEnabled } from "./billing";
 import { challengesEnabled, publicTierTitle, TIER_LEGEND, tierForScore, type ResultTier } from "./challenge-tier";
-import { assertNotSelfClaim, consumeCredit, holdCredit, linkChallengedDefense, refundCredit } from "./credits";
+import { assertNotSelfClaim, consumeCredit, ensureBetaGrant, holdCredit, linkChallengedDefense, refundCredit } from "./credits";
 import { appUrl } from "./config";
 import { getDb, type Db } from "./db";
 import { HttpError } from "./errors";
@@ -422,6 +422,8 @@ export async function createChallenge(input: CreateChallengeInput): Promise<Crea
   }
 
   await expireDueChallenges(db);
+  // The once-per-account beta grant supplies the challenge credit when the wallet is empty.
+  await ensureBetaGrant(input.user.id);
 
   const now = new Date().toISOString();
   const dayAgo = sinceIso(DAY_SEC * 1000);

@@ -5,7 +5,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { consumeMagicLink, requestMagicLink, type User } from "../src/lib/auth";
 import { publicTierTitle, tierForScore } from "../src/lib/challenge-tier";
 import { billingEnabled } from "../src/lib/billing";
-import { billingEnabled as plansBillingEnabled } from "../src/lib/plans";
+import { BETA_GRANT, billingEnabled as plansBillingEnabled } from "../src/lib/plans";
 import {
   assertChallengeAllowsWork,
   challengeCoversDefense,
@@ -339,18 +339,18 @@ describe("challenge links", () => {
     ).rejects.toThrow(/daily challenge limit/i);
 
     process.env.CHALLENGE_GLOBAL_DAILY_CAP = "100";
-    const broke = await signIn(nextEmail("broke"));
-    await expect(
-      createChallenge({ user: broke, subject: "No challenge credit", difficulty: "standard" }),
-    ).rejects.toThrow(/challenge credit/i);
-    await fund(broke, 1);
     process.env.BETA_BUDGET_EUR = "0";
+    const broke = await signIn(nextEmail("broke"));
     const held = await createChallenge({
       user: broke,
       subject: "Credit hold without a second reserve",
       difficulty: "standard",
     });
     expect(held.slug).toMatch(/^[a-z0-9]{8}$/);
+    await createChallenge({ user: broke, subject: "Second beta credit", difficulty: "standard" });
+    await expect(
+      createChallenge({ user: broke, subject: "No challenge credit left", difficulty: "standard" }),
+    ).rejects.toThrow(/challenge credit/i);
     process.env.BETA_BUDGET_EUR = "1000";
     const challenger = await signIn(nextEmail("two-links"));
     await fund(challenger);
@@ -433,7 +433,7 @@ describe("challenge links", () => {
     await revokeChallenge(revoked.slug, creator);
     expect((await getPublicChallenge(revoked.slug, null))?.status).toBe("revoked");
     expect((await ledgerForSlug(revoked.slug)).map((row) => row.action).sort()).toEqual(["hold", "refund"]);
-    expect((await getBalance(creator.id)).challenge).toBe(2);
+    expect((await getBalance(creator.id)).challenge).toBe(2 + BETA_GRANT.challenge);
     await expect(
       claimChallenge({ slug: revoked.slug, user: claimer, ip: nextIp(), adultConfirmed: true }),
     ).rejects.toThrow(/revoked/i);
@@ -474,7 +474,7 @@ describe("challenge links", () => {
     const ledger = await ledgerForSlug(hidden.created.slug);
     expect(ledger.map((row) => row.action).sort()).toEqual(["consume", "grant", "hold"]);
     expect((await getBalance(hidden.defender.id)).challenge).toBe(1);
-    expect((await getBalance(hidden.creator.id)).challenge).toBe(0);
+    expect((await getBalance(hidden.creator.id)).challenge).toBe(BETA_GRANT.challenge);
 
     const kept = await run("Private subject line", "private", "paid");
     const privateGate = await receiptGate(kept.receipt.payload.id, null);
@@ -495,7 +495,7 @@ describe("challenge links", () => {
       "hold",
       "refund",
     ]);
-    expect((await getBalance(kept.creator.id)).challenge).toBe(1);
+    expect((await getBalance(kept.creator.id)).challenge).toBe(1 + BETA_GRANT.challenge);
     expect((await getBalance(kept.defender.id)).challenge).toBe(1);
 
     const names = (await challengeEvents(published.created.slug)).map((row) => row.event);
@@ -571,7 +571,7 @@ describe("challenge links", () => {
     expect(closureCopy(view!.status)).toBe("This challenge is closed. Nothing was posted.");
     expect(closureCopy("closed")!.toLowerCase()).not.toContain("declin");
     expect((await ledgerForSlug(turnedDown.slug)).map((row) => row.action).sort()).toEqual(["hold", "refund"]);
-    expect((await getBalance(creator.id)).challenge).toBe(3);
+    expect((await getBalance(creator.id)).challenge).toBe(3 + BETA_GRANT.challenge);
 
     const accepted = await createChallenge({
       user: creator,
