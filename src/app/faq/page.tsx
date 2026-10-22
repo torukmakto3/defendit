@@ -109,19 +109,26 @@ export default function FaqPage() {
         </p>
       </LegalSection>
 
+      <LegalSection title="Can I speak the answers?">
+        <p>
+          Standard can be typed or spoken. Hard and Expert are spoken, unless you choose the text
+          option for accessibility. A spoken interview starts when voice is configured. Otherwise
+          you answer on the page.
+        </p>
+      </LegalSection>
+
       <LegalSection title="How do refunds work?">
         <p>
           A refund is credit in the wallet. Declined, expired, and revoked challenges, and
-          abandoned defenses, return the held credit. The card is not refunded.
+          abandoned defenses, return the held credit. The card is not refunded. If a consumer-law
+          right requires money back, the refund is money.
         </p>
         <p>
-          A refund back to the card is the exception. It removes only the unspent credits from that
-          purchase, and the balance does not go below zero. If a consumer-law right requires money
-          back, the refund is money. The{" "}
+          Card refunds, disputes, and the customer portal are not available. The{" "}
           <a className="text-[var(--blueprint)] underline" href="/terms">
             terms
           </a>{" "}
-          spell that out.
+          say what will apply when card payments open.
         </p>
       </LegalSection>
 

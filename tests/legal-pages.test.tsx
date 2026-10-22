@@ -23,6 +23,7 @@ import { LEGAL_UPDATED, OPERATOR_EMAIL, OPERATOR_NAME } from "../src/lib/operato
 import { BETA_GRANT, formatEur, getPlan, PACKS, PAYG_CENTS } from "../src/lib/plans";
 import { RATE_LIMIT_ROW_MAX_AGE_MS } from "../src/lib/ratelimit";
 import { documentTtlHours, retentionDays } from "../src/lib/retention";
+import { RUBRIC_VERSION } from "../src/lib/rubric";
 import { bandFor } from "../src/lib/score";
 import {
   CHALLENGE_STRONG_MIN_SCORE,
@@ -83,8 +84,12 @@ describe("public pages", () => {
     expect(terms).toContain(formatEur(getPlan("team").priceCents.month ?? 0));
     expect(terms).toContain(formatEur(getPlan("enterprise").priceCents.month ?? 0));
     expect(terms).toContain(formatEur(getPlan("enterprise").overageCents ?? 0));
-    expect(terms).toContain("dit_defense_payg");
-    expect(terms).toContain("dit_enterprise_extra_unit");
+    expect(terms).toContain("Credits are granted as shown at checkout");
+    expect(terms).not.toContain("dit_");
+    expect(terms).not.toContain("The app calls this plan");
+    const priceList = readFileSync(join(root, "src/components/price-list.tsx"), "utf8");
+    expect(priceList).not.toContain("dit_");
+    expect(priceList).not.toContain("The app calls this plan");
     expect(terms).toContain(String(BETA_GRANT.challenge));
     expect(terms).toContain(String(BETA_GRANT.learnSlots));
     expect(terms).toContain(formatEur(Math.round(betaBudgetEur() * 100)));
@@ -117,6 +122,14 @@ describe("public pages", () => {
     expect(how).toContain("Still sharpening");
     expect(how).toContain("Defended · Strong");
     expect(how).toContain(`temperature ${GRADING_TEMPERATURE}`);
+    expect(how).toContain(RUBRIC_VERSION);
+    const howSrc = readFileSync(join(root, "src/app/how-it-works/page.tsx"), "utf8");
+    expect(howSrc).toContain("RUBRIC_VERSION");
+    expect(howSrc).not.toContain(`"${RUBRIC_VERSION}"`);
+    expect(how).toContain("typed or spoken");
+    expect(how).toContain("text option for accessibility");
+    expect(faq).toContain("Can I speak the answers?");
+    expect(faq).toContain("text option for accessibility");
     expect(how).toContain("/r/[id]");
     expect(how).toContain("/verify/[id]");
     expect(how).toContain("SHA-256");
@@ -157,6 +170,12 @@ describe("public pages", () => {
     expect(terms).toContain("not a certification");
     expect(faq).toContain("Opting out");
     expect(terms).toContain("Portuguese law");
+    expect(terms).toContain("When card payments open");
+    expect(terms).toContain("are not in effect");
+    expect(terms).toContain("produced by AI models");
+    expect(terms).toContain("Article 22");
+    expect(terms).toContain("not kept after the defense");
+    expect(terms).toContain('href="/privacy"');
     expect(terms).toContain("keyed hash");
     expect(terms).toContain("unkeyed hash");
     expect(terms).toContain(RATE_LIMIT_MESSAGE);
@@ -189,8 +208,9 @@ describe("public pages", () => {
     expect(layout).toContain("<SiteFooter");
   });
 
-  it("puts the credit purchase sentence on the out-of-credits notice", () => {
-    expect(credit).toContain("By buying credits you agree to the");
+  it("links the terms from the out-of-credits notice without a purchase sentence", () => {
+    expect(credit).toContain("Credits are covered by our");
+    expect(credit).not.toContain("By buying credits");
     expect(credit).toContain('href="/terms"');
     const defend = readFileSync(join(root, "src/app/d/[token]/defend/page.tsx"), "utf8");
     expect(defend).toContain("CreditTermsNotice");

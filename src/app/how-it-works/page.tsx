@@ -64,8 +64,9 @@ export default function HowItWorksPage() {
         </p>
         <p>
           Standard asks why the key claims hold. Hard adds what-ifs and a planted error. Expert
-          pushes on edge cases. Learn, if you use it first, stays private. Only Defend produces a
-          receipt.
+          pushes on edge cases. Standard can be typed or spoken. Hard and Expert are spoken, unless
+          you choose the text option for accessibility. A spoken interview starts when voice is
+          configured. Learn, if you use it first, stays private. Only Defend produces a receipt.
         </p>
       </LegalSection>
 

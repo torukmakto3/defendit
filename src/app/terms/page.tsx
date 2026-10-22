@@ -36,7 +36,7 @@ export default function TermsPage() {
         <>
           <p>
             These terms cover the beta, credits, and what a receipt means. {OPERATOR_NAME} operates
-            Defend It. Buying credits, or using a free beta credit, means you agree to them.
+            Defend It. Using Defend It, including a free beta credit, means you agree to them.
           </p>
           <p>
             How a file is kept is on the <a className="text-[var(--blueprint)] underline" href="/privacy">privacy page</a>.
@@ -67,25 +67,17 @@ export default function TermsPage() {
       <LegalSection title="Prices">
         <PriceList />
         <p>
-          Unused defenses and challenges that came with a subscription expire when the plan renews.
-          They are not added to the next period. Credits you bought, including packs, are not
-          cleared by a renewal. You can cancel Pro at the end of the period you already paid, from
-          the customer portal.
+          When a subscription renewal is paid, unused defenses and challenges that came with that
+          subscription expire. They are not added to the next period. Credits you bought, including
+          packs, are not cleared by a renewal.
         </p>
       </LegalSection>
 
       <LegalSection title="Refunds">
         <p>
-          The usual refund is credit in your wallet. The card is not refunded, and the card fee
-          stays with the payment processor. A declined challenge, an expired challenge, a challenge
-          the sender revokes while it is still open, or a defense you abandon, returns the held
-          credit this way.
-        </p>
-        <p>
-          A refund back to the card is the exception. It removes the unspent credits from that
-          purchase. The balance is not taken below zero. Credits you already spent are not pulled
-          from a different grant. A card dispute does the same to the remaining credits from that
-          purchase, and the account can be flagged.
+          The usual refund is credit in your wallet. A declined challenge, an expired challenge, a
+          challenge the sender revokes while it is still open, or a defense you abandon, returns
+          the held credit this way. The card is not refunded.
         </p>
         <p>
           If you are a consumer in the EU, a right the law still gives you is not replaced by
@@ -93,6 +85,25 @@ export default function TermsPage() {
           applies, the refund is money. A consumer can sometimes agree to receive digital credits
           immediately and give up the 14-day withdrawal right. That agreement has to be separate
           and clear. This page does not collect it.
+        </p>
+      </LegalSection>
+
+      <LegalSection title="When card payments open">
+        <p>
+          Card checkout is off. The rules in this section are not in effect. They describe what
+          will apply once card payments are on.
+        </p>
+        <p>
+          A refund back to the card will remove the unspent credits from that purchase. The balance
+          will not be taken below zero. Credits already spent will not be pulled from a different
+          grant. A card dispute will do the same to the remaining credits from that purchase, and
+          the account can be flagged.
+        </p>
+        <p>
+          When a subscription ends, unused credits from that subscription will expire. You will be
+          able to cancel Pro at the end of the period already paid, from the customer portal.
+          Switching between Pro and Team will not be offered there. That portal is not available
+          yet. Checkout will not add tax on top of the listed prices until a VAT registration is on.
         </p>
       </LegalSection>
 
@@ -137,6 +148,21 @@ export default function TermsPage() {
         <p>
           Notes about timing, paste, and focus are reported beside the score. They are not part of
           the understanding score.
+        </p>
+        <p>
+          The score is produced by AI models. A person reviews a score on request. Email{" "}
+          <a className="text-[var(--blueprint)] underline" href={`mailto:${OPERATOR_EMAIL}`}>
+            {OPERATOR_EMAIL}
+          </a>
+          . That review is the one in Article 22.
+        </p>
+        <p>
+          The raw uploaded file is not kept after the defense. What else is kept, and for how long,
+          is on the{" "}
+          <a className="text-[var(--blueprint)] underline" href="/privacy">
+            privacy page
+          </a>
+          .
         </p>
       </LegalSection>
 

@@ -6,7 +6,7 @@ export function isCreditWall(status: number): boolean {
 export function CreditTermsNotice() {
   return (
     <p className="text-sm text-[var(--ink-2)]">
-      By buying credits you agree to the{" "}
+      Credits are covered by our{" "}
       <a href="/terms" className="text-[var(--blueprint)] underline">
         Terms
       </a>
