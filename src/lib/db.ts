@@ -297,6 +297,73 @@ CREATE TABLE IF NOT EXISTS stripe_events (
   event_type TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- A challenge wraps one sponsored defense. The document stays on the defense rows.
+CREATE TABLE IF NOT EXISTS challenges (
+  id TEXT PRIMARY KEY,
+  slug TEXT NOT NULL UNIQUE,
+  creator_user_id TEXT NOT NULL REFERENCES users(id),
+  target_hint TEXT,
+  subject TEXT NOT NULL,
+  source_url TEXT,
+  note TEXT,
+  difficulty TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  sponsor_type TEXT NOT NULL DEFAULT 'beta',
+  claimed_by_user_id TEXT REFERENCES users(id),
+  claimed_at TEXT,
+  expires_at TEXT NOT NULL,
+  finish_by TEXT,
+  request_id TEXT REFERENCES defense_requests(id),
+  deliverable_id TEXT,
+  session_id TEXT,
+  receipt_id TEXT,
+  visibility TEXT,
+  adult_confirmed_at TEXT,
+  created_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS challenge_events (
+  id TEXT PRIMARY KEY,
+  challenge_id TEXT NOT NULL,
+  event TEXT NOT NULL,
+  user_id TEXT,
+  meta TEXT,
+  created_at TEXT NOT NULL
+);
+
+-- A user who opts out cannot claim, and their email and handles cannot be targeted.
+CREATE TABLE IF NOT EXISTS challenge_opt_outs (
+  user_id TEXT PRIMARY KEY REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS challenge_opt_out_keys (
+  user_id TEXT NOT NULL REFERENCES users(id),
+  key_value TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+
+-- A signed-in person who is not the named target can hide one open challenge
+-- for themselves. The challenge stays open for everyone else.
+CREATE TABLE IF NOT EXISTS challenge_hides (
+  challenge_id TEXT NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (challenge_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_challenges_creator ON challenges(creator_user_id, status);
+CREATE INDEX IF NOT EXISTS idx_challenges_claimed ON challenges(claimed_by_user_id, status);
+-- One claimed (unfinished) challenge per defender. A count-then-update races
+-- under Postgres read committed; the partial unique index does not.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_challenges_one_claimed_defender
+  ON challenges (claimed_by_user_id) WHERE status = 'claimed';
+CREATE INDEX IF NOT EXISTS idx_challenges_request ON challenges(request_id);
+CREATE INDEX IF NOT EXISTS idx_challenges_receipt ON challenges(receipt_id);
+CREATE INDEX IF NOT EXISTS idx_challenges_created ON challenges(created_at);
+CREATE INDEX IF NOT EXISTS idx_challenge_events_challenge ON challenge_events(challenge_id, event);
 `;
 
 /** Columns added after a table first shipped: [table, column, definition]. */

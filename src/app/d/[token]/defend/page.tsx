@@ -168,7 +168,12 @@ export default function DefendPage() {
       if (result.error) throw new Error(result.error);
       if (!result.receipt?.payload?.id) throw new Error("Grading finished without a receipt. Retry.");
       dispatch({ type: "grade_ok" });
-      router.push(`/r/${result.receipt.payload.id}`);
+      const challenge = result.challenge as { slug?: string; needsChoice?: boolean } | null | undefined;
+      router.push(
+        challenge?.needsChoice && challenge.slug
+          ? `/c/${challenge.slug}/publish`
+          : `/r/${result.receipt.payload.id}`,
+      );
     } catch (e) {
       dispatch({ type: "grade_fail" });
       setError(e instanceof Error ? e.message : "Grading failed");

@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { getUserFromRequest } from "@/lib/auth";
+import { receiptGate } from "@/lib/challenges";
 import { jsonError } from "@/lib/http";
 import { getReceipt } from "@/lib/services";
 import { generateStampSvg } from "@/lib/stamp";
@@ -13,6 +15,8 @@ export const runtime = "nodejs";
  */
 export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
+  const gate = await receiptGate(id, await getUserFromRequest(req));
+  if (gate.mode === "challenge" && !gate.includeReceipt) return jsonError(404, "Stamp not found");
   const receipt = await getReceipt(id);
   if (!receipt) return jsonError(404, "Stamp not found");
   const url = new URL(req.url);

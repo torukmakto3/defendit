@@ -1,6 +1,11 @@
 import type { User } from "./auth";
 import { extractClaims } from "./claims";
-import { assertLearnSlotAvailable, finishDefenseCredit, refundStaleDefenseHolds } from "./credits";
+import {
+  assertLearnSlotAvailable,
+  finishDefenseCredit,
+  refundStaleDefenseHolds,
+  reserveChallengeDefenseBudget,
+} from "./credits";
 import { getPublicKeyHex, sha256Hex } from "./crypto";
 import { dashboardWorkspaceHref } from "./dashboard-links";
 import { getDb, type Db } from "./db";
@@ -46,6 +51,14 @@ import type {
   SignedReceipt,
   TurnRecord,
 } from "./types";
+import {
+  assertChallengeAllowsWork,
+  challengeCompletionHint,
+  expireDueChallenges,
+  noteChallengeDefended,
+  noteChallengeSession,
+  noteChallengeUpload,
+} from "./challenges";
 import { decryptField, decryptJson, encryptField, encryptJson } from "./vault";
 
 /**
@@ -421,6 +434,7 @@ export async function ingestDeliverable(opts: {
   if (request.status === "defended") {
     throw new HttpError(409, "This deliverable has already been defended.");
   }
+  await assertChallengeAllowsWork(request.id);
 
   const { upload, deliverableId } = await withLlmScope({ requestId: request.id, user: opts.user }, async () => {
     const upload = await prepareUpload(opts.fileName, opts.buffer, opts.mimeType);
@@ -457,6 +471,7 @@ export async function ingestDeliverable(opts: {
     });
     return { upload, deliverableId };
   });
+  await noteChallengeUpload(request.id, deliverableId);
 
   return {
     deliverableId,
@@ -507,6 +522,12 @@ export async function startSession(opts: {
   }
   if (opts.mode === "defend" && request.status === "defended") {
     throw new HttpError(409, "This deliverable has already been defended.");
+  }
+  if (opts.mode === "defend") {
+    await assertChallengeAllowsWork(request.id);
+    // Beta challenge defenses skip the defender's credit in the route and
+    // reserve the shared euro budget here instead.
+    await reserveChallengeDefenseBudget(request.id, opts.user.id);
   }
 
   const sessionId = newId("ses");
@@ -598,6 +619,7 @@ export async function startSession(opts: {
 
   if (shown) await shown;
   await refreshRequestUsage(request.id);
+  if (opts.mode === "defend") await noteChallengeSession(request.id, sessionId);
   return { sessionId, plan, channel };
 }
 
@@ -948,15 +970,22 @@ export async function completeDefendSession(opts: {
     const existing = await receiptForSession(db, session.id);
     if (existing) {
       await finishDefenseCredit(opts.user.id, session.id);
+      await noteChallengeDefended(session.request_id, {
+        sessionId: session.id,
+        deliverableId: session.deliverable_id,
+        receiptId: existing.payload.id,
+      });
       return {
         receipt: existing,
         score: existing.payload.score,
         flagged: await sessionFlagged(db, session, plan),
         stampPath: `/api/stamp/${existing.payload.id}`,
         idempotent: true,
+        challenge: await challengeCompletionHint(session.request_id),
       };
     }
   }
+  await assertChallengeAllowsWork(session.request_id);
   if (session.status === "grading") {
     if (!gradingClaimIsStale(session.grading_claimed_at)) {
       throw new HttpError(409, "Grading is still running. Retry in a moment.");
@@ -1117,6 +1146,11 @@ export async function completeDefendSession(opts: {
       // The Learn deck was cached above, while this text was still readable.
       await tx.run(`UPDATE deliverables SET text_enc = NULL WHERE id = ?`, [deliverable.id]);
     });
+    await noteChallengeDefended(session.request_id, {
+      sessionId: session.id,
+      deliverableId: deliverable.id,
+      receiptId: signed.payload.id,
+    });
   } catch (e) {
     // Release the claim so the creator can retry after a grading or storage failure.
     await db.run(
@@ -1132,6 +1166,7 @@ export async function completeDefendSession(opts: {
     score: aggregateScore(grades, plan),
     flagged: shouldFlagForHuman(grades, plan) || integrity.status !== "Clear",
     stampPath: `/api/stamp/${signed.payload.id}`,
+    challenge: await challengeCompletionHint(session.request_id),
   };
 }
 
@@ -1578,6 +1613,7 @@ async function rememberStudyDeck(deliverableId: string, waitForCards: boolean): 
 /** Delete expired content. Safe to run often: daily cron plus an hourly in-process backstop. */
 export async function purgeExpired() {
   const db = await getDb();
+  await expireDueChallenges(db);
   const nowIso = new Date().toISOString();
   // Full retention (purge_after) deletes the deck in this same run, so only
   // cache when the text timer is up and the deliverable itself is still kept.

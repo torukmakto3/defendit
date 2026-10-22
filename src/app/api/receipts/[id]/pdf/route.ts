@@ -1,3 +1,5 @@
+import { getUserFromRequest } from "@/lib/auth";
+import { receiptGate } from "@/lib/challenges";
 import { jsonError } from "@/lib/http";
 import { verifyReceipt } from "@/lib/receipt";
 import { renderReceiptPdf } from "@/lib/receipt-pdf";
@@ -6,8 +8,10 @@ import { getReceipt } from "@/lib/services";
 export const runtime = "nodejs";
 
 /** One-page certificate to attach next to the deliverable. */
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
+  const gate = await receiptGate(id, await getUserFromRequest(req));
+  if (gate.mode === "challenge" && !gate.includeReceipt) return jsonError(404, "Not found");
   const receipt = await getReceipt(id);
   if (!receipt) return jsonError(404, "Not found");
   const pdf = await renderReceiptPdf(receipt, verifyReceipt(receipt));

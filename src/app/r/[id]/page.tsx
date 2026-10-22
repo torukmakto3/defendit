@@ -4,15 +4,33 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Companion } from "@/components/companion/Companion";
+import { ShareBar } from "@/components/challenge/actions";
+import { PublicChallengeResult } from "@/components/challenge/PublicResult";
 import { LoadTest } from "@/components/receipt/LoadTest";
 import { claimResults, gradedWithLine } from "@/components/receipt/metrics";
 import { PlotterStamp } from "@/components/receipt/PlotterStamp";
 import { ToleranceChart } from "@/components/receipt/ToleranceChart";
 import type { SignedReceipt } from "@/lib/types";
 
+interface ChallengeResultView {
+  slug: string;
+  audience: "public" | "defender";
+  visibility: string;
+  tier: string | null;
+  score: number | null;
+  showScore: boolean;
+  headline: string;
+  verifyPath: string | null;
+  sponsorLabel: string;
+  subject: string;
+  legend: string;
+  shareUrl: string;
+}
+
 interface ReceiptView {
-  receipt: SignedReceipt;
-  signatureValid: boolean;
+  receipt: SignedReceipt | null;
+  signatureValid: boolean | null;
+  challengeResult?: ChallengeResultView | null;
 }
 
 export default function ReceiptPage() {
@@ -22,18 +40,17 @@ export default function ReceiptPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`/api/receipts/${id}`)
+    fetch(`/api/receipts/${id}?view=1`)
       .then(async (r) => {
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || "Not found");
         setData(j);
+        if (j.challengeResult?.audience === "public") return;
+        const labelsRes = await fetch(`/api/receipts/${id}/labels`);
+        const labelsJson = labelsRes.ok ? await labelsRes.json() : { labels: null };
+        setLabels(labelsJson.labels ?? null);
       })
       .catch((e) => setError(e.message));
-    // Claim names only come back for the receipt's creator, within retention.
-    fetch(`/api/receipts/${id}/labels`)
-      .then((r) => (r.ok ? r.json() : { labels: null }))
-      .then((j) => setLabels(j.labels ?? null))
-      .catch(() => setLabels(null));
   }, [id]);
 
   if (error) {
@@ -47,6 +64,17 @@ export default function ReceiptPage() {
     return (
       <div className="shell">
         <p>Loading receipt…</p>
+      </div>
+    );
+  }
+
+  if (data.challengeResult?.audience === "public") {
+    return <PublicChallengeResult result={data.challengeResult} />;
+  }
+  if (!data.receipt) {
+    return (
+      <div className="shell">
+        <p>This result is not published.</p>
       </div>
     );
   }
@@ -119,6 +147,28 @@ export default function ReceiptPage() {
         </p>
       </section>
 
+      {data.challengeResult &&
+        (data.challengeResult.visibility === "public" || data.challengeResult.visibility === "score_hidden") && (
+          <div className="panel grid gap-3 p-5">
+            <h2 className="text-xl font-bold">Share the result</h2>
+            <p className="text-sm text-[var(--ink-2)]">
+              Your post, if you want one. Edit it on X before it goes out. Sharing does not change the result
+              or your credit.
+            </p>
+            <ShareBar
+              slug={data.challengeResult.slug}
+              url={data.challengeResult.shareUrl}
+              text={defenderShareText(data.challengeResult)}
+            />
+            <Link href="/c/new" className="text-sm text-[var(--blueprint)]">
+              Defended mine. Pass a challenge on.
+            </Link>
+          </div>
+        )}
+      {data.challengeResult?.visibility === "private" && (
+        <p className="text-sm text-[var(--ink-2)]">You kept this private. Nothing is posted.</p>
+      )}
+
       <div className="panel p-5">
         <h2 className="text-xl font-bold">Send it your way</h2>
         <p className="mt-2 text-sm text-[var(--ink-2)]">
@@ -141,4 +191,17 @@ export default function ReceiptPage() {
       <p className="text-xs text-[var(--ink-2)]">{gradedWithLine(p)}</p>
     </div>
   );
+}
+
+function defenderShareText(result: ChallengeResultView): string {
+  if (result.visibility !== "public") {
+    return "Took the DefendIT challenge on my write-up. Keeping the score private.";
+  }
+  if (result.tier === "Strong") {
+    return "Challenge accepted, challenge defended. Strong on my own file, signed and bound to the exact file. Verify it yourself.";
+  }
+  if (result.tier === "Still sharpening") {
+    return "Took the challenge. Still sharpening. Learned more in 8 minutes than in a week of tweaking. Round two soon.";
+  }
+  return "Someone challenged me, so I defended it. Receipt below, hash-checked. Who's next?";
 }

@@ -3,6 +3,7 @@ import { JetBrains_Mono, Public_Sans, Sora } from "next/font/google";
 import Link from "next/link";
 import { AccountMenu } from "@/components/auth";
 import { ThemeToggle, themeBootScript } from "@/components/theme";
+import { challengesEnabled } from "@/lib/challenge-tier";
 import "./globals.css";
 
 const display = Sora({ subsets: ["latin"], weight: ["600", "700"], variable: "--font-display" });
@@ -38,6 +39,11 @@ export default function RootLayout({
               <Link href="/learn" className="hover:text-[var(--blueprint)]">
                 Learn
               </Link>
+              {challengesEnabled() && (
+                <Link href="/c/new" className="hover:text-[var(--blueprint)]">
+                  Challenge
+                </Link>
+              )}
               <Link href="/request" className="hover:text-[var(--blueprint)]">
                 Request
               </Link>
