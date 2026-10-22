@@ -77,9 +77,9 @@ Locally, the sign-in card shows an on-screen magic link (no email provider requi
    - `https://defendit-two.vercel.app/api/auth/google/callback`
    - `http://localhost:3000/api/auth/google/callback`
 5. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. Set `APP_URL=https://defendit-two.vercel.app` (or `NEXT_PUBLIC_APP_URL` to that same origin). The redirect URI is that origin plus `/api/auth/google/callback`. If both are unset on Vercel, the origin is `https://$VERCEL_PROJECT_PRODUCTION_URL`.
-6. Set `ADMIN_EMAILS` to the verified email, for this deployment `luisnunez1940@hotmail.com`.
+6. Set `ADMIN_EMAILS` to the verified email for this deployment.
 
-Admin access follows that verified email, compared case-insensitively. The Hotmail address has to be added and verified on the Google account (Google Account → Personal info → Email). Signing in with a different Gmail does not open `/admin`. The sign-in screen asks Google to show the account picker so the right account can be chosen.
+Admin access follows that verified email, compared case-insensitively. That address has to be added and verified on the Google account (Google Account → Personal info → Email). Signing in with a different Gmail does not open `/admin`. The sign-in screen asks Google to show the account picker so the right account can be chosen.
 
 The Google button is hidden when `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` is missing. The email form is shown only when Resend is configured (`RESEND_API_KEY` and `EMAIL_FROM`) or an on-screen dev link is allowed. Otherwise the card says sign-in is not available, instead of failing with a 503.
 

@@ -3,6 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import PrivacyPage from "../src/app/privacy/page";
+import { OPERATOR_NAME } from "../src/lib/operator";
 import { PRIVACY_UPDATED } from "../src/lib/privacy";
 import { SiteFooter } from "../src/components/site-footer";
 
@@ -111,7 +112,8 @@ describe("privacy page", () => {
     expect(html).toContain("Comissão Nacional de Proteção de Dados");
     expect(html).toContain("https://www.cnpd.pt/");
     expect(html).toContain("geral@cnpd.pt");
-    expect(html).toContain("Luis Nunez");
+    expect(html).toContain(OPERATOR_NAME);
+    expect(html).not.toContain("Luis");
     expect(html).toContain("mailto:tramuntanabtc@gmail.com");
     expect(html).toContain("There is no delete button");
     expect(html).not.toContain("TODO(legal review)");
