@@ -39,6 +39,8 @@ const nextConfig: NextConfig = {
       "./node_modules/@resvg/**/*",
       "./assets/fonts/**/*",
     ],
+    // Receipt share cards read the same fonts from disk on the node runtime.
+    "/r/**/*": ["./assets/fonts/**/*"],
   },
   async headers() {
     return [
