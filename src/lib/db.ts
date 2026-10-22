@@ -347,6 +347,10 @@ CREATE TABLE IF NOT EXISTS challenge_opt_out_keys (
 
 CREATE INDEX IF NOT EXISTS idx_challenges_creator ON challenges(creator_user_id, status);
 CREATE INDEX IF NOT EXISTS idx_challenges_claimed ON challenges(claimed_by_user_id, status);
+-- One claimed (unfinished) challenge per defender. A count-then-update races
+-- under Postgres read committed; the partial unique index does not.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_challenges_one_claimed_defender
+  ON challenges (claimed_by_user_id) WHERE status = 'claimed';
 CREATE INDEX IF NOT EXISTS idx_challenges_request ON challenges(request_id);
 CREATE INDEX IF NOT EXISTS idx_challenges_receipt ON challenges(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_challenges_created ON challenges(created_at);

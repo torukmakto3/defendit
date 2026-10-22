@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import type { User } from "@/lib/auth";
+import { challengeCoversDefense } from "@/lib/challenges";
 import { abortDefenseCredit, attachDefenseCredit, beginDefenseCredit } from "@/lib/credits";
 import { handleError, HttpError, limitOr429, requireUser } from "@/lib/http";
 import { LIMITS } from "@/lib/ratelimit";
@@ -26,7 +27,7 @@ export async function POST(req: Request) {
     const limited = await limitOr429(`start:${guard.user.id}`, LIMITS.sessionStartPerUser);
     if (limited) return limited;
     const body = schema.parse(await req.json());
-    if (body.mode === "defend") {
+    if (body.mode === "defend" && !(await challengeCoversDefense(body.token, guard.user.id))) {
       const reserved = await beginDefenseCredit(guard.user.id);
       creditKey = reserved.idempotencyKey;
     }

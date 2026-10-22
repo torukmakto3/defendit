@@ -1,12 +1,11 @@
 import { normalizeEmail, type User } from "./auth";
 import { assertPaidChallengesOpen, billingEnabled } from "./billing";
-import { challengesEnabled, TIER_LEGEND, tierForScore, type ResultTier } from "./challenge-tier";
+import { challengesEnabled, publicTierTitle, TIER_LEGEND, tierForScore, type ResultTier } from "./challenge-tier";
 import { assertNotSelfClaim, consumeCredit, holdCredit, linkChallengedDefense, refundCredit } from "./credits";
 import { appUrl } from "./config";
 import { getDb, type Db } from "./db";
 import { HttpError } from "./errors";
 import { newId, newToken } from "./ids";
-import { sessionBudgetUsd } from "./llm/usage";
 import { rateLimit } from "./ratelimit";
 import type { Difficulty, ReceiptOutcome, SignedReceipt } from "./types";
 
@@ -14,9 +13,13 @@ import type { Difficulty, ReceiptOutcome, SignedReceipt } from "./types";
  * Challenge links. A challenge is a sponsored defense: the claimer uploads
  * and defends through the normal flow, and the sponsor covers the cost.
  * Beta challenges (`sponsor_type=beta`) are free and badged "Sponsored by
- * DefendIT". Paid challenges hold a credit through `src/lib/credits.ts`
- * while BILLING_ENABLED is on, and never call a payment provider. A refund
- * returns that credit. The creator cannot claim their own link.
+ * DefendIT". Creating a challenge holds the challenger's challenge credit
+ * through `src/lib/credits.ts`. Decline, expiry, revoke, and a private result
+ * refund that credit. A published result consumes it. The defender's own
+ * defense credit is not spent: in beta the challenge sponsors the defense.
+ * The euro cap is the ledger's `BETA_BUDGET_EUR`. Paid challenges stay off
+ * unless billing is on, and never call a payment provider. The creator
+ * cannot claim their own link. A decline is stored, and never shown publicly.
  *
  * Credits and sponsorship do not depend on posting or sharing. Share clicks
  * are counted and then ignored by every gate.
@@ -26,7 +29,7 @@ export const SPONSOR_LABEL = "Sponsored by DefendIT";
 export { challengesEnabled, TIER_LEGEND, tierForScore };
 export type { ResultTier };
 
-export type ChallengeStatus = "open" | "claimed" | "defended" | "expired" | "revoked";
+export type ChallengeStatus = "open" | "claimed" | "defended" | "expired" | "revoked" | "declined";
 export type SponsorType = "beta" | "paid";
 export type ChallengeVisibility = "public" | "score_hidden" | "private";
 export type ChallengeEventName =
@@ -55,14 +58,6 @@ function envInt(name: string, fallback: number): number {
   return Math.floor(n);
 }
 
-function envNumber(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw == null || raw.trim() === "") return fallback;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return fallback;
-  return n;
-}
-
 /** Unfinished challenges (open or claimed) one challenger may have at once. */
 export function openPerCreator(): number {
   return envInt("CHALLENGE_OPEN_PER_CREATOR", 3);
@@ -73,7 +68,11 @@ export function dailyPerCreator(): number {
   return envInt("CHALLENGE_DAILY_PER_CREATOR", 3);
 }
 
-/** Claimed, not-yet-finished challenges one defender may hold. */
+/**
+ * Claimed, not-yet-finished challenges one defender may hold.
+ * The partial unique index caps this at one. A higher setting cannot
+ * override that, because two claimed rows for one defender race on Postgres.
+ */
 export function openPerDefender(): number {
   return envInt("CHALLENGE_OPEN_PER_DEFENDER", 1);
 }
@@ -81,16 +80,6 @@ export function openPerDefender(): number {
 /** Beta challenges created per rolling 24 hours, across everyone. Provisional. */
 export function globalDailyCap(): number {
   return envInt("CHALLENGE_GLOBAL_DAILY_CAP", 25);
-}
-
-/**
- * Euro cap for sponsored beta defenses (`BETA_BUDGET_EUR`, default 150).
- * Each open or claimed beta challenge reserves one defense budget
- * (`SESSION_BUDGET_USD`, default 3). Defended ones count their recorded
- * model cost. The comparison is numeric: model cost is still stored in USD.
- */
-export function betaBudgetEur(): number {
-  return envNumber("BETA_BUDGET_EUR", 150);
 }
 
 function unclaimedDays(): number {
@@ -172,6 +161,7 @@ function asStatus(value: string): ChallengeStatus {
     case "defended":
     case "expired":
     case "revoked":
+    case "declined":
       return value;
     default: {
       const unknown: never = value as never;
@@ -276,12 +266,11 @@ function challengeHoldKey(challengeId: string): string {
   return `hold:challenge:${challengeId}`;
 }
 
-/** Return a paid challenge hold to the challenger's credit balance. Beta holds nothing. */
+/** Return the challenger's held challenge credit. No hold means nothing to refund. */
 async function refundChallengeHold(
   db: Db,
   row: { id: string; creator_user_id: string; sponsor_type: string },
 ): Promise<void> {
-  if (row.sponsor_type !== "paid") return;
   const key = challengeHoldKey(row.id);
   const hold = await db.get(`SELECT id FROM credit_ledger WHERE idempotency_key = ?`, [key]);
   if (!hold) return;
@@ -297,7 +286,6 @@ async function consumeChallengeHold(
   db: Db,
   row: { id: string; creator_user_id: string; sponsor_type: string },
 ): Promise<void> {
-  if (row.sponsor_type !== "paid") return;
   const key = challengeHoldKey(row.id);
   const hold = await db.get(`SELECT id FROM credit_ledger WHERE idempotency_key = ?`, [key]);
   if (!hold) return;
@@ -307,6 +295,14 @@ async function consumeChallengeHold(
     idempotencyKey: `consume:challenge:${row.id}`,
     db,
   });
+}
+
+function isUniqueViolation(e: unknown): boolean {
+  if (!e || typeof e !== "object") return false;
+  const code = "code" in e ? String(e.code) : "";
+  if (code === "SQLITE_CONSTRAINT_UNIQUE" || code === "23505") return true;
+  const message = e instanceof Error ? e.message : "";
+  return /UNIQUE constraint failed|duplicate key value/i.test(message);
 }
 
 async function loadBySlug(db: Db, slug: string): Promise<ChallengeRow | undefined> {
@@ -339,20 +335,6 @@ async function targetBlocked(db: Db, targetHint: string | undefined): Promise<bo
     [handle, email],
   );
   return !!row;
-}
-
-async function betaCommittedUsd(db: Db): Promise<number> {
-  const reserve = sessionBudgetUsd();
-  const spent = await db.get<{ n: number | string }>(
-    `SELECT COALESCE(SUM(s.cost_usd), 0) AS n
-     FROM challenges c JOIN sessions s ON s.id = c.session_id
-     WHERE c.sponsor_type = 'beta' AND c.status = 'defended'`,
-  );
-  const reserved = await db.get<{ n: number | string }>(
-    `SELECT COUNT(*) AS n FROM challenges
-     WHERE sponsor_type = 'beta' AND status IN ('open', 'claimed')`,
-  );
-  return countOf(spent) + countOf(reserved) * reserve;
 }
 
 function newSlug(): string {
@@ -477,10 +459,6 @@ export async function createChallenge(input: CreateChallengeInput): Promise<Crea
       if (countOf(global) >= globalDailyCap()) {
         throw new HttpError(403, "The daily challenge limit has been reached.");
       }
-      const committed = await betaCommittedUsd(tx);
-      if (committed + sessionBudgetUsd() > betaBudgetEur()) {
-        throw new HttpError(403, "The DefendIT beta challenge budget is used up.");
-      }
     }
 
     const id = newId("chg");
@@ -498,17 +476,15 @@ export async function createChallenge(input: CreateChallengeInput): Promise<Crea
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
       [id, slug, input.user.id, targetHint, subject, sourceUrl, note, difficulty, sponsorType, expiresAt, now],
     );
-    if (sponsorType === "paid") {
-      await holdCredit({
-        userId: input.user.id,
-        kind: "challenge",
-        amount: 1,
-        idempotencyKey: challengeHoldKey(id),
-        refType: "challenge",
-        refId: id,
-        db: tx,
-      });
-    }
+    await holdCredit({
+      userId: input.user.id,
+      kind: "challenge",
+      amount: 1,
+      idempotencyKey: challengeHoldKey(id),
+      refType: "challenge",
+      refId: id,
+      db: tx,
+    });
     await recordEvent(tx, id, "created", input.user.id, { sponsor: sponsorType });
     return { id, slug, expiresAt, sponsorType };
   });
@@ -524,7 +500,8 @@ export async function createChallenge(input: CreateChallengeInput): Promise<Crea
 
 export interface PublicChallenge {
   slug: string;
-  status: ChallengeStatus;
+  /** `closed` is a declined challenge. The public object never says declined. */
+  status: ChallengeStatus | "closed";
   subject: string;
   sourceUrl: string | null;
   note: string | null;
@@ -536,6 +513,8 @@ export interface PublicChallenge {
   finishBy: string | null;
   visibility: ChallengeVisibility | null;
   canClaim: boolean;
+  /** The target can turn an open challenge down, or the one they already accepted. */
+  canTurnDown: boolean;
   claimBlock: string | null;
   isClaimer: boolean;
   isCreator: boolean;
@@ -590,9 +569,10 @@ export async function getPublicChallenge(
   }
 
   const resultPublic = status === "defended" && (visibility === "public" || visibility === "score_hidden");
+  const shownStatus = status === "declined" ? "closed" : status;
   return {
     slug: row.slug,
-    status,
+    status: shownStatus,
     subject: row.subject,
     sourceUrl: row.source_url,
     note: row.note,
@@ -604,6 +584,10 @@ export async function getPublicChallenge(
     finishBy: row.finish_by,
     visibility: isCreator || isClaimer ? visibility : resultPublic ? visibility : null,
     canClaim: status === "open" && !!user && !isCreator && claimBlock == null,
+    canTurnDown:
+      !!user &&
+      !isCreator &&
+      ((status === "open" && claimBlock == null) || (status === "claimed" && isClaimer)),
     claimBlock: status === "open" ? claimBlock : null,
     isClaimer,
     isCreator,
@@ -659,12 +643,20 @@ export async function claimChallenge(opts: {
     }
 
     const finishBy = hoursFrom(now, finishHours());
-    const claimed = await tx.run(
-      `UPDATE challenges
-       SET status = 'claimed', claimed_by_user_id = ?, claimed_at = ?, finish_by = ?, adult_confirmed_at = ?
-       WHERE id = ? AND status = 'open' AND claimed_by_user_id IS NULL`,
-      [opts.user.id, now, finishBy, now, row.id],
-    );
+    let claimed: { changes: number };
+    try {
+      claimed = await tx.run(
+        `UPDATE challenges
+         SET status = 'claimed', claimed_by_user_id = ?, claimed_at = ?, finish_by = ?, adult_confirmed_at = ?
+         WHERE id = ? AND status = 'open' AND claimed_by_user_id IS NULL`,
+        [opts.user.id, now, finishBy, now, row.id],
+      );
+    } catch (e) {
+      if (isUniqueViolation(e)) {
+        throw new HttpError(403, "Finish your current challenge before accepting another.");
+      }
+      throw e;
+    }
     if (claimed.changes !== 1) throw new HttpError(409, "This challenge has already been claimed.");
     const held = await tx.get<{ n: number | string }>(
       `SELECT COUNT(*) AS n FROM challenges WHERE claimed_by_user_id = ? AND status = 'claimed'`,
@@ -718,6 +710,81 @@ export async function revokeChallenge(slug: string, user: User): Promise<void> {
   );
   if (updated.changes !== 1) throw new HttpError(409, "Only an open challenge can be revoked.");
   await refundChallengeHold(db, row);
+}
+
+/**
+ * The target turns the challenge down. Nothing public says "declined".
+ * The held challenge credit is refunded, the same as expiry and revoke.
+ */
+export async function declineChallenge(slug: string, user: User, ip: string): Promise<void> {
+  requireEnabled();
+  if (!/^[a-z0-9]{8}$/.test(slug)) throw new HttpError(404, "Challenge not found.");
+  const userLimited = await rateLimit(`challenge-decline:${user.id}`, claimAttemptLimit(), DAY_SEC);
+  if (!userLimited.ok) throw new HttpError(429, "Too many attempts. Try again later.");
+  const ipLimited = await rateLimit(`challenge-decline-ip:${ip}`, claimIpLimit(), HOUR_SEC);
+  if (!ipLimited.ok) throw new HttpError(429, "Too many attempts. Try again later.");
+
+  const db = await getDb();
+  if (await optedOut(db, user.id)) {
+    throw new HttpError(403, "You opted out of challenges. You're on the do-not-challenge list.");
+  }
+  await expireDueChallenges(db);
+  const row = await loadBySlug(db, slug);
+  if (!row) throw new HttpError(404, "Challenge not found.");
+  if (row.creator_user_id === user.id) {
+    throw new HttpError(403, "You created this challenge. Send the link to someone else.");
+  }
+  const status = asStatus(row.status);
+  switch (status) {
+    case "open":
+      break;
+    case "claimed":
+      if (row.claimed_by_user_id !== user.id) {
+        throw new HttpError(409, "This challenge has already been claimed.");
+      }
+      break;
+    case "expired":
+      throw new HttpError(410, "This challenge has expired.");
+    case "revoked":
+      throw new HttpError(410, "This challenge was revoked.");
+    case "declined":
+    case "defended":
+      throw new HttpError(409, "This challenge is closed.");
+    default: {
+      const unknown: never = status;
+      throw new HttpError(409, `This challenge is closed (${String(unknown)}).`);
+    }
+  }
+  const updated = await db.run(
+    `UPDATE challenges SET status = 'declined'
+     WHERE id = ? AND status = ? AND (status = 'open' OR claimed_by_user_id = ?)`,
+    [row.id, status, user.id],
+  );
+  if (updated.changes !== 1) throw new HttpError(409, "This challenge is closed.");
+  await refundChallengeHold(db, row);
+}
+
+/** What a public page may say about a closed challenge. Never the word declined. */
+export function closureCopy(status: ChallengeStatus | "closed"): string | null {
+  switch (status) {
+    case "open":
+      return null;
+    case "claimed":
+      return "Someone has accepted this challenge.";
+    case "defended":
+      return "This challenge is closed.";
+    case "expired":
+      return "This challenge has expired. Nothing was posted.";
+    case "revoked":
+      return "The challenger closed this link. Nothing was posted.";
+    case "declined":
+    case "closed":
+      return "This challenge is closed. Nothing was posted.";
+    default: {
+      const unknown: never = status;
+      return unknown;
+    }
+  }
 }
 
 export async function chooseVisibility(opts: {
@@ -958,8 +1025,11 @@ export async function receiptGate(receiptId: string, user: User | null): Promise
   };
 }
 
-/** Funnel count for a published result page. Sharing is not involved. */
-export async function recordResultView(receiptId: string, user: User | null): Promise<void> {
+/**
+ * Funnel count for a published result page. Sharing is not involved.
+ * One row per signed-in viewer, or per anonymous IP. Repeats do not add rows.
+ */
+export async function recordResultView(receiptId: string, user: User | null, ip = "unknown"): Promise<void> {
   const db = await getDb();
   const row = await db.get<{ id: string; visibility: string | null; claimed_by_user_id: string | null }>(
     `SELECT id, visibility, claimed_by_user_id FROM challenges WHERE receipt_id = ?`,
@@ -969,7 +1039,16 @@ export async function recordResultView(receiptId: string, user: User | null): Pr
   const visibility = asVisibility(row.visibility);
   if (visibility !== "public" && visibility !== "score_hidden") return;
   if (user && user.id === row.claimed_by_user_id) return;
-  await recordEvent(db, row.id, "result_viewed", user?.id ?? null);
+  const viewer = user?.id ?? `ip:${ip}`;
+  const meta = JSON.stringify({ viewer });
+  const prior = await db.get<{ id: string }>(
+    `SELECT id FROM challenge_events
+     WHERE challenge_id = ? AND event = 'result_viewed' AND (user_id = ? OR meta = ?)
+     LIMIT 1`,
+    [row.id, user?.id ?? "", meta],
+  );
+  if (prior) return;
+  await recordEvent(db, row.id, "result_viewed", user?.id ?? null, { viewer });
 }
 
 /** OG copy for a challenge landing card. No document text. */
@@ -1005,7 +1084,7 @@ export async function resultCardCopy(receiptId: string): Promise<{
     const show = gate.result.showScore && gate.result.score != null;
     return {
       kicker: gate.result.sponsorLabel,
-      title: show ? `Defended · ${gate.result.tier ?? "Defended"}` : "Defended",
+      title: show ? publicTierTitle(gate.result.tier) : "Defended",
       subtitle: show ? gate.result.subject.slice(0, 80) : (gate.result.tier ?? ""),
       foot: show ? "Signed receipt" : "Score not shown",
       score: show ? String(gate.result.score) : null,
@@ -1046,6 +1125,8 @@ export async function assertChallengeAllowsWork(requestId: string): Promise<void
       throw new HttpError(410, "This challenge has expired.");
     case "revoked":
       throw new HttpError(410, "This challenge was revoked.");
+    case "declined":
+      throw new HttpError(410, "This challenge is closed.");
     default: {
       const unknown: never = status;
       throw new HttpError(410, `This challenge is closed (${String(unknown)}).`);
@@ -1067,11 +1148,19 @@ export async function noteChallengeSession(requestId: string, sessionId: string)
     `UPDATE challenges SET session_id = ? WHERE request_id = ? AND status = 'claimed'`,
     [sessionId, requestId],
   );
-  const row = await db.get<{ id: string; creator_user_id: string; claimed_by_user_id: string | null }>(
-    `SELECT id, creator_user_id, claimed_by_user_id FROM challenges WHERE request_id = ?`,
+  const row = await db.get<{
+    id: string;
+    creator_user_id: string;
+    claimed_by_user_id: string | null;
+    sponsor_type: string;
+  }>(
+    `SELECT id, creator_user_id, claimed_by_user_id, sponsor_type FROM challenges WHERE request_id = ?`,
     [requestId],
   );
   if (!row?.claimed_by_user_id) return;
+  if (row.sponsor_type === "beta") {
+    await db.run(`UPDATE sessions SET sponsored = 1 WHERE id = ?`, [sessionId]);
+  }
   await linkChallengedDefense({
     challengeId: row.id,
     challengerUserId: row.creator_user_id,
@@ -1139,4 +1228,21 @@ export async function ledgerForSlug(
 
 export function paidChallengesEnabled(): boolean {
   return billingEnabled();
+}
+
+/**
+ * True when this defense belongs to a challenge the user accepted.
+ * The route then skips the defender's defense-credit hold. Beta sessions
+ * are marked sponsored in `noteChallengeSession`.
+ */
+export async function challengeCoversDefense(token: string, userId: string): Promise<boolean> {
+  const db = await getDb();
+  const row = await db.get<{ claimed_by_user_id: string | null }>(
+    `SELECT c.claimed_by_user_id
+     FROM challenges c
+     JOIN defense_requests r ON r.id = c.request_id
+     WHERE r.token = ? AND c.status = 'claimed'`,
+    [token],
+  );
+  return !!row && row.claimed_by_user_id === userId;
 }

@@ -3,25 +3,28 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { consumeMagicLink, requestMagicLink, type User } from "../src/lib/auth";
-import { tierForScore } from "../src/lib/challenge-tier";
+import { publicTierTitle, tierForScore } from "../src/lib/challenge-tier";
+import { billingEnabled } from "../src/lib/billing";
+import { billingEnabled as plansBillingEnabled } from "../src/lib/plans";
 import {
   assertChallengeAllowsWork,
+  challengeCoversDefense,
   challengeEvents,
   claimChallenge,
+  closureCopy,
   createChallenge,
   chooseVisibility,
-  revokeChallenge,
-  betaBudgetEur,
+  declineChallenge,
   expireDueChallenges,
   getPublicChallenge,
   ledgerForSlug,
   publicResultLines,
   receiptGate,
   recordResultView,
-  recordShareClick,
+  revokeChallenge,
   setOptOut,
 } from "../src/lib/challenges";
-import { getBalance, grantCredits, holdCredit, refundCredit } from "../src/lib/credits";
+import { beginDefenseCredit, betaBudgetCents, getBalance, grantCredits, holdCredit, refundCredit } from "../src/lib/credits";
 import { getDb } from "../src/lib/db";
 import { HttpError } from "../src/lib/errors";
 import {
@@ -55,6 +58,8 @@ const ENV_KEYS = [
   "CHALLENGE_CREATE_LIMIT",
   "CHALLENGE_CLAIM_LIMIT",
   "CHALLENGE_CLAIM_IP_LIMIT",
+  "CHALLENGE_SHARE_LIMIT",
+  "CHALLENGE_RESULT_VIEW_LIMIT",
 ] as const;
 
 let savedEnv: Record<string, string | undefined> = {};
@@ -88,6 +93,17 @@ afterEach(() => {
     else process.env[key] = value;
   }
 });
+
+async function fund(user: User, amount = 8): Promise<void> {
+  seq += 1;
+  await grantCredits({
+    userId: user.id,
+    kind: "challenge",
+    amount,
+    reason: "grant",
+    idempotencyKey: `fund:${user.id}:${seq}`,
+  });
+}
 
 async function signIn(email: string): Promise<User> {
   const { devLink } = await requestMagicLink({ email });
@@ -139,6 +155,9 @@ describe("result tiers", () => {
     expect(tierForScore(84)).toBe("Defended");
     expect(tierForScore(69)).toBe("Still sharpening");
     expect(tierForScore(0)).toBe("Still sharpening");
+    expect(publicTierTitle("Still sharpening")).toBe("Still sharpening");
+    expect(publicTierTitle("Strong")).toBe("Defended · Strong");
+    expect(publicTierTitle("Defended")).toBe("Defended · Defended");
   });
 });
 
@@ -166,9 +185,17 @@ describe("challenge links", () => {
     }
   });
 
-  it("defaults the beta budget to €150", () => {
+  it("uses the ledger beta budget, and treats 1 and true as the same billing flag", () => {
     delete process.env.BETA_BUDGET_EUR;
-    expect(betaBudgetEur()).toBe(150);
+    expect(betaBudgetCents()).toBe(15000);
+    process.env.BILLING_ENABLED = "true";
+    expect(billingEnabled()).toBe(true);
+    expect(plansBillingEnabled()).toBe(true);
+    process.env.BILLING_ENABLED = "false";
+    expect(billingEnabled()).toBe(false);
+    expect(plansBillingEnabled()).toBe(billingEnabled());
+    process.env.BILLING_ENABLED = "1";
+    expect(billingEnabled()).toBe(plansBillingEnabled());
   });
 
   it("grants once, and a refund returns the held credit", async () => {
@@ -222,6 +249,7 @@ describe("challenge links", () => {
 
   it("lets the first signed-in adult claim, and tells the next person it is taken", async () => {
     const creator = await signIn(nextEmail("creator"));
+    await fund(creator);
     const first = await signIn(nextEmail("first"));
     const second = await signIn(nextEmail("second"));
     const created = await createChallenge({
@@ -259,6 +287,7 @@ describe("challenge links", () => {
     const quiet = await signIn(nextEmail("quiet"));
     await setOptOut(quiet, true, ["Ada"]);
     const creator = await signIn(nextEmail("creator-opt"));
+    await fund(creator);
     await expect(
       createChallenge({ user: creator, subject: SUBJECT, difficulty: "standard", targetHint: "@ada" }),
     ).rejects.toThrow(/opted out/i);
@@ -279,6 +308,7 @@ describe("challenge links", () => {
 
   it("enforces open, daily, global, budget, defender, handle, and rate limits", async () => {
     const creator = await signIn(nextEmail("caps"));
+    await fund(creator);
     process.env.CHALLENGE_OPEN_PER_CREATOR = "1";
     const first = await createChallenge({ user: creator, subject: "First open", difficulty: "standard" });
     await expect(
@@ -290,6 +320,7 @@ describe("challenge links", () => {
     process.env.CHALLENGE_OPEN_PER_CREATOR = "10";
     process.env.CHALLENGE_DAILY_PER_CREATOR = "1";
     const dailyUser = await signIn(nextEmail("daily"));
+    await fund(dailyUser);
     await createChallenge({ user: dailyUser, subject: "Daily one", difficulty: "standard" });
     await expect(
       createChallenge({ user: dailyUser, subject: "Daily two", difficulty: "standard" }),
@@ -308,14 +339,21 @@ describe("challenge links", () => {
     ).rejects.toThrow(/daily challenge limit/i);
 
     process.env.CHALLENGE_GLOBAL_DAILY_CAP = "100";
-    process.env.BETA_BUDGET_EUR = "0";
-    const budgetUser = await signIn(nextEmail("budget"));
+    const broke = await signIn(nextEmail("broke"));
     await expect(
-      createChallenge({ user: budgetUser, subject: "Over budget", difficulty: "standard" }),
-    ).rejects.toThrow(/budget/i);
-
+      createChallenge({ user: broke, subject: "No challenge credit", difficulty: "standard" }),
+    ).rejects.toThrow(/challenge credit/i);
+    await fund(broke, 1);
+    process.env.BETA_BUDGET_EUR = "0";
+    const held = await createChallenge({
+      user: broke,
+      subject: "Credit hold without a second reserve",
+      difficulty: "standard",
+    });
+    expect(held.slug).toMatch(/^[a-z0-9]{8}$/);
     process.env.BETA_BUDGET_EUR = "1000";
     const challenger = await signIn(nextEmail("two-links"));
+    await fund(challenger);
     const a = await createChallenge({ user: challenger, subject: "Slot A", difficulty: "standard" });
     const b = await createChallenge({ user: challenger, subject: "Slot B", difficulty: "standard" });
     const defender = await signIn(nextEmail("one-defense"));
@@ -325,6 +363,7 @@ describe("challenge links", () => {
     ).rejects.toThrow(/finish your current challenge/i);
 
     const repeat = await signIn(nextEmail("repeat"));
+    await fund(repeat);
     const handle = `person${seq}`;
     await createChallenge({ user: repeat, subject: "Same person", difficulty: "standard", targetHint: `@${handle}` });
     await expect(
@@ -333,6 +372,7 @@ describe("challenge links", () => {
 
     process.env.CHALLENGE_CREATE_LIMIT = "1";
     const rushed = await signIn(nextEmail("rushed"));
+    await fund(rushed);
     await createChallenge({ user: rushed, subject: "Rate one", difficulty: "standard" });
     await expect(createChallenge({ user: rushed, subject: "Rate two", difficulty: "standard" })).rejects.toMatchObject({
       status: 429,
@@ -342,6 +382,8 @@ describe("challenge links", () => {
     const ip = nextIp();
     const left = await signIn(nextEmail("ip-a"));
     const right = await signIn(nextEmail("ip-b"));
+    await fund(left);
+    await fund(right);
     const claimerA = await signIn(nextEmail("ip-c1"));
     const claimerB = await signIn(nextEmail("ip-c2"));
     const linkA = await createChallenge({ user: left, subject: "IP A", difficulty: "standard" });
@@ -459,16 +501,21 @@ describe("challenge links", () => {
     const names = (await challengeEvents(published.created.slug)).map((row) => row.event);
     expect(names).toEqual(expect.arrayContaining(["created", "viewed", "accepted", "defended", "published"]));
     expect(names).not.toContain("share_clicked");
-    await recordShareClick(published.created.slug, null, "copy");
-    await recordResultView(published.receipt.payload.id, null);
+    await recordResultView(published.receipt.payload.id, null, "203.0.113.10");
+    await recordResultView(published.receipt.payload.id, null, "203.0.113.10");
     const after = (await challengeEvents(published.created.slug)).map((row) => row.event);
-    expect(after).toEqual(expect.arrayContaining(["share_clicked", "result_viewed"]));
-    expect(await ledgerForSlug(published.created.slug)).toEqual([{ action: "grant", reason: null, amount: 1 }]);
+    expect(after.filter((name) => name === "result_viewed")).toHaveLength(1);
+    expect((await ledgerForSlug(published.created.slug)).map((row) => row.action).sort()).toEqual([
+      "consume",
+      "grant",
+      "hold",
+    ]);
     expect((await getBalance(published.defender.id)).challenge).toBe(1);
   }, 60_000);
 
   it("closes the defense window after the finish deadline", async () => {
     const creator = await signIn(nextEmail("window"));
+    await fund(creator);
     const defender = await signIn(nextEmail("window-d"));
     const created = await createChallenge({ user: creator, subject: SUBJECT, difficulty: "standard" });
     const claimed = await claimChallenge({
@@ -491,6 +538,102 @@ describe("challenge links", () => {
     ).rejects.toThrow(/expired/i);
     await expireDueChallenges();
   });
+
+  it("refunds a decline without a public declined state, and does not spend the defender's defense credit", async () => {
+    process.env.BILLING_ENABLED = "1";
+    const creator = await signIn(nextEmail("decline-c"));
+    await fund(creator, 3);
+    const target = await signIn(nextEmail("decline-t"));
+    await grantCredits({
+      userId: target.id,
+      kind: "defense",
+      amount: 1,
+      reason: "grant",
+      idempotencyKey: `def:${target.id}`,
+    });
+
+    const turnedDown = await createChallenge({
+      user: creator,
+      subject: "Say no thanks",
+      difficulty: "standard",
+      sponsorType: "paid",
+    });
+    await expect(declineChallenge(turnedDown.slug, creator, nextIp())).rejects.toThrow(/you created this challenge/i);
+    await declineChallenge(turnedDown.slug, target, nextIp());
+    const view = await getPublicChallenge(turnedDown.slug, null);
+    expect(view?.status).toBe("closed");
+    expect(JSON.stringify(view).toLowerCase()).not.toContain("declin");
+    const stored = await (await getDb()).get<{ status: string }>(
+      `SELECT status FROM challenges WHERE slug = ?`,
+      [turnedDown.slug],
+    );
+    expect(stored?.status).toBe("declined");
+    expect(closureCopy(view!.status)).toBe("This challenge is closed. Nothing was posted.");
+    expect(closureCopy("closed")!.toLowerCase()).not.toContain("declin");
+    expect((await ledgerForSlug(turnedDown.slug)).map((row) => row.action).sort()).toEqual(["hold", "refund"]);
+    expect((await getBalance(creator.id)).challenge).toBe(3);
+
+    const accepted = await createChallenge({
+      user: creator,
+      subject: "Accepted then turned down",
+      difficulty: "standard",
+    });
+    const other = await createChallenge({
+      user: creator,
+      subject: "Second open link",
+      difficulty: "standard",
+    });
+    const claimed = await claimChallenge({
+      slug: accepted.slug,
+      user: target,
+      ip: nextIp(),
+      adultConfirmed: true,
+    });
+    expect(await challengeCoversDefense(claimed.token, target.id)).toBe(true);
+    const defenseBefore = (await getBalance(target.id)).defense;
+    if (!(await challengeCoversDefense(claimed.token, target.id))) {
+      await beginDefenseCredit(target.id);
+    }
+    expect((await getBalance(target.id)).defense).toBe(defenseBefore);
+    await ingestDeliverable({ token: claimed.token, user: target, fileName: "memo.md", buffer: doc });
+    const session = await startSession({ token: claimed.token, user: target, mode: "defend" });
+    const sponsored = await (await getDb()).get<{ sponsored: number | string }>(
+      `SELECT sponsored FROM sessions WHERE id = ?`,
+      [session.sessionId],
+    );
+    expect(Number(sponsored?.sponsored)).toBe(1);
+    const db = await getDb();
+    await expect(
+      db.run(
+        `UPDATE challenges SET status = 'claimed', claimed_by_user_id = ?, claimed_at = ? WHERE slug = ?`,
+        [target.id, new Date().toISOString(), other.slug],
+      ),
+    ).rejects.toThrow(/unique/i);
+    await declineChallenge(accepted.slug, target, nextIp());
+    expect((await ledgerForSlug(accepted.slug)).map((row) => row.action).sort()).toEqual(["hold", "refund"]);
+    expect(closureCopy("closed")!.toLowerCase()).not.toContain("declin");
+    await claimChallenge({ slug: other.slug, user: target, ip: nextIp(), adultConfirmed: true });
+  });
+
+  it("rate limits public share clicks", async () => {
+    process.env.CHALLENGE_SHARE_LIMIT = "1";
+    const creator = await signIn(nextEmail("share-cap"));
+    await fund(creator, 1);
+    const created = await createChallenge({ user: creator, subject: "Share cap", difficulty: "standard" });
+    const { POST } = await import("../src/app/api/challenges/[slug]/events/route");
+    const send = (ip: string) =>
+      POST(
+        new Request("http://127.0.0.1:3000/api/challenges/x/events", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-forwarded-for": ip },
+          body: JSON.stringify({ event: "share_clicked", channel: "copy" }),
+        }),
+        { params: Promise.resolve({ slug: created.slug }) },
+      );
+    const ip = "203.0.113.44";
+    expect((await send(ip)).status).toBe(200);
+    expect((await send(ip)).status).toBe(429);
+  });
 });
 
 async function run(
@@ -501,15 +644,13 @@ async function run(
   if (sponsorType === "paid") process.env.BILLING_ENABLED = "1";
   const creator = await signIn(nextEmail("run-c"));
   const defender = await signIn(nextEmail("run-d"));
-  if (sponsorType === "paid") {
-    await grantCredits({
-      userId: creator.id,
-      kind: "challenge",
-      amount: 1,
-      reason: "grant",
-      idempotencyKey: `run:${creator.id}:${subject}`,
-    });
-  }
+  await grantCredits({
+    userId: creator.id,
+    kind: "challenge",
+    amount: 1,
+    reason: "grant",
+    idempotencyKey: `run:${creator.id}:${subject}`,
+  });
   const created = await createChallenge({ user: creator, subject, difficulty: "standard", sponsorType });
   const claimed = await claimChallenge({ slug: created.slug, user: defender, ip: nextIp(), adultConfirmed: true });
   await getPublicChallenge(created.slug, null, { recordView: true });

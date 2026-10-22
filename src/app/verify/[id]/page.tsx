@@ -5,6 +5,7 @@ import * as ed from "@noble/ed25519";
 import { useEffect, useState } from "react";
 import { gradedWithLine } from "@/components/receipt/metrics";
 import { canonicalJson } from "@/lib/canonical";
+import { publicTierTitle } from "@/lib/challenge-tier";
 import type { SignedReceipt } from "@/lib/types";
 
 const fromHex = (hex: string) =>
@@ -53,7 +54,7 @@ export default function VerifyPage() {
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || "Not found");
         if (!j.receipt) {
-          setOutcome(j.challengeResult?.tier ? `Defended · ${j.challengeResult.tier}` : "Not published");
+          setOutcome(j.challengeResult?.tier ? publicTierTitle(j.challengeResult.tier) : "Not published");
           setScore(null);
           return;
         }

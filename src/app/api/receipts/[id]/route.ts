@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getUserFromRequest } from "@/lib/auth";
 import { receiptGate, recordResultView } from "@/lib/challenges";
-import { jsonError } from "@/lib/http";
+import { clientIp, jsonError } from "@/lib/http";
+import { publicWriteBudget, rateLimit } from "@/lib/ratelimit";
 import { verifyReceipt } from "@/lib/receipt";
 import { getReceipt } from "@/lib/services";
 
@@ -17,7 +18,11 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   const user = await getUserFromRequest(req);
   const gate = await receiptGate(id, user);
   if (gate.httpStatus === 404) return jsonError(404, "Not found");
-  if (new URL(req.url).searchParams.get("view") === "1") await recordResultView(id, user);
+  if (new URL(req.url).searchParams.get("view") === "1") {
+    const budget = publicWriteBudget("result-view");
+    const limited = await rateLimit(`result-view:${clientIp(req)}`, budget.limit, budget.windowSec);
+    if (limited.ok) await recordResultView(id, user, clientIp(req));
+  }
   if (gate.mode === "challenge" && !gate.includeReceipt) {
     return NextResponse.json({ receipt: null, signatureValid: null, challengeResult: gate.result });
   }

@@ -143,6 +143,36 @@ export function ClaimPanel({ slug }: { slug: string }) {
   );
 }
 
+export function DeclineButton({ slug }: { slug: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function decline() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/challenges/${slug}/decline`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not close this challenge");
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not close this challenge");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="grid gap-2">
+      {error && <p className="text-sm text-danger">{error}</p>}
+      <button type="button" className="btn btn-ghost justify-self-start" disabled={busy} onClick={() => void decline()}>
+        {busy ? "Closing…" : "No thanks"}
+      </button>
+      <p className="text-sm text-[var(--ink-2)]">Nothing is posted.</p>
+    </div>
+  );
+}
+
 export function RevokeButton({ slug }: { slug: string }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);

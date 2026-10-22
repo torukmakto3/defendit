@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { ShareBar } from "@/components/challenge/actions";
+import { publicTierTitle } from "@/lib/challenge-tier";
 
 export interface PublicResultProps {
   slug: string;
@@ -23,10 +24,11 @@ export interface PublicResultProps {
  * defender published it. No claim text, transcript, or document body.
  */
 export function PublicChallengeResult({ result }: { result: PublicResultProps }) {
+  const title = publicTierTitle(result.tier);
   const shareText =
     result.showScore && result.score != null
-      ? `Defended · ${result.tier}. Score ${result.score}/100.`
-      : `Defended · ${result.tier ?? "Defended"}. The score is not shown.`;
+      ? `${title}. Score ${result.score}/100.`
+      : `${title}. The score is not shown.`;
 
   return (
     <div className="shell max-w-2xl">

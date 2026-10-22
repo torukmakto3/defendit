@@ -24,6 +24,13 @@ export function tierForScore(score: number): ResultTier {
   return "Still sharpening";
 }
 
+/** Public title. A score under 70 is "Still sharpening" with no extra prefix. */
+export function publicTierTitle(tier: ResultTier | string | null): string {
+  if (tier === "Still sharpening") return "Still sharpening";
+  if (!tier) return "Defended";
+  return `Defended · ${tier}`;
+}
+
 export const TIER_LEGEND =
   "Strong is the top band, 85 or higher. Defended is 70 to 84. Under 70 is still sharpening, framed as progress.";
 

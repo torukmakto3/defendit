@@ -33,6 +33,28 @@ export async function rateLimit(
   };
 }
 
+function positiveInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.floor(n);
+}
+
+/** Public funnel writes. Read at call time so tests can tighten the cap. */
+export function publicWriteBudget(kind: "share" | "result-view"): { limit: number; windowSec: number } {
+  switch (kind) {
+    case "share":
+      return { limit: positiveInt("CHALLENGE_SHARE_LIMIT", 30), windowSec: 60 * 60 };
+    case "result-view":
+      return { limit: positiveInt("CHALLENGE_RESULT_VIEW_LIMIT", 60), windowSec: 60 * 60 };
+    default: {
+      const unknown: never = kind;
+      return unknown;
+    }
+  }
+}
+
 /** Named limits so routes share one table of budgets. */
 export const LIMITS = {
   loginPerEmail: { limit: 5, windowSec: 15 * 60 },

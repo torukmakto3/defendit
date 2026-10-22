@@ -3,10 +3,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { cookies } from "next/headers";
 import { SignInCard } from "@/components/auth";
-import { ClaimPanel, RevokeButton, ShareBar, SuggestedShares } from "@/components/challenge/actions";
+import { ClaimPanel, DeclineButton, RevokeButton, ShareBar, SuggestedShares } from "@/components/challenge/actions";
 import { SESSION_COOKIE, getUserFromRequest } from "@/lib/auth";
 import { appUrl } from "@/lib/config";
-import { getPublicChallenge } from "@/lib/challenges";
+import { closureCopy, getPublicChallenge } from "@/lib/challenges";
 import { challengesEnabled } from "@/lib/challenge-tier";
 
 export const dynamic = "force-dynamic";
@@ -28,23 +28,6 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   };
 }
 
-function statusCopy(status: string): string | null {
-  switch (status) {
-    case "open":
-      return null;
-    case "claimed":
-      return "Someone has accepted this challenge.";
-    case "defended":
-      return "This challenge is closed.";
-    case "expired":
-      return "This challenge has expired. Nothing was posted.";
-    case "revoked":
-      return "The challenger closed this link. Nothing was posted.";
-    default:
-      return "This challenge is closed.";
-  }
-}
-
 export default async function ChallengePage({ params }: { params: Promise<{ slug: string }> }) {
   if (!challengesEnabled()) notFound();
   const { slug } = await params;
@@ -52,7 +35,7 @@ export default async function ChallengePage({ params }: { params: Promise<{ slug
   const view = await getPublicChallenge(slug, user, { recordView: true });
   if (!view) notFound();
   const shareUrl = appUrl(`/c/${view.slug}`);
-  const closed = statusCopy(view.status);
+  const closed = closureCopy(view.status);
 
   return (
     <div className="shell max-w-2xl">
@@ -69,7 +52,7 @@ export default async function ChallengePage({ params }: { params: Promise<{ slug
       <p className="mt-3 text-sm text-[var(--ink-2)]">
         {view.sponsorLabel === "Sponsored by DefendIT"
           ? "Free in beta, sponsored by DefendIT. No one is paid to accept or share."
-          : `${view.sponsorLabel}. A held credit comes back to the challenger if the result stays private, or if the link expires.`}
+          : `${view.sponsorLabel}. A held credit comes back to the challenger if the target says no thanks, if the result stays private, or if the link expires.`}
       </p>
       <p className="mt-3 text-sm text-[var(--ink-2)]">Difficulty: {view.difficulty}.</p>
       {view.note && <p className="mt-4">{view.note}</p>}
@@ -101,6 +84,7 @@ export default async function ChallengePage({ params }: { params: Promise<{ slug
           <SignInCard title="Sign in to accept" next={`/c/${view.slug}`} />
         )}
         {view.canClaim && <ClaimPanel slug={view.slug} />}
+        {view.canTurnDown && <DeclineButton slug={view.slug} />}
         {view.status === "open" && user && view.claimBlock && <p>{view.claimBlock}</p>}
         {view.isClaimer && view.defensePath && view.status === "claimed" && (
           <Link href={view.defensePath} className="btn btn-primary justify-self-start">
@@ -118,9 +102,11 @@ export default async function ChallengePage({ params }: { params: Promise<{ slug
           </Link>
         )}
         {view.creatorPrivateNote && <p>{view.creatorPrivateNote}</p>}
-        {closed && !view.isClaimer && view.status !== "open" && !view.resultPath && !view.creatorPrivateNote && (
-          <p>{closed}</p>
-        )}
+        {closed &&
+          view.status !== "open" &&
+          !view.resultPath &&
+          !view.creatorPrivateNote &&
+          (view.status === "closed" || !view.isClaimer) && <p>{closed}</p>}
         {view.canRevoke && <RevokeButton slug={view.slug} />}
         {view.status === "open" && <SuggestedShares url={shareUrl} />}
         <ShareBar

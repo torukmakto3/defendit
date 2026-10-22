@@ -1,14 +1,14 @@
 import { HttpError } from "./errors";
+import { billingEnabled } from "./plans";
 
 /**
  * Billing switch. Paid challenges and card checkout stay off unless
- * `BILLING_ENABLED=1`. This module never imports a payment SDK.
- * Balances live in `src/lib/credits.ts`, and a refund there returns credit.
+ * `BILLING_ENABLED` is "1" or "true", the same parser as `src/lib/plans.ts`.
+ * This module never imports a payment SDK. Balances live in `src/lib/credits.ts`,
+ * and a refund there returns credit.
  */
 
-export function billingEnabled(): boolean {
-  return process.env.BILLING_ENABLED === "1";
-}
+export { billingEnabled };
 
 /** Refuse a paid challenge when billing is off. No credit row is written. */
 export function assertPaidChallengesOpen(): void {
