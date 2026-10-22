@@ -14,12 +14,16 @@ import type { Difficulty, ReceiptOutcome, SignedReceipt } from "./types";
  * and defends through the normal flow, and the sponsor covers the cost.
  * Beta challenges (`sponsor_type=beta`) are free and badged "Sponsored by
  * DefendIT". Creating a challenge holds the challenger's challenge credit
- * through `src/lib/credits.ts`. Decline, expiry, revoke, and a private result
- * refund that credit. A published result consumes it. The defender's own
- * defense credit is not spent: in beta the challenge sponsors the defense.
- * The euro cap is the ledger's `BETA_BUDGET_EUR`. Paid challenges stay off
- * unless billing is on, and never call a payment provider. The creator
- * cannot claim their own link. A decline is stored, and never shown publicly.
+ * through `src/lib/credits.ts`. The hold is consumed when the defense
+ * finishes, whatever the defender later publishes. Decline, expiry, and
+ * revoke refund it. The defender's own defense credit is not spent: in beta
+ * the challenge sponsors the defense. The euro cap is the ledger's
+ * `BETA_BUDGET_EUR`. Paid challenges stay off unless billing is on, and
+ * never call a payment provider. The creator cannot claim their own link.
+ * A decline closes the challenge only when the account's verified email
+ * matches an email target. Anyone else can hide the link for themselves.
+ * Accounts have no verified handle, so a handle hint never closes it.
+ * A closed challenge is stored, and never shown publicly as declined.
  *
  * Credits and sponsorship do not depend on posting or sharing. Share clicks
  * are counted and then ignored by every gate.
@@ -111,6 +115,18 @@ const HOUR_SEC = 60 * 60;
 
 export function normalizeHandle(raw: string): string {
   return raw.trim().toLowerCase().replace(/^@+/, "");
+}
+
+/**
+ * True when this account is the named target. Sign-in verifies an email and
+ * not an X handle, so only a hint with a local part and a domain can match.
+ * A handle (`@ada`) never matches, even when the account email starts the same way.
+ */
+function declinerMatchesTarget(user: User, targetHint: string | null): boolean {
+  if (!targetHint) return false;
+  const hint = targetHint.trim();
+  if (!/^[^@\s]+@[^@\s]+$/.test(hint)) return false;
+  return normalizeEmail(hint) === normalizeEmail(user.email);
 }
 
 function countOf(row: { n: number | string } | undefined): number {
@@ -515,8 +531,10 @@ export interface PublicChallenge {
   finishBy: string | null;
   visibility: ChallengeVisibility | null;
   canClaim: boolean;
-  /** The target can turn an open challenge down, or the one they already accepted. */
+  /** The viewer can turn this down. Closing it requires an email match; anyone else only hides it. */
   canTurnDown: boolean;
+  /** This viewer hid an open challenge. It stays open for everyone else. */
+  passed: boolean;
   claimBlock: string | null;
   isClaimer: boolean;
   isCreator: boolean;
@@ -552,11 +570,19 @@ export async function getPublicChallenge(
   const isCreator = !!user && user.id === row.creator_user_id;
   const isClaimer = !!user && user.id === row.claimed_by_user_id;
   const token = isClaimer ? await defenseToken(db, row.request_id) : null;
+  const hidden = user
+    ? await db.get<{ challenge_id: string }>(
+        `SELECT challenge_id FROM challenge_hides WHERE challenge_id = ? AND user_id = ?`,
+        [row.id, user.id],
+      )
+    : undefined;
+  const passed = !!hidden && !isCreator && status === "open";
 
   let claimBlock: string | null = null;
   if (!user) claimBlock = "Sign in to accept this challenge.";
   else if (isCreator) claimBlock = "You created this challenge. Send the link to someone else.";
   else if (status !== "open") claimBlock = null;
+  else if (passed) claimBlock = "You passed on this. The link stays open.";
   else if (await optedOut(db, user.id)) {
     claimBlock = "You opted out of challenges. You're on the do-not-challenge list.";
   }
@@ -589,7 +615,10 @@ export async function getPublicChallenge(
     canTurnDown:
       !!user &&
       !isCreator &&
-      ((status === "open" && claimBlock == null) || (status === "claimed" && isClaimer)),
+      !passed &&
+      ((status === "open" && claimBlock == null) ||
+        (status === "claimed" && isClaimer && declinerMatchesTarget(user, row.target_hint))),
+    passed,
     claimBlock: status === "open" ? claimBlock : null,
     isClaimer,
     isCreator,
@@ -635,6 +664,13 @@ export async function claimChallenge(opts: {
     if (!row) throw new HttpError(404, "Challenge not found.");
     if (row.creator_user_id === opts.user.id) {
       throw new HttpError(403, "You created this challenge. Send the link to someone else.");
+    }
+    const hidden = await tx.get<{ challenge_id: string }>(
+      `SELECT challenge_id FROM challenge_hides WHERE challenge_id = ? AND user_id = ?`,
+      [row.id, opts.user.id],
+    );
+    if (hidden) {
+      throw new HttpError(409, "You passed on this challenge. The link stays open for someone else.");
     }
     await assertNotSelfClaim({ creatorUserId: row.creator_user_id, claimerUserId: opts.user.id });
     const status = asStatus(row.status);
@@ -715,10 +751,18 @@ export async function revokeChallenge(slug: string, user: User): Promise<void> {
 }
 
 /**
- * The target turns the challenge down. Nothing public says "declined".
- * The held challenge credit is refunded, the same as expiry and revoke.
+ * Turn a challenge down. Nothing public says "declined".
+ * The challenge closes, and the held credit is refunded, only when this
+ * account's verified email matches an email target. A handle hint cannot
+ * match, because the account has no verified handle. Anyone else hides the
+ * open challenge for themselves and leaves it open. A claimer who is not
+ * that email cannot close a challenge they already accepted.
  */
-export async function declineChallenge(slug: string, user: User, ip: string): Promise<void> {
+export async function declineChallenge(
+  slug: string,
+  user: User,
+  ip: string,
+): Promise<{ closed: boolean }> {
   requireEnabled();
   if (!/^[a-z0-9]{8}$/.test(slug)) throw new HttpError(404, "Challenge not found.");
   const userLimited = await rateLimit(`challenge-decline:${user.id}`, claimAttemptLimit(), DAY_SEC);
@@ -731,39 +775,53 @@ export async function declineChallenge(slug: string, user: User, ip: string): Pr
     throw new HttpError(403, "You opted out of challenges. You're on the do-not-challenge list.");
   }
   await expireDueChallenges(db);
-  const row = await loadBySlug(db, slug);
-  if (!row) throw new HttpError(404, "Challenge not found.");
-  if (row.creator_user_id === user.id) {
-    throw new HttpError(403, "You created this challenge. Send the link to someone else.");
-  }
-  const status = asStatus(row.status);
-  switch (status) {
-    case "open":
-      break;
-    case "claimed":
-      if (row.claimed_by_user_id !== user.id) {
-        throw new HttpError(409, "This challenge has already been claimed.");
-      }
-      break;
-    case "expired":
-      throw new HttpError(410, "This challenge has expired.");
-    case "revoked":
-      throw new HttpError(410, "This challenge was revoked.");
-    case "declined":
-    case "defended":
-      throw new HttpError(409, "This challenge is closed.");
-    default: {
-      const unknown: never = status;
-      throw new HttpError(409, `This challenge is closed (${String(unknown)}).`);
+
+  return db.transaction(async (tx) => {
+    const row = await loadBySlug(tx, slug);
+    if (!row) throw new HttpError(404, "Challenge not found.");
+    if (row.creator_user_id === user.id) {
+      throw new HttpError(403, "You created this challenge. Send the link to someone else.");
     }
-  }
-  const updated = await db.run(
-    `UPDATE challenges SET status = 'declined'
-     WHERE id = ? AND status = ? AND (status = 'open' OR claimed_by_user_id = ?)`,
-    [row.id, status, user.id],
-  );
-  if (updated.changes !== 1) throw new HttpError(409, "This challenge is closed.");
-  await refundChallengeHold(db, row);
+    const status = asStatus(row.status);
+    const matches = declinerMatchesTarget(user, row.target_hint);
+    switch (status) {
+      case "open":
+        break;
+      case "claimed":
+        if (row.claimed_by_user_id !== user.id) {
+          throw new HttpError(409, "This challenge has already been claimed.");
+        }
+        if (!matches) throw new HttpError(409, "Only the named email can close this challenge.");
+        break;
+      case "expired":
+        throw new HttpError(410, "This challenge has expired.");
+      case "revoked":
+        throw new HttpError(410, "This challenge was revoked.");
+      case "declined":
+      case "defended":
+        throw new HttpError(409, "This challenge is closed.");
+      default: {
+        const unknown: never = status;
+        throw new HttpError(409, `This challenge is closed (${String(unknown)}).`);
+      }
+    }
+    if (!matches) {
+      await tx.run(
+        `INSERT INTO challenge_hides (challenge_id, user_id, created_at) VALUES (?, ?, ?)
+         ON CONFLICT DO NOTHING`,
+        [row.id, user.id, new Date().toISOString()],
+      );
+      return { closed: false };
+    }
+    const updated = await tx.run(
+      `UPDATE challenges SET status = 'declined'
+       WHERE id = ? AND status = ? AND (status = 'open' OR claimed_by_user_id = ?)`,
+      [row.id, status, user.id],
+    );
+    if (updated.changes !== 1) throw new HttpError(409, "This challenge is closed.");
+    await refundChallengeHold(tx, row);
+    return { closed: true };
+  });
 }
 
 /** What a public page may say about a closed challenge. Never the word declined. */
@@ -817,11 +875,9 @@ export async function chooseVisibility(opts: {
   if (updated.changes !== 1) throw new HttpError(409, "A visibility choice was already saved.");
 
   if (visibility === "private") {
-    await refundChallengeHold(db, row);
     await recordEvent(db, row.id, "kept_private", opts.user.id);
     return { resultPath: null };
   }
-  await consumeChallengeHold(db, row);
   await recordEvent(db, row.id, "published", opts.user.id, { visibility });
   return { resultPath: row.receipt_id ? `/r/${row.receipt_id}` : null };
 }
@@ -1177,12 +1233,22 @@ export async function noteChallengeDefended(
   ids: { sessionId: string; deliverableId: string; receiptId: string },
 ): Promise<void> {
   const db = await getDb();
-  const row = await db.get<{ id: string; status: string; claimed_by_user_id: string | null }>(
-    `SELECT id, status, claimed_by_user_id FROM challenges WHERE request_id = ?`,
+  const row = await db.get<{
+    id: string;
+    status: string;
+    claimed_by_user_id: string | null;
+    creator_user_id: string;
+    sponsor_type: string;
+  }>(
+    `SELECT id, status, claimed_by_user_id, creator_user_id, sponsor_type
+     FROM challenges WHERE request_id = ?`,
     [requestId],
   );
   if (!row) return;
   if (row.status !== "claimed" && row.status !== "defended") return;
+  // Consume on a retry too. The consume key is idempotent, so a second
+  // call after a finished defense does not charge the challenger twice.
+  await consumeChallengeHold(db, row);
   await db.run(
     `UPDATE challenges
      SET status = 'defended', session_id = ?, deliverable_id = ?, receipt_id = ?

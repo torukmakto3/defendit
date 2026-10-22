@@ -52,7 +52,7 @@ export default async function ChallengePage({ params }: { params: Promise<{ slug
       <p className="mt-3 text-sm text-[var(--ink-2)]">
         {view.sponsorLabel === "Sponsored by DefendIT"
           ? "Free in beta, sponsored by DefendIT. No one is paid to accept or share."
-          : `${view.sponsorLabel}. A held credit comes back to the challenger if the target says no thanks, if the result stays private, or if the link expires.`}
+          : `${view.sponsorLabel}. A held credit is spent when the defense is finished, including a private result. It comes back if the named person says no thanks, if the challenger revokes the link, or if the link expires.`}
       </p>
       <p className="mt-3 text-sm text-[var(--ink-2)]">Difficulty: {view.difficulty}.</p>
       {view.note && <p className="mt-4">{view.note}</p>}
@@ -108,7 +108,7 @@ export default async function ChallengePage({ params }: { params: Promise<{ slug
           !view.creatorPrivateNote &&
           (view.status === "closed" || !view.isClaimer) && <p>{closed}</p>}
         {view.canRevoke && <RevokeButton slug={view.slug} />}
-        {view.status === "open" && <SuggestedShares url={shareUrl} />}
+        {view.status === "open" && !view.passed && <SuggestedShares url={shareUrl} />}
         <ShareBar
           slug={view.slug}
           url={shareUrl}

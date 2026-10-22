@@ -9,9 +9,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ slug: string }
   if (guard.response) return guard.response;
   try {
     const { slug } = await ctx.params;
-    await declineChallenge(slug, guard.user, clientIp(req));
-    return NextResponse.json({ ok: true });
+    const result = await declineChallenge(slug, guard.user, clientIp(req));
+    return NextResponse.json({ ok: true, closed: result.closed });
   } catch (e) {
-    return handleError(e, "Could not decline the challenge");
+    return handleError(e, "Could not close this challenge");
   }
 }

@@ -345,6 +345,15 @@ CREATE TABLE IF NOT EXISTS challenge_opt_out_keys (
   created_at TEXT NOT NULL
 );
 
+-- A signed-in person who is not the named target can hide one open challenge
+-- for themselves. The challenge stays open for everyone else.
+CREATE TABLE IF NOT EXISTS challenge_hides (
+  challenge_id TEXT NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (challenge_id, user_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_challenges_creator ON challenges(creator_user_id, status);
 CREATE INDEX IF NOT EXISTS idx_challenges_claimed ON challenges(claimed_by_user_id, status);
 -- One claimed (unfinished) challenge per defender. A count-then-update races
