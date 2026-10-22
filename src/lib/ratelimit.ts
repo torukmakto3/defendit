@@ -162,4 +162,22 @@ export const LIMITS = {
   ),
   /** Challenge reports, per hashed IP. */
   challengeReportPerIp: budget("CHALLENGE_REPORT_LIMIT", 10, "CHALLENGE_REPORT_WINDOW_SEC", 60 * 60),
+  /** Anonymous beacon, all clients. Not keyed on an address. */
+  analyticsBeacon: budget("RATE_LIMIT_ANALYTICS_BEACON", 120, "RATE_LIMIT_ANALYTICS_BEACON_WINDOW_SEC", 60),
+  /** Anonymous beacon per minute, per keyed IP hash. Skipped when `ipHash` returns null. */
+  analyticsBeaconPerIp: budget(
+    "RATE_LIMIT_ANALYTICS_BEACON_IP",
+    30,
+    "RATE_LIMIT_ANALYTICS_BEACON_IP_WINDOW_SEC",
+    60,
+  ),
+  /** Anonymous beacon per day, per keyed IP hash. Skipped when `ipHash` returns null. */
+  analyticsBeaconPerIpDay: budget(
+    "RATE_LIMIT_ANALYTICS_BEACON_IP_DAY",
+    300,
+    "RATE_LIMIT_ANALYTICS_BEACON_IP_DAY_WINDOW_SEC",
+    24 * 60 * 60,
+  ),
+  /** Daily traction dashboard, per keyed IP hash. Skipped when `ipHash` returns null. */
+  statsRead: budget("RATE_LIMIT_STATS_READ", 60, "RATE_LIMIT_STATS_READ_WINDOW_SEC", 60 * 60),
 } as const;

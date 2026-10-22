@@ -10,8 +10,19 @@ import { challengesEnabled } from "@/lib/challenge-tier";
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Challenge someone" };
 
-export default async function NewChallengePage() {
+function onwardFromQuery(value: string | string[] | undefined): "defender" | "viewer" | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (raw === "defender" || raw === "viewer") return raw;
+  return undefined;
+}
+
+export default async function NewChallengePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ onward?: string | string[] }>;
+}) {
   if (!challengesEnabled()) notFound();
+  const onward = onwardFromQuery((await searchParams).onward);
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE)?.value;
   const user = token
@@ -39,9 +50,12 @@ export default async function NewChallengePage() {
           Don&apos;t challenge me again
         </Link>
       </p>
-      {user ? <CreateChallengeForm /> : (
+      {user ? <CreateChallengeForm onward={onward} /> : (
         <div className="mt-8">
-          <SignInCard title="Sign in to create a challenge" next="/c/new" />
+          <SignInCard
+            title="Sign in to create a challenge"
+            next={onward ? `/c/new?onward=${onward}` : "/c/new"}
+          />
         </div>
       )}
     </div>

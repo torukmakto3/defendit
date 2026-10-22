@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { track } from "@/lib/analytics-store";
 import { readRequestCookie, SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth";
 import {
   decodeOAuthTxn,
@@ -39,6 +40,11 @@ export async function GET(req: Request) {
       returnedState: url.searchParams.get("state"),
       code: url.searchParams.get("code"),
       providerError: url.searchParams.get("error"),
+    });
+    await track({
+      name: "sign_in_completed",
+      props: { method: "google" },
+      headers: req.headers,
     });
     const res = NextResponse.redirect(new URL(result.nextPath, requestOrigin(req)));
     res.cookies.set(SESSION_COOKIE, result.sessionToken, sessionCookieOptions());

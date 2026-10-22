@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { track } from "@/lib/analytics-store";
 import { normalizeEmail, requestMagicLink } from "@/lib/auth";
 import { sha256Hex } from "@/lib/crypto";
 import { handleError, ipLimitKey, jsonError, limitOr429, sameOrigin } from "@/lib/http";
@@ -22,6 +23,7 @@ export async function POST(req: Request) {
       (await limitOr429(`login:email:${sha256Hex(email)}`, LIMITS.loginPerEmail));
     if (limited) return limited;
     const { devLink } = await requestMagicLink({ email, nextPath: body.next });
+    await track({ name: "sign_in_started", props: { method: "email" }, headers: req.headers });
     return NextResponse.json({ ok: true, devLink });
   } catch (e) {
     return handleError(e, "Could not send a sign-in link");

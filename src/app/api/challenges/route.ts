@@ -12,6 +12,7 @@ const schema = z.object({
   note: z.string().max(500).optional(),
   difficulty: z.enum(["standard", "hard", "expert"]),
   sponsorType: z.enum(["beta", "paid"]).optional(),
+  onward: z.enum(["defender", "viewer"]).optional(),
 });
 
 export async function POST(req: Request) {

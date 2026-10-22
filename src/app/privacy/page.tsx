@@ -362,6 +362,29 @@ export default function PrivacyPage() {
       </section>
 
       <section className="grid gap-3">
+        <h2 className="text-xl font-bold">Analytics</h2>
+        <p>
+          Visit and funnel counts stay in our own database. A row stores the event name, a timestamp
+          rounded to the minute, the referrer domain, and, for a landing view,{" "}
+          <span className="mono">utm_source</span> and <span className="mono">utm_campaign</span> only.
+          The names are <span className="mono">landing_view</span>,{" "}
+          <span className="mono">sign_in_started</span>, <span className="mono">sign_in_completed</span>,{" "}
+          <span className="mono">defense_started</span>, <span className="mono">defense_completed</span>,{" "}
+          <span className="mono">learn_opened</span>, <span className="mono">receipt_shared</span>,{" "}
+          <span className="mono">challenge_created</span>, <span className="mono">challenge_opened</span>,{" "}
+          <span className="mono">challenge_accepted</span>, <span className="mono">challenge_declined</span>,{" "}
+          <span className="mono">challenge_completed</span>, and{" "}
+          <span className="mono">challenge_shared_back</span>. A few of those also store a short label,
+          such as the difficulty or whether a link was copied. The row does not store a cookie, an
+          account id, a session id, a receipt id, a challenge id, an IP address, or a user agent, and it
+          does not store the file. Do Not Track and Global Privacy Control skip the visit. The purge job
+          deletes a row after 90 days. The limits on the anonymous beacon are keyed on a keyed hash of
+          the IP address. Without a usable salt those per-address limits are skipped, and a single global
+          cap still applies. The address is not stored.
+        </p>
+      </section>
+
+      <section className="grid gap-3">
         <h2 className="text-xl font-bold">Your rights</h2>
         <p>
           If the GDPR applies to you, you can ask {contactName} for access to the personal data held

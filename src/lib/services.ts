@@ -1,3 +1,5 @@
+import { isDemoRequestKind } from "./analytics";
+import { purgeOldAnalyticsEvents, track } from "./analytics-store";
 import type { User } from "./auth";
 import { extractClaims } from "./claims";
 import {
@@ -512,6 +514,8 @@ export async function startSession(opts: {
    * are phrased. The interview can show that question while the rest are written.
    */
   onFirstQuestion?: (info: FirstQuestionInfo) => void | Promise<void>;
+  /** When set, DNT and Sec-GPC skip the defense_started event. */
+  analyticsHeaders?: { get(name: string): string | null };
 }) {
   maybePurge();
   const request = await requireRequest(opts.token);
@@ -623,7 +627,21 @@ export async function startSession(opts: {
 
   if (shown) await shown;
   await refreshRequestUsage(request.id);
-  if (opts.mode === "defend") await noteChallengeSession(request.id, sessionId);
+  if (opts.mode === "defend") {
+    await noteChallengeSession(request.id, sessionId);
+    if (!isDemoRequestKind(request.kind)) {
+      await track({
+        name: "defense_started",
+        props: { tier: request.difficulty },
+        headers: opts.analyticsHeaders,
+      });
+    }
+  } else {
+    await track({
+      name: "learn_opened",
+      headers: opts.analyticsHeaders,
+    });
+  }
   return { sessionId, plan, channel, startedAt };
 }
 
@@ -1065,6 +1083,8 @@ export async function completeDefendSession(opts: {
   waitForStudyDeck?: boolean;
   /** Absolute time the defend route must finish. The budget-fallback grader stops short of it. */
   deadlineMs?: number;
+  /** When set, DNT and Sec-GPC skip the defense_completed event. */
+  analyticsHeaders?: { get(name: string): string | null };
 }) {
   const session = await requireOwnSession(opts.sessionId, opts.user, "defend");
   if (session.status === "abandoned") {
@@ -1288,6 +1308,13 @@ export async function completeDefendSession(opts: {
   }
 
   await finishDefenseCredit(opts.user.id, session.id);
+  if (!isDemoRequestKind(request.kind)) {
+    await track({
+      name: "defense_completed",
+      props: { tier: request.difficulty },
+      headers: opts.analyticsHeaders,
+    });
+  }
   return {
     receipt: signed,
     score: aggregateScore(grades, plan),
@@ -1781,10 +1808,12 @@ export async function purgeExpired() {
     new Date(Date.now() - 2 * 24 * 3600_000).toISOString(),
   ]);
   await refundStaleDefenseHolds();
+  const analyticsEvents = await purgeOldAnalyticsEvents(db, new Date(nowIso));
   return {
     documentTexts: text.changes,
     deliverables: deliverables.changes,
     sessions: sessions.changes,
+    analyticsEvents,
   };
 }
 

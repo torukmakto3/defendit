@@ -33,6 +33,7 @@ export async function POST(req: Request) {
       user: guard.user,
       waitForStudyDeck: false,
       deadlineMs,
+      analyticsHeaders: req.headers,
     });
     return NextResponse.json(result);
   } catch (e) {

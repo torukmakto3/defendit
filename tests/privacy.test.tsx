@@ -60,6 +60,32 @@ describe("privacy page", () => {
     expect(html).toContain("no tracking cookie");
   });
 
+  it("describes analytics rows and the keyed beacon limit", () => {
+    expect(html).toContain("Analytics");
+    expect(html).toContain("landing_view");
+    expect(html).toContain("sign_in_started");
+    expect(html).toContain("sign_in_completed");
+    expect(html).toContain("defense_started");
+    expect(html).toContain("defense_completed");
+    expect(html).toContain("learn_opened");
+    expect(html).toContain("receipt_shared");
+    expect(html).toContain("challenge_created");
+    expect(html).toContain("challenge_opened");
+    expect(html).toContain("challenge_accepted");
+    expect(html).toContain("challenge_declined");
+    expect(html).toContain("challenge_completed");
+    expect(html).toContain("challenge_shared_back");
+    expect(html).toContain("rounded to the minute");
+    expect(html).toContain("referrer domain");
+    expect(html).toContain("utm_source");
+    expect(html).toContain("utm_campaign");
+    expect(html).toContain("does not store a cookie");
+    expect(html).toContain("Do Not Track");
+    expect(html).toContain("Global Privacy Control");
+    expect(html).toContain("90 days");
+    expect(html).toContain("keyed hash of the IP address");
+  });
+
   it("states the GDPR bases, the real file clocks, and the rights", () => {
     expect(html).toContain("Your account is kept until you delete it or ask us to");
     expect(html).toContain("produced automatically");

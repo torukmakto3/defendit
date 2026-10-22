@@ -364,7 +364,31 @@ CREATE INDEX IF NOT EXISTS idx_challenges_request ON challenges(request_id);
 CREATE INDEX IF NOT EXISTS idx_challenges_receipt ON challenges(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_challenges_created ON challenges(created_at);
 CREATE INDEX IF NOT EXISTS idx_challenge_events_challenge ON challenge_events(challenge_id, event);
+
+-- First-party funnel counts. No account id, session id, receipt id, IP,
+-- user agent, cookie, or document content. occurred_at is UTC, to the minute.
+CREATE TABLE IF NOT EXISTS analytics_events (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  referrer_domain TEXT,
+  props_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_analytics_events_name_time ON analytics_events(name, occurred_at);
+-- Columns the daily stats query filters on. Session indexes are created after
+-- column migrations: an older sessions table may not have those columns yet.
+CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at);
+CREATE INDEX IF NOT EXISTS idx_receipts_created ON receipts(created_at);
+CREATE INDEX IF NOT EXISTS idx_credit_ledger_created ON credit_ledger(created_at);
+CREATE INDEX IF NOT EXISTS idx_challenges_claimed_at ON challenges(claimed_at);
 `;
+
+/** Stats filters on these session columns. Skip when an older table lacks them. */
+const SESSION_STATS_INDEXES = [
+  ["idx_sessions_started", "started_at"],
+  ["idx_sessions_completed", "completed_at"],
+] as const;
 
 /** Columns added after a table first shipped: [table, column, definition]. */
 const ADDED_COLUMNS: [string, string, string][] = [
@@ -440,6 +464,11 @@ async function openSqlite(): Promise<Db> {
     const cols = raw.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
     if (!cols.some((c) => c.name === column)) raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
   }
+  const sessionCols = raw.prepare(`PRAGMA table_info(sessions)`).all() as { name: string }[];
+  for (const [index, column] of SESSION_STATS_INDEXES) {
+    if (!sessionCols.some((col) => col.name === column)) continue;
+    raw.exec(`CREATE INDEX IF NOT EXISTS ${index} ON sessions(${column})`);
+  }
   return sqliteAdapter(raw);
 }
 
@@ -493,6 +522,9 @@ async function openPostgres(): Promise<Db> {
     await tx.unsafe(SCHEMA);
     for (const [table, column, def] of ADDED_COLUMNS) {
       await tx.unsafe(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${def}`);
+    }
+    for (const [index, column] of SESSION_STATS_INDEXES) {
+      await tx.unsafe(`CREATE INDEX IF NOT EXISTS ${index} ON sessions(${column})`);
     }
   });
   return postgresAdapter(sql);

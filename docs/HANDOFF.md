@@ -9,6 +9,8 @@ YYYY-MM-DD BLOCKED — what stopped the work · what the next agent needs
 
 ## Log
 
+2026-10-22 DONE — Rebased the funnel onto 4ad3ca6 (#48). Beacon and stats limits use ipLimitKey and are skipped when ipHash returns null; the global beacon cap still applies. Those LIMITS entries are env-backed. /privacy has an Analytics paragraph. · PR #46 · tsc, eslint, vitest (372)
+2026-10-22 DONE — Rebased the first-party funnel onto 2d14afd (#52). Stats rate limit uses hashedClientIp, per-client beacon caps run before the global cap, challenge steps call trackChallenge, and a demo defense is not written into the admin event funnel. Unset STATS_TOKEN stays 404. · PR #46 · tsc, eslint, vitest (349)
 2026-10-22 DONE — All-non-answer receipt model id is non-answer with provider rule, so modelVersions reads rule:non-answer. · PR #53 · vitest non-answer
 2026-10-22 DONE — Retriggered CI for #53 after the rebase force-push did not start the Check and Browser jobs. · PR #53 · same tree as the review commit, plus this note
 2026-10-22 DONE — Review of #53: rebased onto e9ae6db, keeping the shareable receipt cards and the calibration follow-up. Rubric prompt is defend-it-rubric-v0.5. GRADER_TIMEOUT_MS clamps near 59s. A budget-fallback grader stops 10s before the route deadline. An all-non-answer receipt is labeled rule:non-answer. · PR #53 · tsc, eslint, vitest (318), playwright e2e (12)
