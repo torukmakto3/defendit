@@ -289,6 +289,30 @@ test("a spent beta allowance shows the out-of-credits screen", async ({ page }) 
   await expect(page.getByText(/Question 1 \//)).toHaveCount(0);
 });
 
+test("a paste is still on the receipt after a reload", async ({ page }) => {
+  await signIn(page, email("paste"));
+  await uploadDeliverable(page, "standard");
+  await openDefend(page);
+  await expectQuestion(page, 1);
+  const signals = page.waitForResponse(
+    (res) => {
+      if (!res.url().includes("/api/sessions/defend/signals") || res.request().method() !== "POST") return false;
+      const body = res.request().postDataJSON() as { pasteEvents?: number } | null;
+      return (body?.pasteEvents ?? 0) >= 1 && res.status() === 200;
+    },
+    { timeout: 8_000 },
+  );
+  // A synthetic paste. The response body is not read: Playwright can stall on it.
+  await page.locator("textarea").evaluate((el) => {
+    el.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true }));
+  });
+  await signals;
+  await page.reload();
+  await expectQuestion(page, 1);
+  await defendToReceipt(page);
+  await expect(page.getByText("Concerns · 1 paste")).toBeVisible();
+});
+
 async function defenseHoldIds(page: Page): Promise<string[]> {
   const res = await page.request.get("/api/dashboard");
   expect(res.ok()).toBeTruthy();

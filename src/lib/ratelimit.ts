@@ -63,6 +63,7 @@ export const LIMITS = {
   sessionStartPerUser: { limit: 60, windowSec: 60 * 60 },
   learnTurnPerUser: { limit: 120, windowSec: 60 * 60 },
   defendAnswerPerUser: { limit: 300, windowSec: 60 * 60 },
+  defendSignalsPerUser: { limit: 600, windowSec: 60 * 60 },
   defendCompletePerUser: { limit: 20, windowSec: 24 * 60 * 60 },
   requestCreatePerUser: { limit: 50, windowSec: 24 * 60 * 60 },
 } as const;

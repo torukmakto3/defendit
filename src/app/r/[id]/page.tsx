@@ -10,6 +10,7 @@ import { LoadTest } from "@/components/receipt/LoadTest";
 import { claimResults, gradedWithLine } from "@/components/receipt/metrics";
 import { PlotterStamp } from "@/components/receipt/PlotterStamp";
 import { ToleranceChart } from "@/components/receipt/ToleranceChart";
+import { integritySummary } from "@/lib/integrity";
 import type { SignedReceipt } from "@/lib/types";
 
 interface ChallengeResultView {
@@ -138,7 +139,7 @@ export default function ReceiptPage() {
                 : "Not disclosed by the creator"}
             </b>
           </div>
-          <div><small>Integrity (reported separately from the score)</small><b>{p.integrity.status}</b></div>
+          <div><small>Integrity (reported separately from the score)</small><b>{integritySummary(p.integrity)}</b></div>
           <div><small>Receipt</small><b>{p.id} &middot; rubric {p.rubricVersion}</b></div>
         </div>
         <p className="text-xs text-[var(--ink-2)]">

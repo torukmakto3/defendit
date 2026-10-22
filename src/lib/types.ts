@@ -158,7 +158,11 @@ export interface ReceiptPayload {
    * Receipts minted before this field omit it and still verify.
    */
   graders?: ReceiptGrader[];
-  integrity: { status: IntegrityStatus };
+  /**
+   * Status is always signed. Paste and focus-loss totals are signed when
+   * they are non-zero. Receipts minted before those totals omit them.
+   */
+  integrity: { status: IntegrityStatus; pasteEvents?: number; focusBlurEvents?: number };
   /**
    * Present only when the creator chose to show their name. The name is
    * self-reported; only the account's email was verified at sign-in.

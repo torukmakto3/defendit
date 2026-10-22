@@ -405,6 +405,9 @@ const ADDED_COLUMNS: [string, string, string][] = [
   // Retention of the file is unchanged.
   ["defense_requests", "learn_closed_at", "TEXT"],
   ["credit_wallets", "learn_open", "INTEGER NOT NULL DEFAULT 0"],
+  // Monotonic integrity totals. A reload restores these; a later report cannot lower them.
+  ["sessions", "paste_events", "INTEGER NOT NULL DEFAULT 0"],
+  ["sessions", "focus_blur_events", "INTEGER NOT NULL DEFAULT 0"],
 ];
 
 let dbPromise: Promise<Db> | null = null;

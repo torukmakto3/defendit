@@ -1,5 +1,26 @@
 import type { IntegritySignals, TurnRecord } from "./types";
 
+/** A client total is a non-negative integer. Anything else counts as zero. */
+export function clampIntegrityCount(value: unknown): number {
+  const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : 0;
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(10_000, Math.floor(n));
+}
+
+/** Status plus the stored totals, for the receipt page and the PDF. */
+export function integritySummary(integrity: {
+  status: string;
+  pasteEvents?: number;
+  focusBlurEvents?: number;
+}): string {
+  const parts = [integrity.status];
+  const pastes = clampIntegrityCount(integrity.pasteEvents);
+  const blurs = clampIntegrityCount(integrity.focusBlurEvents);
+  if (pastes > 0) parts.push(`${pastes} ${pastes === 1 ? "paste" : "pastes"}`);
+  if (blurs > 0) parts.push(`${blurs} ${blurs === 1 ? "focus loss" : "focus losses"}`);
+  return parts.join(" · ");
+}
+
 export function computeIntegrity(opts: {
   turns: TurnRecord[];
   pasteEvents?: number;

@@ -81,7 +81,11 @@ export function buildSignedReceipt(opts: {
     rubricVersion: RUBRIC_VERSION,
     modelVersions: opts.grades.map((g) => `${g.provider}:${g.modelId}`),
     ...(graders ? { graders } : {}),
-    integrity: { status: opts.integrity.status },
+    integrity: {
+      status: opts.integrity.status,
+      ...(opts.integrity.pasteEvents > 0 ? { pasteEvents: opts.integrity.pasteEvents } : {}),
+      ...(opts.integrity.focusBlurEvents > 0 ? { focusBlurEvents: opts.integrity.focusBlurEvents } : {}),
+    },
     attempt: opts.attempt ?? 1,
     assuranceLevel: "L1",
   };
