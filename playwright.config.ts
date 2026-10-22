@@ -1,7 +1,14 @@
+import path from "node:path";
 import { defineConfig, devices } from "@playwright/test";
 
 const port = 3100;
 const baseURL = process.env.E2E_BASE_URL || `http://127.0.0.1:${port}`;
+// Google Fonts sometimes answers with /l/font?kit=…&skey=… instead of a .woff2
+// path. Next 16.4.2 Turbopack then fails the production build
+// ("next/font/google queries have exactly one entry"). This fixture is the
+// stable stylesheet for the three layout fonts, so Browser does not depend on
+// that response. The .woff2 files are still downloaded.
+const googleFontMock = path.resolve(process.cwd(), "e2e/google-fonts.json");
 
 /**
  * Mock-mode browser tests. The server is started with MOCK_LLM=1 and no
@@ -50,6 +57,7 @@ export default defineConfig({
       // production, so the IP salt has to be present or a demo start returns 503.
       DEMO_ENABLED: "1",
       DEMO_IP_SALT: "ab".repeat(32),
+      NEXT_FONT_GOOGLE_MOCKED_RESPONSES: googleFontMock,
     },
   },
 });
