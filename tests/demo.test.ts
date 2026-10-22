@@ -9,6 +9,7 @@ import { POST as ingest } from "../src/app/api/creator/ingest/route";
 import { GET as learnProjects } from "../src/app/api/learn/projects/route";
 import { POST as createRequest } from "../src/app/api/requests/route";
 import { POST as answer } from "../src/app/api/sessions/defend/answer/route";
+import { GET as defendState } from "../src/app/api/sessions/defend/state/route";
 import { POST as complete } from "../src/app/api/sessions/defend/complete/route";
 import { POST as startSessionRoute } from "../src/app/api/sessions/start/route";
 import { POST as upload } from "../src/app/api/upload/route";
@@ -200,6 +201,62 @@ describe("sample demo admission", () => {
 });
 
 describe("sample demo defense", () => {
+  it("reloads a sample interview onto the same session", async () => {
+    const ip = "203.0.113.88";
+    const opened = await openDemo(ip);
+    expect(opened.status).toBe(200);
+    const before = await defendState(
+      new Request(`http://localhost/api/sessions/defend/state?token=${encodeURIComponent(opened.json.token)}`, {
+        headers: { cookie: opened.cookie },
+      }),
+    );
+    expect(before.status).toBe(404);
+
+    const started = await startSessionRoute(
+      req("/api/sessions/start", { token: opened.json.token, mode: "defend" }, ip, opened.cookie),
+    );
+    const startJson = await started.json();
+    expect(started.status).toBe(200);
+    const first = (startJson.probes as { id: string }[])[0];
+    const saved = await answer(
+      req(
+        "/api/sessions/defend/answer",
+        {
+          sessionId: startJson.sessionId,
+          probeId: first.id,
+          answer: "Harbor indexes Markdown on one machine. The 2,000-note assumption is what would break it.",
+        },
+        ip,
+        opened.cookie,
+      ),
+    );
+    expect(saved.status).toBe(200);
+
+    const resumed = await defendState(
+      new Request(`http://localhost/api/sessions/defend/state?token=${encodeURIComponent(opened.json.token)}`, {
+        headers: { cookie: opened.cookie },
+      }),
+    );
+    expect(resumed.status).toBe(200);
+    const body = await resumed.json();
+    expect(body.sessionId).toBe(startJson.sessionId);
+    expect(body).toMatchObject({ status: "in_progress", answered: 1, total: 3, demo: true });
+    expect(body.probes).toHaveLength(3);
+    expect(JSON.stringify(body.probes)).not.toContain("expectedFocus");
+
+    const stranger = await defendState(
+      new Request(`http://localhost/api/sessions/defend/state?token=${encodeURIComponent(opened.json.token)}`),
+    );
+    expect(stranger.status).toBe(401);
+
+    const db = await getDb();
+    const sessions = await db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM sessions s JOIN defense_requests r ON r.id = s.request_id WHERE r.token = ?`,
+      [opened.json.token],
+    );
+    expect(Number(sessions?.n)).toBe(1);
+  });
+
   it("signs a demo receipt and keeps the anonymous pass off every other feature", async () => {
     const ip = "203.0.113.77";
     const before = await spent();

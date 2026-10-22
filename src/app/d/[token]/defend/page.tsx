@@ -28,6 +28,7 @@ interface DefendState {
   startedAt: string;
   pasteEvents: number;
   focusBlurEvents: number;
+  demo?: boolean;
 }
 
 export default function DefendPage() {
@@ -238,6 +239,7 @@ export default function DefendPage() {
       setProbes(state.probes);
       pasteRef.current = positiveCount(state.pasteEvents);
       focusRef.current = positiveCount(state.focusBlurEvents);
+      if (state.demo) setSampleDemo(true);
       if (state.startedAt) setSessionStartedAt(state.startedAt);
       setError(null);
       setAnswer("");
