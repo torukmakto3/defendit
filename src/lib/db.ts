@@ -202,6 +202,16 @@ const ADDED_COLUMNS: [string, string, string][] = [
   ["sessions", "completion_tokens", "INTEGER NOT NULL DEFAULT 0"],
   ["sessions", "cost_usd", "DOUBLE PRECISION NOT NULL DEFAULT 0"],
   ["sessions", "over_budget", "INTEGER NOT NULL DEFAULT 0"],
+  // Cap applied to this defense. NULL on rows created before per-plan caps.
+  ["sessions", "cost_tier", "TEXT"],
+  ["sessions", "budget_usd", "DOUBLE PRECISION"],
+  // 1 when a call was skipped or moved to the cheap model so the cap would hold.
+  ["sessions", "budget_capped", "INTEGER NOT NULL DEFAULT 0"],
+  // LiveKit interviewer usage, reported by the agent. Dollars are seconds × env rates.
+  ["sessions", "voice_agent_sec", "DOUBLE PRECISION NOT NULL DEFAULT 0"],
+  ["sessions", "voice_stt_sec", "DOUBLE PRECISION NOT NULL DEFAULT 0"],
+  ["sessions", "voice_tts_sec", "DOUBLE PRECISION NOT NULL DEFAULT 0"],
+  ["sessions", "voice_cost_usd", "DOUBLE PRECISION NOT NULL DEFAULT 0"],
   ["flashcards", "source_enc", "TEXT"],
   // Live grading progress for the interview UI: {done, total, stage}.
   ["sessions", "grading_progress", "TEXT"],

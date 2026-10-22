@@ -286,7 +286,7 @@ export async function setDisplayName(userId: string, name: string | null) {
  * verified email on the Google account (Google allows non-Gmail addresses).
  * Signing in with a different Gmail does not grant admin.
  */
-function isAdminEmail(email: string): boolean {
+export function isAdminEmail(email: string): boolean {
   const admins = (process.env.ADMIN_EMAILS || "")
     .split(",")
     .map((e) => normalizeEmail(e))

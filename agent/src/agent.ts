@@ -19,6 +19,7 @@ import { createHmac } from "node:crypto";
 import { ReadableStream } from "node:stream/web";
 import { fileURLToPath } from "node:url";
 import { SPEAKABLE_BUDGET_MS, toSpeakable, type SpeakableRewrite } from "./speech/speakable.js";
+import { emptySpeechTotals, noteSpeechMetric } from "./speech-usage.js";
 import { selectTts, type TtsChoice } from "./tts.js";
 
 export const AGENT_NAME = "defend-it-interviewer";
@@ -224,6 +225,17 @@ export default defineAgent({
 
     await ctx.connect();
     const plan = await call<Plan>("/api/voice/agent/plan", { sessionId });
+    const speech = emptySpeechTotals();
+    const sessionStarted = Date.now();
+    // Session minutes are the LiveKit bill. STT/TTS seconds are added when metrics arrive.
+    ctx.addShutdownCallback(async () => {
+      await call("/api/voice/agent/usage", {
+        sessionId,
+        agentSeconds: (Date.now() - sessionStarted) / 1000,
+        sttSeconds: speech.sttSeconds,
+        ttsSeconds: speech.ttsSeconds,
+      }).catch(() => {});
+    });
 
     let interview: Interview | undefined;
     const session = new voice.AgentSession({
@@ -245,6 +257,9 @@ export default defineAgent({
 
     const audioClock = Date.now();
     let reportedAudio = false;
+    session.on(voice.AgentSessionEventTypes.MetricsCollected, (ev) => {
+      noteSpeechMetric(speech, ev.metrics);
+    });
     session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
       if (!reportedAudio && ev.newState === "speaking") {
         reportedAudio = true;

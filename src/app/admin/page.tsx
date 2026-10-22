@@ -14,8 +14,23 @@ interface SessionRow {
   prompt_tokens: number;
   completion_tokens: number;
   cost_usd: number;
+  llm_cost_usd: number;
+  voice_cost_usd: number;
+  total_cost_usd: number;
   over_budget: number;
   budget_usd: number;
+  cost_tier: string;
+  budget_capped: number;
+}
+
+interface CostSummary {
+  count: number;
+  cappedCount: number;
+  p50Usd: number;
+  p90Usd: number;
+  maxUsd: number;
+  llmUsd: number;
+  voiceUsd: number;
 }
 
 function formatUsd(amount: number): string {
@@ -27,6 +42,7 @@ function formatUsd(amount: number): string {
 
 export default function AdminPage() {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
+  const [summary, setSummary] = useState<CostSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -35,6 +51,7 @@ export default function AdminPage() {
         const d = await r.json();
         if (!r.ok) throw new Error(d.error || "Failed");
         setSessions(d.sessions || []);
+        setSummary(d.summary ?? null);
       })
       .catch((e) => setError(e.message));
   }, []);
@@ -47,7 +64,41 @@ export default function AdminPage() {
         AI council.
       </p>
       {error && <p className="mt-6 text-danger">{error} — admins are listed in ADMIN_EMAILS.</p>}
-      <div className="mt-8 overflow-x-auto panel">
+      {summary && (
+        <div className="mt-8 grid gap-3 sm:grid-cols-4">
+          <div className="panel p-4">
+            <div className="mono text-[11px] uppercase tracking-[0.08em] text-[var(--ink-2)]">
+              Last {summary.count} defenses
+            </div>
+            <div className="mt-2 text-2xl font-bold">{formatUsd(summary.p50Usd)}</div>
+            <div className="text-sm text-[var(--ink-2)]">median total</div>
+          </div>
+          <div className="panel p-4">
+            <div className="mono text-[11px] uppercase tracking-[0.08em] text-[var(--ink-2)]">p90 / max</div>
+            <div className="mt-2 text-2xl font-bold">{formatUsd(summary.p90Usd)}</div>
+            <div className="text-sm text-[var(--ink-2)]">max {formatUsd(summary.maxUsd)}</div>
+          </div>
+          <div className="panel p-4">
+            <div className="mono text-[11px] uppercase tracking-[0.08em] text-[var(--ink-2)]">LLM vs voice</div>
+            <div className="mt-2 text-sm">
+              <div>LLM {formatUsd(summary.llmUsd)}</div>
+              <div>Voice {formatUsd(summary.voiceUsd)}</div>
+            </div>
+          </div>
+          <div className="panel p-4">
+            <div className="mono text-[11px] uppercase tracking-[0.08em] text-[var(--ink-2)]">Capped</div>
+            <div className="mt-2 text-2xl font-bold">{summary.cappedCount}</div>
+            <div className="text-sm text-[var(--ink-2)]">defenses stopped at the cap</div>
+          </div>
+        </div>
+      )}
+      <p className="mt-4 text-sm">
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- CSV file download, not an app page */}
+        <a href="/api/admin/sessions?format=csv" className="text-[var(--moss)] underline">
+          Download CSV
+        </a>
+      </p>
+      <div className="mt-4 overflow-x-auto panel">
         <table className="w-full text-left text-sm">
           <thead className="mono border-b-[1.5px] border-[var(--ink)] text-[11px] uppercase tracking-[0.08em] text-[var(--ink-2)]">
             <tr>
@@ -75,9 +126,13 @@ export default function AdminPage() {
                   </td>
                   <td className="px-4 py-3">{s.difficulty}</td>
                   <td className="px-4 py-3">
-                    <div>{formatUsd(s.cost_usd)}</div>
+                    <div>{formatUsd(s.total_cost_usd)}</div>
                     <div className="text-xs text-[var(--ink-2)]">
-                      {s.prompt_tokens.toLocaleString()} in · {s.completion_tokens.toLocaleString()} out
+                      LLM {formatUsd(s.llm_cost_usd)} · voice {formatUsd(s.voice_cost_usd)}
+                    </div>
+                    <div className="text-xs text-[var(--ink-2)]">
+                      {s.cost_tier} cap {formatUsd(s.budget_usd)}
+                      {s.budget_capped === 1 ? " · capped" : ""}
                     </div>
                     {s.over_budget === 1 && (
                       <div className="text-xs text-danger">Over {formatUsd(s.budget_usd)}</div>
