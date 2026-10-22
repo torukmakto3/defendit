@@ -267,7 +267,14 @@ export async function challengeEvents(
   );
 }
 
-/** Move unclaimed and unfinished challenges past their window to expired, and refund a held credit. */
+/**
+ * Move unclaimed and unfinished challenges past their window to expired, and
+ * refund a held credit. Each due challenge is one transaction: the status
+ * change matches only an open or claimed row that is still due, and the
+ * credit and beta reservation are returned only when that update changes
+ * exactly one row. A defense that finished first keeps its consumed credit
+ * and its reservation.
+ */
 export async function expireDueChallenges(db?: Db): Promise<number> {
   const conn = db ?? (await getDb());
   const now = new Date().toISOString();
@@ -277,18 +284,27 @@ export async function expireDueChallenges(db?: Db): Promise<number> {
         OR (status = 'claimed' AND finish_by IS NOT NULL AND finish_by < ?)`,
     [now, now],
   );
-  if (due.length === 0) return 0;
-  await conn.run(
-    `UPDATE challenges SET status = 'expired'
-     WHERE (status = 'open' AND expires_at < ?)
-        OR (status = 'claimed' AND finish_by IS NOT NULL AND finish_by < ?)`,
-    [now, now],
-  );
+  let expired = 0;
   for (const row of due) {
-    await refundChallengeHold(conn, row);
-    if (row.sponsor_type === "beta") await releaseChallengeDefenseBudget(row.id, conn);
+    const won = await conn.transaction(async (tx) => {
+      const updated = await tx.run(
+        `UPDATE challenges SET status = 'expired'
+         WHERE id = ?
+           AND status IN ('open', 'claimed')
+           AND (
+             (status = 'open' AND expires_at < ?)
+             OR (status = 'claimed' AND finish_by IS NOT NULL AND finish_by < ?)
+           )`,
+        [row.id, now, now],
+      );
+      if (updated.changes !== 1) return false;
+      await refundChallengeHold(tx, row);
+      if (row.sponsor_type === "beta") await releaseChallengeDefenseBudget(row.id, tx);
+      return true;
+    });
+    if (won) expired += 1;
   }
-  return due.length;
+  return expired;
 }
 
 function challengeHoldKey(challengeId: string): string {

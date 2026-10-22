@@ -327,6 +327,11 @@ function conflicts(row: LedgerRow, input: Insert): boolean {
 }
 
 async function insertEntry(tx: Db, input: Insert): Promise<LedgerEntry> {
+  return (await insertEntryOnce(tx, input)).entry;
+}
+
+/** `inserted` is false when this idempotency key was already stored. */
+async function insertEntryOnce(tx: Db, input: Insert): Promise<{ entry: LedgerEntry; inserted: boolean }> {
   if (!input.idempotencyKey || input.idempotencyKey.length > 200) {
     throw new HttpError(400, "Idempotency key is missing.");
   }
@@ -340,7 +345,7 @@ async function insertEntry(tx: Db, input: Insert): Promise<LedgerEntry> {
   ]);
   if (existing) {
     if (conflicts(existing, input)) throw new HttpError(409, "That idempotency key was already used.");
-    return mapRow(existing);
+    return { entry: mapRow(existing), inserted: false };
   }
   if (input.amount < 0 && input.source) {
     const have = await sumBucket(tx, input.userId, input.kind, input.source);
@@ -377,11 +382,11 @@ async function insertEntry(tx: Db, input: Insert): Promise<LedgerEntry> {
       input.idempotencyKey,
     ]);
     if (!raced || conflicts(raced, input)) throw new HttpError(409, "That idempotency key was already used.");
-    return mapRow(raced);
+    return { entry: mapRow(raced), inserted: false };
   }
   const row = await tx.get<LedgerRow>(`SELECT * FROM credit_ledger WHERE id = ?`, [id]);
   if (!row) throw new HttpError(500, "Credit entry was not stored");
-  return mapRow(row);
+  return { entry: mapRow(row), inserted: true };
 }
 
 async function sumBucket(db: Db, userId: string, kind: string, source: string): Promise<number> {
@@ -507,20 +512,22 @@ export async function reserveChallengeDefenseBudget(requestId: string, userId: s
   });
 }
 
-/** Give a challenge-defense reservation back. No reservation means nothing to release. */
+/**
+ * Give a challenge-defense reservation back. No reservation means nothing to
+ * release. `spent_cents` moves only when this call stores the release row.
+ * A second caller finds that idempotency key and leaves the counter alone.
+ * The budget row is locked first, so the seed sum does not include this release.
+ */
 export async function releaseChallengeDefenseBudget(challengeId: string, db?: Db): Promise<void> {
   const key = challengeDefenseBudgetKey(challengeId);
   const releaseKey = challengeDefenseBudgetReleaseKey(challengeId);
   await withTx(db, async (tx) => {
     await lockBetaBudget(tx);
-    const prior = await tx.get<{ id: string }>(`SELECT id FROM credit_ledger WHERE idempotency_key = ?`, [releaseKey]);
-    if (prior) return;
     const reserved = await tx.get<LedgerRow>(`SELECT * FROM credit_ledger WHERE idempotency_key = ?`, [key]);
     if (!reserved) return;
     const cost = num(reserved.budget_cents);
     if (cost <= 0) return;
-    await releaseBetaBudget(tx, cost);
-    await insertEntry(tx, {
+    const stored = await insertEntryOnce(tx, {
       userId: reserved.user_id,
       kind: "defense",
       reason: "refund",
@@ -534,6 +541,8 @@ export async function releaseChallengeDefenseBudget(challengeId: string, db?: Db
       budgetCents: -cost,
       periodId: null,
     });
+    if (!stored.inserted) return;
+    await releaseBetaBudget(tx, cost);
   });
 }
 

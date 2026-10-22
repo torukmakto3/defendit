@@ -21,6 +21,7 @@ import {
   expireDueChallenges,
   getPublicChallenge,
   ledgerForSlug,
+  noteChallengeDefended,
   publicResultLines,
   receiptGate,
   recordResultView,
@@ -858,6 +859,114 @@ describe("challenge links", () => {
     );
     expect(Number(reserved?.amount)).toBe(0);
     expect(released).toBeUndefined();
+  });
+
+  it("releases the beta reservation once when two expiry runs overlap", async () => {
+    const creator = await signIn(nextEmail("budget-race-c"));
+    await fund(creator, 1);
+    const defender = await signIn(nextEmail("budget-race-d"));
+    const created = await createChallenge({
+      user: creator,
+      subject: "Budget race",
+      difficulty: "standard",
+    });
+    const claimed = await claimChallenge({
+      slug: created.slug,
+      user: defender,
+      ip: nextIp(),
+      adultConfirmed: true,
+    });
+    await ingestDeliverable({ token: claimed.token, user: defender, fileName: "memo.md", buffer: doc });
+    await startSession({ token: claimed.token, user: defender, mode: "defend" });
+    const db = await getDb();
+    const challenge = await db.get<{ id: string }>(`SELECT id FROM challenges WHERE slug = ?`, [created.slug]);
+    if (!challenge) throw new Error("missing challenge");
+    await db.run(`UPDATE challenges SET finish_by = ? WHERE id = ?`, [
+      new Date(Date.now() - 1000).toISOString(),
+      challenge.id,
+    ]);
+    const before = await (await getDb()).get<{ spent_cents: number | string | null }>(
+      `SELECT spent_cents FROM credit_budget WHERE id = 'beta'`,
+    );
+    const [first, second] = await Promise.all([expireDueChallenges(), expireDueChallenges()]);
+    expect(first + second).toBe(1);
+    const after = await db.get<{ spent_cents: number | string | null }>(
+      `SELECT spent_cents FROM credit_budget WHERE id = 'beta'`,
+    );
+    expect(Number(after?.spent_cents ?? 0)).toBe(Number(before?.spent_cents ?? 0) - betaDefenseCents());
+    const releases = await db.get<{ n: number | string }>(
+      `SELECT COUNT(*) AS n FROM credit_ledger WHERE idempotency_key = ?`,
+      [`budget-release:challenge-defense:${challenge.id}`],
+    );
+    const refunds = await db.get<{ n: number | string }>(
+      `SELECT COUNT(*) AS n FROM credit_ledger WHERE idempotency_key = ?`,
+      [`refund:challenge:${challenge.id}`],
+    );
+    expect(Number(releases?.n)).toBe(1);
+    expect(Number(refunds?.n)).toBe(1);
+    const status = await db.get<{ status: string }>(`SELECT status FROM challenges WHERE id = ?`, [challenge.id]);
+    expect(status?.status).toBe("expired");
+  });
+
+  it("keeps a consumed challenge credit and its reservation when the defense finished before expiry", async () => {
+    const creator = await signIn(nextEmail("budget-done-c"));
+    await fund(creator, 1);
+    const defender = await signIn(nextEmail("budget-done-d"));
+    const created = await createChallenge({
+      user: creator,
+      subject: "Finished before the window",
+      difficulty: "standard",
+    });
+    const claimed = await claimChallenge({
+      slug: created.slug,
+      user: defender,
+      ip: nextIp(),
+      adultConfirmed: true,
+    });
+    const uploaded = await ingestDeliverable({
+      token: claimed.token,
+      user: defender,
+      fileName: "memo.md",
+      buffer: doc,
+    });
+    const session = await startSession({ token: claimed.token, user: defender, mode: "defend" });
+    const db = await getDb();
+    const challenge = await db.get<{ id: string; request_id: string }>(
+      `SELECT id, request_id FROM challenges WHERE slug = ?`,
+      [created.slug],
+    );
+    if (!challenge) throw new Error("missing challenge");
+    await db.run(`UPDATE challenges SET finish_by = ? WHERE id = ?`, [
+      new Date(Date.now() - 1000).toISOString(),
+      challenge.id,
+    ]);
+    await noteChallengeDefended(challenge.request_id, {
+      sessionId: session.sessionId,
+      deliverableId: uploaded.deliverableId,
+      receiptId: "rcpt_finished_before_expiry",
+    });
+    const before = await db.get<{ spent_cents: number | string | null }>(
+      `SELECT spent_cents FROM credit_budget WHERE id = 'beta'`,
+    );
+    expect(await expireDueChallenges()).toBe(0);
+    const after = await db.get<{ spent_cents: number | string | null }>(
+      `SELECT spent_cents FROM credit_budget WHERE id = 'beta'`,
+    );
+    expect(Number(after?.spent_cents ?? 0)).toBe(Number(before?.spent_cents ?? 0));
+    const status = await db.get<{ status: string }>(`SELECT status FROM challenges WHERE id = ?`, [challenge.id]);
+    expect(status?.status).toBe("defended");
+    const refund = await db.get<{ id: string }>(`SELECT id FROM credit_ledger WHERE idempotency_key = ?`, [
+      `refund:challenge:${challenge.id}`,
+    ]);
+    const release = await db.get<{ id: string }>(`SELECT id FROM credit_ledger WHERE idempotency_key = ?`, [
+      `budget-release:challenge-defense:${challenge.id}`,
+    ]);
+    const reserved = await db.get<{ id: string }>(`SELECT id FROM credit_ledger WHERE idempotency_key = ?`, [
+      `budget:challenge-defense:${challenge.id}`,
+    ]);
+    expect(refund).toBeUndefined();
+    expect(release).toBeUndefined();
+    expect(reserved).toBeTruthy();
   });
 
   it("rate limits public share clicks", async () => {
