@@ -8,7 +8,7 @@ import {
   refundPaidCredit,
   type RefundReason,
 } from "./billing";
-import { TIER_LEGEND, tierForScore, type ResultTier } from "./challenge-tier";
+import { challengesEnabled, TIER_LEGEND, tierForScore, type ResultTier } from "./challenge-tier";
 import { appUrl } from "./config";
 import { getDb, type Db } from "./db";
 import { HttpError } from "./errors";
@@ -29,7 +29,7 @@ import type { Difficulty, ReceiptOutcome, SignedReceipt } from "./types";
  */
 
 export const SPONSOR_LABEL = "Sponsored by DefendIT";
-export { TIER_LEGEND, tierForScore };
+export { challengesEnabled, TIER_LEGEND, tierForScore };
 export type { ResultTier };
 
 export type ChallengeStatus = "open" | "claimed" | "defended" | "expired" | "revoked";
@@ -48,10 +48,6 @@ export type ChallengeEventName =
 
 const SLUG_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz";
 const SLUG_LENGTH = 8;
-
-export function challengesEnabled(): boolean {
-  return process.env.CHALLENGES_ENABLED === "1" || process.env.CHALLENGES_ENABLED === "true";
-}
 
 function requireEnabled(): void {
   if (!challengesEnabled()) throw new HttpError(404, "Challenges are not available.");
@@ -825,6 +821,7 @@ export interface PublicResult {
   sponsorLabel: string;
   subject: string;
   legend: string;
+  shareUrl: string;
 }
 
 function resultFromRow(row: ChallengeRow, signed: SignedReceipt, audience: "public" | "defender"): PublicResult {
@@ -850,6 +847,7 @@ function resultFromRow(row: ChallengeRow, signed: SignedReceipt, audience: "publ
     sponsorLabel: sponsorLabel(asSponsor(row.sponsor_type)),
     subject: row.subject,
     legend: TIER_LEGEND,
+    shareUrl: appUrl(`/r/${signed.payload.id}`),
   };
 }
 

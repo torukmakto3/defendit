@@ -52,6 +52,11 @@ export default function VerifyPage() {
       .then(async (r) => {
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || "Not found");
+        if (!j.receipt) {
+          setOutcome(j.challengeResult?.tier ? `Defended · ${j.challengeResult.tier}` : "Not published");
+          setScore(null);
+          return;
+        }
         setExpected(j.receipt.payload.deliverable.sha256);
         setOutcome(j.receipt.payload.outcome);
         setScore(j.receipt.payload.score);
@@ -77,6 +82,13 @@ export default function VerifyPage() {
       </p>
 
       {error && <p className="mt-6 text-danger">{error}</p>}
+
+      {!expected && outcome && (
+        <div className="panel mt-8 p-6">
+          <p>{outcome}</p>
+          <p className="mt-2 text-sm text-[var(--ink-2)]">The numeric score for this result is not published.</p>
+        </div>
+      )}
 
       {expected && (
         <div className="panel mt-8 space-y-4 p-6">

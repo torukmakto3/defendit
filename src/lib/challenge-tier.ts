@@ -26,3 +26,8 @@ export function tierForScore(score: number): ResultTier {
 
 export const TIER_LEGEND =
   "Strong is 85 or higher. Defended is 70 to 84. Under 70 is still sharpening.";
+
+/** Free beta challenges. Default off. */
+export function challengesEnabled(): boolean {
+  return process.env.CHALLENGES_ENABLED === "1" || process.env.CHALLENGES_ENABLED === "true";
+}

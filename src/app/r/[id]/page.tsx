@@ -4,15 +4,32 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Companion } from "@/components/companion/Companion";
+import { PublicChallengeResult } from "@/components/challenge/PublicResult";
 import { LoadTest } from "@/components/receipt/LoadTest";
 import { claimResults, gradedWithLine } from "@/components/receipt/metrics";
 import { PlotterStamp } from "@/components/receipt/PlotterStamp";
 import { ToleranceChart } from "@/components/receipt/ToleranceChart";
 import type { SignedReceipt } from "@/lib/types";
 
+interface ChallengeResultView {
+  slug: string;
+  audience: "public" | "defender";
+  visibility: string;
+  tier: string | null;
+  score: number | null;
+  showScore: boolean;
+  headline: string;
+  verifyPath: string | null;
+  sponsorLabel: string;
+  subject: string;
+  legend: string;
+  shareUrl: string;
+}
+
 interface ReceiptView {
-  receipt: SignedReceipt;
-  signatureValid: boolean;
+  receipt: SignedReceipt | null;
+  signatureValid: boolean | null;
+  challengeResult?: ChallengeResultView | null;
 }
 
 export default function ReceiptPage() {
@@ -22,18 +39,17 @@ export default function ReceiptPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`/api/receipts/${id}`)
+    fetch(`/api/receipts/${id}?view=1`)
       .then(async (r) => {
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || "Not found");
         setData(j);
+        if (j.challengeResult?.audience === "public") return;
+        const labelsRes = await fetch(`/api/receipts/${id}/labels`);
+        const labelsJson = labelsRes.ok ? await labelsRes.json() : { labels: null };
+        setLabels(labelsJson.labels ?? null);
       })
       .catch((e) => setError(e.message));
-    // Claim names only come back for the receipt's creator, within retention.
-    fetch(`/api/receipts/${id}/labels`)
-      .then((r) => (r.ok ? r.json() : { labels: null }))
-      .then((j) => setLabels(j.labels ?? null))
-      .catch(() => setLabels(null));
   }, [id]);
 
   if (error) {
@@ -47,6 +63,17 @@ export default function ReceiptPage() {
     return (
       <div className="shell">
         <p>Loading receipt…</p>
+      </div>
+    );
+  }
+
+  if (data.challengeResult?.audience === "public") {
+    return <PublicChallengeResult result={data.challengeResult} />;
+  }
+  if (!data.receipt) {
+    return (
+      <div className="shell">
+        <p>This result is not published.</p>
       </div>
     );
   }
