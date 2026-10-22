@@ -11,6 +11,7 @@ import {
 } from "./analytics";
 import { getDb, type Db } from "./db";
 import { newId } from "./ids";
+import { demoDefenseStats } from "./stats";
 
 /**
  * Record one funnel event. Failures are swallowed so a tracking error never
@@ -73,7 +74,8 @@ export async function funnelReport(now = new Date()): Promise<FunnelReport> {
     ["challenge_created", since],
   );
   const created = createdRows.map((row) => readCreatedProps(row.props_json));
-  return buildFunnel({ counts, created, since });
+  const demo = await demoDefenseStats(db, since);
+  return buildFunnel({ counts, created, since, demo });
 }
 
 function readCreatedProps(propsJson: string): { kind?: string; onward?: string } {

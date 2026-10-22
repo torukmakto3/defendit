@@ -394,6 +394,67 @@ describe("funnel query", () => {
     const stored = await events("challenge_completed");
     expect(stored[0].props_json).toBe(JSON.stringify({ tier: "standard" }));
   });
+
+  it("counts sample demos apart from the product steps", async () => {
+    const db = await getDb();
+    const now = new Date("2026-10-22T12:00:00.000Z");
+    const before = await funnelReport(now);
+    const stamp = now.toISOString();
+    await db.run(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`, [
+      "usr_demofunnel0001",
+      "anon@demo.defendit.invalid",
+      stamp,
+    ]);
+    await db.run(
+      `INSERT INTO defense_requests
+        (id, token, owner_user_id, kind, difficulty, title, status, created_at)
+       VALUES (?, ?, ?, 'demo', 'standard', 'sample', 'open', ?)`,
+      ["req_demofunnel0001", "tok_demofunnel0001", "usr_demofunnel0001", stamp],
+    );
+    await db.run(
+      `INSERT INTO deliverables
+        (id, request_id, owner_user_id, mime_type, byte_length, sha256, claim_count, purge_after, created_at)
+       VALUES (?, ?, ?, 'text/markdown', 4, 'abc', 0, ?, ?)`,
+      ["del_demofunnel0001", "req_demofunnel0001", "usr_demofunnel0001", stamp, stamp],
+    );
+    await db.run(
+      `INSERT INTO sessions
+        (id, request_id, deliverable_id, user_id, mode, seed, status, started_at, completed_at, purge_after, channel)
+       VALUES (?, ?, ?, ?, 'defend', 'seed', 'completed', ?, ?, ?, 'text')`,
+      ["ses_demofunnel0001", "req_demofunnel0001", "del_demofunnel0001", "usr_demofunnel0001", stamp, stamp, stamp],
+    );
+    await db.run(
+      `INSERT INTO receipts (id, session_id, request_id, payload_json, signature, public_key, created_at)
+       VALUES (?, ?, ?, ?, 'sig', 'pk', ?)`,
+      [
+        "rcpt_demofunnel01",
+        "ses_demofunnel0001",
+        "req_demofunnel0001",
+        JSON.stringify({
+          payload: { outcome: "Defended", demo: { sample: true, credential: false, file: "sample" } },
+        }),
+        stamp,
+      ],
+    );
+    await db.run(
+      `INSERT INTO credit_ledger
+        (id, user_id, kind, reason, amount, idempotency_key, purpose, ref_type, budget_cents, created_at)
+       VALUES (?, ?, 'defense', 'consume', 0, 'demo-budget:req_demofunnel0001', 'demo', 'demo', 70, ?)`,
+      ["led_demofunnel01", "usr_demofunnel0001", stamp],
+    );
+    const after = await funnelReport(now);
+    expect(after.product.find((step) => step.event === "defense_started")?.count).toBe(
+      before.product.find((step) => step.event === "defense_started")?.count,
+    );
+    expect(after.product.find((step) => step.event === "defense_completed")?.count).toBe(
+      before.product.find((step) => step.event === "defense_completed")?.count,
+    );
+    expect(after.demo).toEqual({
+      started: before.demo.started + 1,
+      completed: before.demo.completed + 1,
+      budget_cents: before.demo.budget_cents + 70,
+    });
+  });
 });
 
 describe("defense wiring", () => {

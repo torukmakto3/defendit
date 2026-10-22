@@ -26,16 +26,21 @@ CREATE TABLE defense_requests (
   id TEXT PRIMARY KEY,
   difficulty TEXT NOT NULL,
   title TEXT,
+  kind TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 CREATE TABLE receipts (
   id TEXT PRIMARY KEY,
   request_id TEXT NOT NULL,
+  session_id TEXT,
   payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 CREATE TABLE sessions (
   id TEXT PRIMARY KEY,
+  request_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
   mode TEXT NOT NULL,
   status TEXT NOT NULL,
   started_at TEXT NOT NULL,
@@ -56,7 +61,10 @@ CREATE TABLE credit_ledger (
   id TEXT PRIMARY KEY,
   budget_cents INTEGER,
   created_at TEXT NOT NULL,
-  user_id TEXT
+  user_id TEXT,
+  purpose TEXT,
+  ref_type TEXT,
+  idempotency_key TEXT
 );
 `;
 
@@ -71,10 +79,11 @@ CREATE TABLE challenges (
 );
 `;
 
-function receipt(outcome: string): string {
+function receipt(outcome: string, demo = false): string {
   return JSON.stringify({
     payload: {
       outcome,
+      ...(demo ? { demo: { sample: true, credential: false, file: "sample" } } : {}),
       creator: { displayName: SECRET_NAME },
       deliverable: { sha256: "abc123secret", byteLength: 12 },
     },
@@ -97,38 +106,57 @@ function seed(db: Database.Database, withChallenges: boolean) {
     "Old",
     old,
   );
-  db.prepare(`INSERT INTO defense_requests (id, difficulty, title, created_at) VALUES (?, ?, ?, ?)`).run(
-    "req_hard",
-    "hard",
-    SECRET_FILE,
-    recent,
+  const insertRequest = db.prepare(
+    `INSERT INTO defense_requests (id, difficulty, title, kind, owner_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
   );
-  db.prepare(`INSERT INTO defense_requests (id, difficulty, title, created_at) VALUES (?, ?, ?, ?)`).run(
-    "req_std",
-    "standard",
-    SECRET_FILE,
-    recent,
-  );
-  db.prepare(`INSERT INTO defense_requests (id, difficulty, title, created_at) VALUES (?, ?, ?, ?)`).run(
-    "req_exp",
-    "expert",
-    SECRET_FILE,
-    old,
-  );
+  insertRequest.run("req_hard", "hard", SECRET_FILE, "creator", SECRET_ID, recent);
+  insertRequest.run("req_std", "standard", SECRET_FILE, "creator", SECRET_ID, recent);
+  insertRequest.run("req_exp", "expert", SECRET_FILE, "creator", "usr_oldaccount000001", old);
+
   const insertReceipt = db.prepare(
-    `INSERT INTO receipts (id, request_id, payload_json, created_at) VALUES (?, ?, ?, ?)`,
+    `INSERT INTO receipts (id, request_id, session_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?)`,
   );
-  insertReceipt.run("rcpt_hard", "req_hard", receipt("Defended"), recent);
-  insertReceipt.run("rcpt_std", "req_std", receipt("Not defended"), recent);
-  insertReceipt.run("rcpt_exp", "req_exp", receipt("Defended"), old);
+  insertReceipt.run("rcpt_hard", "req_hard", "ses_done_new", receipt("Defended"), recent);
+  insertReceipt.run("rcpt_std", "req_std", null, receipt("Not defended"), recent);
+  insertReceipt.run("rcpt_exp", "req_exp", "ses_done_old", receipt("Defended"), old);
 
   const insertSession = db.prepare(
-    `INSERT INTO sessions (id, mode, status, started_at, completed_at, cost_usd, voice_cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO sessions (id, request_id, user_id, mode, status, started_at, completed_at, cost_usd, voice_cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
-  insertSession.run("ses_done_new", "defend", "completed", recent, recent, 0.1, 0.05);
-  insertSession.run("ses_done_old", "defend", "completed", old, old, 0.3, 0);
-  insertSession.run("ses_open", "defend", "in_progress", recent, null, 9, 9);
-  insertSession.run("ses_learn", "learn", "completed", recent, recent, 1, 0);
+  insertSession.run("ses_done_new", "req_hard", SECRET_ID, "defend", "completed", recent, recent, 0.1, 0.05);
+  insertSession.run("ses_done_old", "req_exp", "usr_oldaccount000001", "defend", "completed", old, old, 0.3, 0);
+  insertSession.run("ses_open", "req_std", SECRET_ID, "defend", "in_progress", recent, null, 9, 9);
+  insertSession.run("ses_learn", "req_std", SECRET_ID, "learn", "completed", recent, recent, 1, 0);
+
+  db.prepare(`INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, ?, ?)`).run(
+    "usr_demo_recent",
+    "anon@demo.defendit.invalid",
+    "Demo",
+    recent,
+  );
+  db.prepare(`INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, ?, ?)`).run(
+    "usr_demo_mail",
+    "Walkup@demo.defendit.invalid",
+    "Demo",
+    recent,
+  );
+  db.prepare(`INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, ?, ?)`).run(
+    "usr_demo_old",
+    "old@demo.defendit.invalid",
+    "Demo",
+    old,
+  );
+  insertRequest.run("req_demo", "standard", "sample", "demo", "usr_demo_recent", recent);
+  insertRequest.run("req_mail", "standard", "sample", "creator", "usr_demo_mail", recent);
+  insertRequest.run("req_marked", "standard", SECRET_FILE, "creator", SECRET_ID, recent);
+  insertRequest.run("req_demo_old", "standard", "sample", "demo", "usr_demo_old", old);
+  insertSession.run("ses_demo", "req_demo", "usr_demo_recent", "defend", "completed", recent, recent, 4, 2);
+  insertSession.run("ses_mail", "req_mail", "usr_demo_mail", "defend", "in_progress", recent, null, 8, 8);
+  insertSession.run("ses_marked", "req_marked", SECRET_ID, "defend", "completed", recent, recent, 9, 9);
+  insertSession.run("ses_demo_old", "req_demo_old", "usr_demo_old", "defend", "completed", old, old, 6, 0);
+  insertReceipt.run("rcpt_demo", "req_demo", "ses_demo", receipt("Defended", true), recent);
+  insertReceipt.run("rcpt_marked", "req_marked", "ses_marked", receipt("Defended", true), recent);
+  insertReceipt.run("rcpt_demo_old", "req_demo_old", "ses_demo_old", receipt("Defended", true), old);
 
   db.prepare(`INSERT INTO analytics_events (id, name, occurred_at) VALUES (?, ?, ?)`).run("aev_1", "learn_opened", recent);
   db.prepare(`INSERT INTO analytics_events (id, name, occurred_at) VALUES (?, ?, ?)`).run("aev_2", "learn_opened", recent);
@@ -153,6 +181,12 @@ function seed(db: Database.Database, withChallenges: boolean) {
     old,
     SECRET_ID,
   );
+  db.prepare(
+    `INSERT INTO credit_ledger (id, budget_cents, created_at, user_id, purpose, ref_type, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run("led_demo", 70, recent, "usr_demo_recent", "demo", "demo", "demo-budget:req_demo");
+  db.prepare(
+    `INSERT INTO credit_ledger (id, budget_cents, created_at, user_id, purpose, ref_type, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run("led_demo_old", 70, old, "usr_demo_old", "demo", "demo", "demo-budget:req_demo_old");
 
   if (!withChallenges) return;
   const insertChallenge = db.prepare(
@@ -171,6 +205,7 @@ function seed(db: Database.Database, withChallenges: boolean) {
 function assertNoPii(body: unknown) {
   const text = JSON.stringify(body);
   expect(text).not.toContain(SECRET_EMAIL);
+  expect(text).not.toContain("@demo.defendit.invalid");
   expect(text).not.toContain(SECRET_ID);
   expect(text).not.toContain(SECRET_NAME);
   expect(text).not.toContain(SECRET_SUBJECT);
@@ -234,7 +269,7 @@ describe("stats aggregates", () => {
       defenses_completed: 1,
       receipts_issued: 2,
       learn_opens: 2,
-      beta_budget: { spent_cents: 60, total_cents: 15000, spent_eur: 0.6, total_eur: 150 },
+      beta_budget: { spent_cents: 130, total_cents: 15000, spent_eur: 1.3, total_eur: 150 },
       cost_per_completed_defense: {
         completed: 1,
         llm_usd: 0.1,
@@ -242,6 +277,7 @@ describe("stats aggregates", () => {
         with_measured_voice: 1,
       },
       challenges: { sent: 5, accepted: 3, declined: 1, defended: 1, expired: 1 },
+      demo: { started: 3, completed: 2, budget_cents: 70 },
     });
     expect(report.window.pass_rate_by_tier).toEqual({
       standard: { passed: 0, completed: 1, rate: 0 },
@@ -262,6 +298,7 @@ describe("stats aggregates", () => {
         with_measured_voice: 1,
       },
       challenges: { sent: 8, accepted: 3, declined: 2, defended: 2, expired: 2 },
+      demo: { started: 4, completed: 3, budget_cents: 140 },
     });
     expect(report.all_time.pass_rate_by_tier.expert).toEqual({ passed: 1, completed: 1, rate: 1 });
     assertNoPii(report);
@@ -303,7 +340,8 @@ describe("stats aggregates", () => {
       },
       async get<T>(sql: string) {
         if (sql.includes("to_regclass")) return { present: "challenges" } as T;
-        if (sql.includes("SUM(cost_usd)")) return { n: "2", llm: "0.20", voice: "0.05", voiced: "1" } as T;
+        if (sql.includes("cost_usd")) return { n: "2", llm: "0.20", voice: "0.05", voiced: "1" } as T;
+        if (sql.includes("purpose = 'demo'") || sql.includes("demo-budget:")) return { n: "0" } as T;
         if (sql.includes("credit_budget")) return { n: "7000" } as T;
         if (sql.includes("credit_ledger")) return { n: "60" } as T;
         return { n: "4" } as T;
@@ -327,6 +365,8 @@ describe("stats aggregates", () => {
       defended: 4,
       expired: 4,
     });
+    expect(report.window.demo).toEqual({ started: 0, completed: 0, budget_cents: 0 });
+    expect(report.all_time.demo).toEqual({ started: 0, completed: 0, budget_cents: 0 });
   });
 });
 
@@ -379,6 +419,8 @@ describe("GET /api/stats", () => {
     });
     expect(body.all_time.beta_budget.total_eur).toBe(150);
     expect(body.all_time.pass_rate_by_tier.standard.rate).toBeNull();
+    expect(body.window.demo).toEqual({ started: 0, completed: 0, budget_cents: 0 });
+    expect(body.all_time.demo).toEqual({ started: 0, completed: 0, budget_cents: 0 });
     expect(Object.keys(body).sort()).toEqual(["all_time", "generated_at", "range", "window"]);
     assertNoPii(body);
   });

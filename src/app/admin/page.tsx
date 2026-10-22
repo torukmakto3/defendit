@@ -111,8 +111,14 @@ export default function AdminPage() {
         <p className="mt-2 text-sm text-[var(--ink-2)]">
           Event counts, not people. Acceptance is accepted ÷ opened. Completion is completed ÷
           accepted. Share-back is shared ÷ completed. Onward k is new challenges from a defender or
-          a viewer of a shared card ÷ completions.
+          a viewer of a shared card ÷ completions. Sample demos are not in these steps.
         </p>
+        {funnel && (
+          <p className="mt-2 text-sm text-[var(--ink-2)]">
+            Sample demo: {funnel.demo.started} started, {funnel.demo.completed} completed,{" "}
+            {(funnel.demo.budget_cents / 100).toFixed(2)} EUR of the beta budget.
+          </p>
+        )}
         {!funnel && !error ? (
           <p className="mt-4 text-sm text-[var(--ink-2)]">Loading funnel…</p>
         ) : funnel ? (

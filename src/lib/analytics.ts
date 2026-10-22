@@ -232,11 +232,22 @@ export interface FunnelStep {
   conversion: number | null;
 }
 
+/** Sample-demo defenses, counted apart from sign-ups and real defenses. */
+export interface DemoDefenseStats {
+  started: number;
+  completed: number;
+  budget_cents: number;
+}
+
+export const EMPTY_DEMO_STATS: DemoDefenseStats = { started: 0, completed: 0, budget_cents: 0 };
+
 export interface FunnelReport {
   days: number;
   since: string;
   product: FunnelStep[];
   challenge: FunnelStep[];
+  /** Sample demos in this window. Zeros when there are none. Not part of `product`. */
+  demo: DemoDefenseStats;
   /** Declines sit beside the chain. The rate is declined ÷ opened, not declined ÷ accepted. */
   declined: { count: number; conversion: number | null };
   /** New challenges from a defender or a viewer of a shared card, ÷ completions. */
@@ -275,6 +286,7 @@ export function buildFunnel(input: {
   created: { kind?: string; onward?: string }[];
   since: string;
   days?: number;
+  demo?: DemoDefenseStats;
 }): FunnelReport {
   const countOf = (name: AnalyticsEventName) => {
     const n = input.counts[name] ?? 0;
@@ -308,6 +320,7 @@ export function buildFunnel(input: {
   return {
     days: input.days ?? FUNNEL_DAYS,
     since: input.since,
+    demo: input.demo ?? EMPTY_DEMO_STATS,
     product: chain(PRODUCT_STEPS),
     challenge: chain(CHALLENGE_STEPS),
     declined: {
