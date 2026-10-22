@@ -213,8 +213,10 @@ CREATE TABLE IF NOT EXISTS credit_wallets (
   created_at TEXT NOT NULL
 );
 
--- Global beta budget. spent_cents moves only by a conditional UPDATE so two
--- accounts cannot both pass a stale read of the 150 EUR cap.
+-- Budget counters. spent_cents moves only by a conditional UPDATE so two
+-- accounts cannot both pass a stale read. id beta is BETA_BUDGET_EUR.
+-- id demo is the sample lifetime cap (DEMO_BUDGET_EUR) and is never
+-- mixed into the beta row.
 CREATE TABLE IF NOT EXISTS credit_budget (
   id TEXT PRIMARY KEY,
   spent_cents INTEGER NOT NULL
@@ -382,6 +384,18 @@ CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at);
 CREATE INDEX IF NOT EXISTS idx_receipts_created ON receipts(created_at);
 CREATE INDEX IF NOT EXISTS idx_credit_ledger_created ON credit_ledger(created_at);
 CREATE INDEX IF NOT EXISTS idx_challenges_claimed_at ON challenges(claimed_at);
+
+-- Anonymous sample defense. The cookie is stored only as a hash.
+-- request_id is unique so a sample link has one pass. session_id is claimed
+-- by the first defend start so a refresh cannot open a second paid interview.
+CREATE TABLE IF NOT EXISTS demo_passes (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  request_id TEXT NOT NULL UNIQUE REFERENCES defense_requests(id),
+  session_id TEXT,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 `;
 
 /** Stats filters on these session columns. Skip when an older table lacks them. */
@@ -432,6 +446,8 @@ const ADDED_COLUMNS: [string, string, string][] = [
   // Monotonic integrity totals. A reload restores these; a later report cannot lower them.
   ["sessions", "paste_events", "INTEGER NOT NULL DEFAULT 0"],
   ["sessions", "focus_blur_events", "INTEGER NOT NULL DEFAULT 0"],
+  // Set on a sample-demo receipt. Null on a normal receipt, which is kept.
+  ["receipts", "purge_after", "TEXT"],
 ];
 
 let dbPromise: Promise<Db> | null = null;

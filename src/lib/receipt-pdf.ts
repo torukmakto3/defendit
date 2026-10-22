@@ -60,11 +60,19 @@ export async function renderReceiptPdf(receipt: SignedReceipt, signatureValid: b
   corner(page, M - 22, H - M + 22, 1, -1);
   corner(page, W - M + 22, M - 22, -1, 1);
 
+  const sample = p.demo?.sample === true;
   let y = H - M - 10;
-  text(page, "DEFEND IT  ·  UNDERSTANDING RECEIPT", M, y, f.mono, 9, C.blue, 1.4);
+  text(page, sample ? "DEFEND IT  ·  SAMPLE DEMO" : "DEFEND IT  ·  UNDERSTANDING RECEIPT", M, y, f.mono, 9, C.blue, 1.4);
   y -= 40;
   text(page, p.outcome, M, y, f.display, 32, C.ink);
-  if (p.outcome === "Defended") {
+  if (sample) {
+    const label = "SAMPLE";
+    const size = 18;
+    const tw = f.display.widthOfTextAtSize(label, size) + 4 * label.length * 0.9;
+    const x0 = W - M - tw - 30;
+    page.drawRectangle({ x: x0, y: y - 6, width: tw + 22, height: 34, borderColor: C.signal, borderWidth: 2.5, rotate: degrees(6) });
+    text(page, label, x0 + 11, y + 4, f.display, size, C.signal, 3.2, 6);
+  } else if (p.outcome === "Defended") {
     const label = "APPROVED";
     const size = 18;
     const tw = f.display.widthOfTextAtSize(label, size) + 4 * label.length * 0.9;
@@ -130,11 +138,17 @@ export async function renderReceiptPdf(receipt: SignedReceipt, signatureValid: b
   text(page, `Published at ${appUrl("/.well-known/defend-it-pubkey.json")}`, M, y - 4, f.body, 8, C.ink2);
 
   // Footer.
-  const foot = [
-    "This receipt holds no document content, answers, file name or email. It certifies that the person who",
-    "uploaded the file with this SHA-256 defended it in a timed interview graded against the rubric below.",
-    `Rubric ${p.rubricVersion}  ·  graded by ${gradedBy(p)}  ·  assurance ${p.assuranceLevel}`,
-  ];
+  const foot = sample
+    ? [
+        "Demo on a sample file. Not a credential. It does not show that a person understands their own work.",
+        `Sample: ${p.demo?.file ?? "bundled file"}. Removed after ${p.demo?.expiresAt?.slice(0, 10) ?? "one day"}.`,
+        `Rubric ${p.rubricVersion}  ·  graded by ${gradedBy(p)}  ·  assurance ${p.assuranceLevel}`,
+      ]
+    : [
+        "This receipt holds no document content, answers, file name or email. It certifies that the person who",
+        "uploaded the file with this SHA-256 defended it in a timed interview graded against the rubric below.",
+        `Rubric ${p.rubricVersion}  ·  graded by ${gradedBy(p)}  ·  assurance ${p.assuranceLevel}`,
+      ];
   foot.forEach((s, i) => text(page, s, M, M + 22 - i * 12, f.body, 8, C.ink2));
 
   return doc.save();

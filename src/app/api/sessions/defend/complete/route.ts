@@ -1,7 +1,8 @@
 import { after, NextResponse } from "next/server";
 import { z } from "zod";
+import { resolveDefenseSession } from "@/lib/demo";
 import { settlePendingStudyDecks } from "@/lib/flashcards";
-import { handleError, limitOr429, requireUser } from "@/lib/http";
+import { handleError, limitOr429 } from "@/lib/http";
 import { LIMITS } from "@/lib/ratelimit";
 import { completeDefendSession } from "@/lib/services";
 
@@ -20,17 +21,17 @@ const schema = z.object({
 
 export async function POST(req: Request) {
   const deadlineMs = Date.now() + maxDuration * 1000;
-  const guard = await requireUser(req);
-  if (guard.response) return guard.response;
   let deckStarted = false;
   try {
-    const limited = await limitOr429(`defend:${guard.user.id}`, LIMITS.defendCompletePerUser);
-    if (limited) return limited;
     const body = schema.parse(await req.json());
-    deckStarted = true;
+    const actor = await resolveDefenseSession(req, body.sessionId);
+    if (actor.response) return actor.response;
+    const limited = await limitOr429(`defend:${actor.user.id}`, LIMITS.defendCompletePerUser);
+    if (limited) return limited;
+    deckStarted = !actor.demo;
     const result = await completeDefendSession({
       ...body,
-      user: guard.user,
+      user: actor.user,
       waitForStudyDeck: false,
       deadlineMs,
       analyticsHeaders: req.headers,

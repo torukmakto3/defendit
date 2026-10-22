@@ -14,6 +14,17 @@ interface BlueprintSlot {
  * Fixed coverage per difficulty. The seed shuffles order and which claim fills
  * a slot. It does not change how many of each type or difficulty are asked.
  */
+/**
+ * Sample demo. Three questions, difficulty fixed by the caller (standard, so
+ * the interview stays on the text channel). One slot plants an error on an
+ * assumption. The seed still only shuffles order and which claim fills a slot.
+ */
+const DEMO_SLOTS: BlueprintSlot[] = [
+  { type: "explain_back", difficulty: 1, prefer: ["claim", "high"] },
+  { type: "planted_error", difficulty: 2, prefer: ["assumption", "number"] },
+  { type: "weakest_link", difficulty: 2, prefer: ["assumption"] },
+];
+
 const BLUEPRINT: Record<Difficulty, BlueprintSlot[]> = {
   standard: [
     { type: "explain_back", difficulty: 1, prefer: ["claim", "high"] },
@@ -57,9 +68,11 @@ export function buildInterviewPlan(opts: {
   difficulty: Difficulty;
   seed: string;
   pinnedClaimIds?: string[];
+  /** `demo` uses the short sample blueprint. Omit it for a full interview. */
+  shape?: "demo";
 }): InterviewPlan {
   const rand = mulberry32(seedFromString(opts.seed));
-  const slots = shuffle([...BLUEPRINT[opts.difficulty]], rand);
+  const slots = shuffle([...(opts.shape === "demo" ? DEMO_SLOTS : BLUEPRINT[opts.difficulty])], rand);
   const pinned = new Set(opts.pinnedClaimIds ?? []);
   const used = new Set<string>();
   const probes = slots.map((slot) => {

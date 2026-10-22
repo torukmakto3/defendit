@@ -1,5 +1,6 @@
 // Draft, last updated 2026-10-22
 import type { Metadata } from "next";
+import { demoRetentionHours } from "@/lib/demo-policy";
 import { PRIVACY_UPDATED } from "@/lib/privacy";
 
 export const metadata: Metadata = {
@@ -358,6 +359,16 @@ export default function PrivacyPage() {
           No third-party trackers or advertising cookies. The cookies this site sets are the sign-in
           session and, during Google sign-in, the short handshake cookie. There is no tracking cookie.
           Funnel counts for challenge links are the events described above, stored in our own database.
+        </p>
+        <p>
+          A sample defense, when that path is on, sets an HTTP-only cookie named{" "}
+          <span className="mono">di_demo</span>. It is not a sign-in session. The sample, its answers,
+          and its receipt are kept for {demoRetentionHours()} hours (
+          <span className="mono">DEMO_RETENTION_HOURS</span>) and
+          then deleted, including the temporary account. The network address used to limit how many
+          samples one network can start is stored only as a keyed hash, the same salt as the other IP
+          limits (<span className="mono">IP_HASH_SALT</span>, or <span className="mono">DEMO_IP_SALT</span>{" "}
+          when that is the salt in use). The raw address is not stored.
         </p>
       </section>
 

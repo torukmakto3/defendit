@@ -46,6 +46,10 @@ export default defineConfig({
       // makes the out-of-credits screen a second start, after the first receipt.
       CHALLENGES_ENABLED: "1",
       BETA_DEFENSE_CREDITS: "1",
+      // Sample path is off unless this is exactly 1 or true. `next start` is
+      // production, so the IP salt has to be present or a demo start returns 503.
+      DEMO_ENABLED: "1",
+      DEMO_IP_SALT: "ab".repeat(32),
     },
   },
 });

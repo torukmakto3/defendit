@@ -43,6 +43,9 @@ const nextConfig: NextConfig = {
     // The path is built at request time, so the tracer does not see the files.
     "/r/**/*": ["./assets/fonts/**/*"],
     "/c/**/*": ["./assets/fonts/**/*"],
+    // Sample markdown lives outside the app directory. Trace it with the
+    // demo route so a serverless bundle can still open the files.
+    "/api/demo/start": ["./fixtures/demo/**/*"],
   },
   async headers() {
     return [

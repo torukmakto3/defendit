@@ -9,6 +9,7 @@ YYYY-MM-DD BLOCKED — what stopped the work · what the next agent needs
 
 ## Log
 
+2026-10-22 DONE — No-login sample demo. Own lifetime DEMO_BUDGET_EUR (default 20) so samples cannot exhaust BETA_BUDGET_EUR; DEMO_DAILY_CAP default 20; DEMO_ENABLED off stops a demo already in progress; an expired pass deletes the demo user and defense request. Shared ipHash (IP_HASH_SALT, else DEMO_IP_SALT) and a 503 when there is no salt. Signed-in starts keep the per-IP limit. Demo rate-limit cleanup stays on demo: keys. /privacy notes di_demo, DEMO_RETENTION_HOURS, and the keyed hash. Drop zone keeps #48's format line. · PR #49 · tsc, eslint, vitest (346), signed-in browser check of the drop zone and /privacy
 2026-10-22 DONE — Rebased the funnel onto 4ad3ca6 (#48). Beacon and stats limits use ipLimitKey and are skipped when ipHash returns null; the global beacon cap still applies. Those LIMITS entries are env-backed. /privacy has an Analytics paragraph. · PR #46 · tsc, eslint, vitest (372)
 2026-10-22 DONE — Rebased the first-party funnel onto 2d14afd (#52). Stats rate limit uses hashedClientIp, per-client beacon caps run before the global cap, challenge steps call trackChallenge, and a demo defense is not written into the admin event funnel. Unset STATS_TOKEN stays 404. · PR #46 · tsc, eslint, vitest (349)
 2026-10-22 DONE — All-non-answer receipt model id is non-answer with provider rule, so modelVersions reads rule:non-answer. · PR #53 · vitest non-answer

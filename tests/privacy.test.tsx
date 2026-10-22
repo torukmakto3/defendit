@@ -58,6 +58,9 @@ describe("privacy page", () => {
     expect(html).toContain("No third-party trackers or advertising cookies");
     expect(html).toContain("our own database");
     expect(html).toContain("no tracking cookie");
+    expect(html).toContain("di_demo");
+    expect(html).toContain("kept for 24 hours");
+    expect(html).toContain("keyed hash");
   });
 
   it("describes analytics rows and the keyed beacon limit", () => {

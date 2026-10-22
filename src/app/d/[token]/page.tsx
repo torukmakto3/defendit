@@ -11,7 +11,7 @@ interface RequestView {
   title: string;
   difficulty: string;
   status: string;
-  kind: "creator" | "receiver";
+  kind: "creator" | "receiver" | "demo";
   notes: string | null;
   isCreator: boolean;
   isOwner: boolean;
@@ -100,7 +100,7 @@ export default function CreatorEntryPage() {
   return (
     <div className="shell max-w-2xl">
       <p className="eyebrow">
-        {data.kind === "receiver" ? "Defense request" : "Your deliverable"}
+        {data.kind === "demo" ? "Sample demo" : data.kind === "receiver" ? "Defense request" : "Your deliverable"}
       </p>
       <h1 className="mt-2 text-3xl font-bold sm:text-4xl">{data.title}</h1>
       <p className="mt-3 text-[var(--ink-2)]">
@@ -110,7 +110,24 @@ export default function CreatorEntryPage() {
         <p className="mt-2 text-sm opacity-75">Note from the requester: {data.notes}</p>
       )}
 
-      {!me && (
+      {data.kind === "demo" && (
+        <div className="mt-8 grid gap-4">
+          <div className="panel grid gap-3 p-6">
+            <p>
+              This is a sample-file demo. No account is needed for the short interview. The receipt
+              is marked as a demo and is not a credential.
+            </p>
+            {data.status !== "defended" && (
+              <Link className="btn btn-primary justify-self-start" href={`/d/${token}/defend`}>
+                Continue the sample defense
+              </Link>
+            )}
+          </div>
+          {!me && <SignInCard title="Sign in and defend your own file (3 free)" />}
+        </div>
+      )}
+
+      {!me && data.kind !== "demo" && (
         <div className="mt-8">
           <SignInCard title="Sign in to defend this deliverable" />
         </div>
@@ -128,7 +145,7 @@ export default function CreatorEntryPage() {
         </div>
       )}
 
-      {me && !mayUpload && !data.isOwner && (
+      {me && !mayUpload && !data.isOwner && data.kind !== "demo" && (
         <p className="panel mt-8 p-6">This defense belongs to another account.</p>
       )}
 

@@ -1,13 +1,24 @@
+import { randomBytes } from "crypto";
 import { isDemoRequestKind } from "./analytics";
 import { purgeOldAnalyticsEvents, track } from "./analytics-store";
 import type { User } from "./auth";
 import { extractClaims } from "./claims";
 import {
   assertLearnSlotAvailable,
+  chargeBetaDefenseBudget,
   finishDefenseCredit,
   refundStaleDefenseHolds,
   reserveChallengeDefenseBudget,
 } from "./credits";
+import { demoSampleBundle } from "./demo-bundle";
+import {
+  DEMO_COPY,
+  DEMO_SAMPLES,
+  demoRetentionHours,
+  isDemoKind,
+  isDemoPrincipalEmail,
+  type DemoSampleId,
+} from "./demo-policy";
 import { getPublicKeyHex, sha256Hex } from "./crypto";
 import { dashboardWorkspaceHref } from "./dashboard-links";
 import { getDb, type Db } from "./db";
@@ -130,7 +141,7 @@ interface RequestRow {
   token: string;
   owner_user_id: string;
   creator_user_id: string | null;
-  kind: "creator" | "receiver";
+  kind: "creator" | "receiver" | "demo";
   difficulty: Difficulty;
   title: string;
   notes: string | null;
@@ -191,7 +202,7 @@ export function channelFor(difficulty: Difficulty, opts: { voice?: boolean; acco
 
 interface NewRequest {
   owner: User;
-  kind: "creator" | "receiver";
+  kind: "creator" | "receiver" | "demo";
   difficulty: Difficulty;
   title: string;
   notes?: string;
@@ -209,7 +220,7 @@ async function insertRequest(db: Db, input: NewRequest) {
       requestId,
       token,
       input.owner.id,
-      input.kind === "creator" ? input.owner.id : null,
+      input.kind === "receiver" ? null : input.owner.id,
       input.kind,
       input.difficulty,
       input.title.slice(0, 200),
@@ -263,7 +274,13 @@ async function prepareUpload(fileName: string, buffer: Buffer, mimeType?: string
   };
 }
 
-async function insertDeliverable(db: Db, requestId: string, user: User, u: PreparedUpload) {
+async function insertDeliverable(
+  db: Db,
+  requestId: string,
+  user: User,
+  u: PreparedUpload,
+  retention?: { hours: number },
+) {
   const deliverableId = newId("del");
   await db.run(
     `INSERT INTO deliverables
@@ -281,8 +298,8 @@ async function insertDeliverable(db: Db, requestId: string, user: User, u: Prepa
       encryptField(u.fileName.slice(0, 255), ctx.fileName(deliverableId)),
       encryptField(u.text, ctx.text(deliverableId)),
       encryptJson(u.claims, ctx.claims(deliverableId)),
-      hoursFromNow(documentTtlHours()),
-      hoursFromNow(retentionDays() * 24),
+      retention ? hoursFromNow(retention.hours) : hoursFromNow(documentTtlHours()),
+      retention ? hoursFromNow(retention.hours) : hoursFromNow(retentionDays() * 24),
       new Date().toISOString(),
     ],
   );
@@ -332,6 +349,75 @@ export async function creatorIngest(opts: {
       title: displayTitle(opts.fileName),
     };
   });
+}
+
+/**
+ * No-login sample. The bundled file is the only document. Claims and the
+ * interview questions are computed once from that fixed text, so opening a
+ * demo does not call a model. The budget charge and the pass commit together.
+ * The question prefetch is saved after that charge.
+ */
+export async function createDemoDefense(sampleId: DemoSampleId) {
+  const sample = DEMO_SAMPLES[sampleId];
+  const bundled = demoSampleBundle(sampleId);
+  const bytes = Buffer.from(bundled.text, "utf8");
+  const upload: PreparedUpload = {
+    fileName: sample.file,
+    mime: "text/markdown",
+    sha256: sha256Hex(bytes),
+    byteLength: bytes.length,
+    text: bundled.text,
+    claims: bundled.claims,
+    parseMs: 0,
+  };
+  const user: User = {
+    id: newId("usr"),
+    email: `demo+${newId("dmo")}@demo.defendit.invalid`,
+    display_name: null,
+  };
+  const passToken = randomBytes(32).toString("base64url");
+  const db = await getDb();
+  const now = new Date().toISOString();
+  const created = await db.transaction(async (tx) => {
+    await tx.run(
+      `INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, NULL, ?)`,
+      [user.id, user.email, now],
+    );
+    const request = await insertRequest(tx, {
+      owner: user,
+      kind: "demo",
+      difficulty: "standard",
+      title: sample.title,
+    });
+    await insertDeliverable(tx, request.requestId, user, upload, { hours: demoRetentionHours() });
+    await tx.run(`UPDATE defense_requests SET status = 'uploaded' WHERE id = ?`, [request.requestId]);
+    await tx.run(
+      `INSERT INTO demo_passes (token_hash, user_id, request_id, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [sha256Hex(passToken), user.id, request.requestId, hoursFromNow(demoRetentionHours()), now],
+    );
+    const charged = await chargeBetaDefenseBudget({
+      userId: user.id,
+      idempotencyKey: `demo-budget:${request.requestId}`,
+      refId: request.requestId,
+      db: tx,
+    });
+    if (!charged) throw new HttpError(503, DEMO_COPY.budget);
+    return request;
+  });
+  await rememberFirstQuestion({
+    requestId: created.requestId,
+    prefetch: Promise.resolve(bundled.prefetch),
+    parseMs: 0,
+  });
+  return {
+    token: created.token,
+    requestId: created.requestId,
+    passToken,
+    title: sample.title,
+    user,
+    questions: bundled.prefetch.plan.probes.length,
+  };
 }
 
 function displayTitle(fileName: string | null): string {
@@ -427,6 +513,7 @@ export async function ingestDeliverable(opts: {
 }) {
   maybePurge();
   const request = await requireRequest(opts.token);
+  if (isDemoKind(request.kind)) throw new HttpError(403, DEMO_COPY.noUpload);
   const claiming = request.kind === "receiver" && !request.creator_user_id;
   if (claiming) {
     if (request.owner_user_id === opts.user.id) {
@@ -519,6 +606,12 @@ export async function startSession(opts: {
 }) {
   maybePurge();
   const request = await requireRequest(opts.token);
+  const demo = isDemoKind(request.kind);
+  if (demo && opts.mode !== "defend") throw new HttpError(403, DEMO_COPY.noLearn);
+  if (demo && opts.mode === "defend") {
+    const resumed = await resumeDemoSession(request.id);
+    if (resumed) return resumed;
+  }
   assertCreator(request, opts.user);
   const deliverable = await getLatestDeliverable(request.id);
   if (!deliverable) throw new HttpError(400, "Upload a deliverable first");
@@ -530,7 +623,9 @@ export async function startSession(opts: {
   if (opts.mode === "defend" && request.status === "defended") {
     throw new HttpError(409, "This deliverable has already been defended.");
   }
-  if (opts.mode === "defend") {
+  // A sample demo is not a challenge. It does not consult challenge status
+  // and it does not reserve the challenge slice of the beta budget.
+  if (opts.mode === "defend" && !demo) {
     await assertChallengeAllowsWork(request.id);
     // Beta challenge defenses skip the defender's credit in the route and
     // reserve the shared euro budget here instead.
@@ -538,21 +633,29 @@ export async function startSession(opts: {
   }
 
   const sessionId = newId("ses");
-  const channel: Channel = opts.mode === "defend" ? channelFor(request.difficulty, opts) : "text";
+  if (demo && opts.mode === "defend") {
+    const lost = await claimDemoSession(request.id, sessionId);
+    if (lost) return lost;
+  }
+  let inserted = false;
+  const channel: Channel = demo ? "text" : opts.mode === "defend" ? channelFor(request.difficulty, opts) : "text";
   const pinned = request.pinned_claims
     ? request.pinned_claims.split(",").map((s) => s.trim()).filter(Boolean)
     : undefined;
-
-  let seed: string;
-  let plan: InterviewPlan;
+  let seed = "";
+  let plan: InterviewPlan = { seed: "", difficulty: request.difficulty, probes: [] };
   let phraseRest = false;
   let cappedDuringPhrase = false;
+  const db = await getDb();
+  let startedAt = "";
+  try {
 
   if (opts.mode === "learn") {
     seed = newId("seed");
     plan = buildLearnPlan(claims, seed);
   } else {
-    const prefetched = await loadQuestionPrefetch(request.id, claims, request.difficulty, pinned);
+    const shape = demo ? "demo" : undefined;
+    const prefetched = await loadQuestionPrefetch(request.id, claims, request.difficulty, pinned, shape);
     if (prefetched) {
       seed = prefetched.seed;
       plan = prefetched.plan;
@@ -564,6 +667,7 @@ export async function startSession(opts: {
         difficulty: request.difficulty,
         seed,
         pinnedClaimIds: pinned,
+        shape,
       });
       const started = Date.now();
       let phrasingCapped = false;
@@ -583,8 +687,7 @@ export async function startSession(opts: {
     }
   }
 
-  const db = await getDb();
-  const startedAt = await insertSessionRow(db, {
+  startedAt = await insertSessionRow(db, {
     sessionId,
     requestId: request.id,
     deliverableId: deliverable.id,
@@ -595,7 +698,14 @@ export async function startSession(opts: {
     channel,
     user: opts.user,
     budgetCapped: cappedDuringPhrase,
+    retentionHours: demo ? demoRetentionHours() : undefined,
+    sponsored: demo,
   });
+  inserted = true;
+  } catch (e) {
+    if (!inserted && demo && opts.mode === "defend") await releaseDemoClaim(request.id, sessionId);
+    throw e;
+  }
 
   // The row exists, so the client can render question 1 while the rest are phrased.
   const firstProbe = publicProbes(plan)[0];
@@ -628,7 +738,7 @@ export async function startSession(opts: {
   if (shown) await shown;
   await refreshRequestUsage(request.id);
   if (opts.mode === "defend") {
-    await noteChallengeSession(request.id, sessionId);
+    if (!demo) await noteChallengeSession(request.id, sessionId);
     if (!isDemoRequestKind(request.kind)) {
       await track({
         name: "defense_started",
@@ -642,7 +752,62 @@ export async function startSession(opts: {
       headers: opts.analyticsHeaders,
     });
   }
-  return { sessionId, plan, channel, startedAt };
+  return { sessionId, plan, channel, startedAt, demo };
+}
+
+/** A sample link gets one defend session. A second start resumes it. */
+async function resumeDemoSession(requestId: string): Promise<{
+  sessionId: string;
+  plan: InterviewPlan;
+  channel: Channel;
+  startedAt: string;
+  demo: true;
+} | null> {
+  const db = await getDb();
+  const pass = await db.get<{ session_id: string | null }>(
+    `SELECT session_id FROM demo_passes WHERE request_id = ?`,
+    [requestId],
+  );
+  if (!pass?.session_id) return null;
+  const session = await db.get<SessionRow>(`SELECT * FROM sessions WHERE id = ?`, [pass.session_id]);
+  if (!session) throw new HttpError(409, "This sample interview is already starting. Reload in a moment.");
+  if (session.status === "completed" || session.status === "abandoned") {
+    throw new HttpError(409, "This deliverable has already been defended.");
+  }
+  const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
+  if (!plan) throw new HttpError(410, "This session has expired.");
+  const channel: Channel = session.channel === "voice" || session.channel === "text_accommodation" ? session.channel : "text";
+  return { sessionId: session.id, plan, channel, startedAt: session.started_at, demo: true };
+}
+
+async function claimDemoSession(
+  requestId: string,
+  sessionId: string,
+): Promise<{ sessionId: string; plan: InterviewPlan; channel: Channel; startedAt: string; demo: true } | null> {
+  const db = await getDb();
+  // Kind `demo` with no sample pass still starts, and the funnel skips it.
+  // A real pass is the row that limits the sample to one session.
+  const pass = await db.get<{ token_hash: string }>(
+    `SELECT token_hash FROM demo_passes WHERE request_id = ?`,
+    [requestId],
+  );
+  if (!pass) return null;
+  const claimed = await db.run(
+    `UPDATE demo_passes SET session_id = ? WHERE request_id = ? AND session_id IS NULL`,
+    [sessionId, requestId],
+  );
+  if (claimed.changes === 1) return null;
+  const resumed = await resumeDemoSession(requestId);
+  if (resumed) return resumed;
+  throw new HttpError(409, "This sample interview is already starting. Reload in a moment.");
+}
+
+async function releaseDemoClaim(requestId: string, sessionId: string) {
+  const db = await getDb();
+  await db.run(
+    `UPDATE demo_passes SET session_id = NULL WHERE request_id = ? AND session_id = ?`,
+    [requestId, sessionId],
+  );
 }
 
 async function insertSessionRow(
@@ -658,14 +823,16 @@ async function insertSessionRow(
     channel: Channel;
     user: User;
     budgetCapped: boolean;
+    retentionHours?: number;
+    sponsored?: boolean;
   },
 ) {
   const tier = getCostTier(row.user);
   const startedAt = new Date().toISOString();
   await db.run(
     `INSERT INTO sessions
-      (id, request_id, deliverable_id, user_id, mode, seed, plan_enc, transcript_enc, gap_map_enc, status, started_at, purge_after, channel, cost_tier, budget_usd, budget_capped)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?, ?, ?)`,
+      (id, request_id, deliverable_id, user_id, mode, seed, plan_enc, transcript_enc, gap_map_enc, status, started_at, purge_after, channel, cost_tier, budget_usd, budget_capped, sponsored)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.sessionId,
       row.requestId,
@@ -677,11 +844,12 @@ async function insertSessionRow(
       encryptJson([], ctx.transcript(row.sessionId)),
       encryptJson([], ctx.gapMap(row.sessionId)),
       startedAt,
-      hoursFromNow(retentionDays() * 24),
+      hoursFromNow(row.retentionHours ?? retentionDays() * 24),
       row.channel,
       tier,
       budgetUsdForUser(row.user),
       row.budgetCapped ? 1 : 0,
+      row.sponsored ? 1 : 0,
     ],
   );
   return startedAt;
@@ -1111,27 +1279,30 @@ export async function completeDefendSession(opts: {
   if (!request || !deliverable || !plan || !claims) {
     throw new HttpError(410, "This session has expired. Start a new defense.");
   }
+  const demo = isDemoKind(request.kind);
   // A retry after a dropped response returns the receipt this session already minted.
   if (session.status === "completed") {
     const existing = await receiptForSession(db, session.id);
     if (existing) {
       await finishDefenseCredit(opts.user.id, session.id);
-      await noteChallengeDefended(session.request_id, {
-        sessionId: session.id,
-        deliverableId: session.deliverable_id,
-        receiptId: existing.payload.id,
-      });
+      if (!demo) {
+        await noteChallengeDefended(session.request_id, {
+          sessionId: session.id,
+          deliverableId: session.deliverable_id,
+          receiptId: existing.payload.id,
+        });
+      }
       return {
         receipt: existing,
         score: existing.payload.score,
         flagged: await sessionFlagged(db, session, plan),
         stampPath: `/api/stamp/${existing.payload.id}`,
         idempotent: true,
-        challenge: await challengeCompletionHint(session.request_id),
+        challenge: demo ? null : await challengeCompletionHint(session.request_id),
       };
     }
   }
-  await assertChallengeAllowsWork(session.request_id);
+  if (!demo) await assertChallengeAllowsWork(session.request_id);
   if (session.status === "grading") {
     if (!gradingClaimIsStale(session.grading_claimed_at)) {
       throw new HttpError(409, "Grading is still running. Retry in a moment.");
@@ -1166,7 +1337,8 @@ export async function completeDefendSession(opts: {
   try {
     // Snapshot the file text and start the deck before grading, so the model
     // call overlaps the council. The receipt route does not wait for the cards.
-    await rememberStudyDeck(deliverable.id, false);
+    // A sample demo has no Learn deck. Its text is still deleted below.
+    if (!demo) await rememberStudyDeck(deliverable.id, false);
     // Graders see each claim and the answer, not the raw file.
     grades = await withLlmScope({ sessionId: session.id, requestId: session.request_id, user: opts.user }, () =>
       gradeSession(
@@ -1203,7 +1375,7 @@ export async function completeDefendSession(opts: {
     if (skipSecondRound) {
       await markDefenseCapped(session.request_id, session.id, "grade_followup");
     }
-    if (disputed.length > 0 && !plan.probes.some((p) => p.followUpOf) && !skipSecondRound) {
+    if (!demo && disputed.length > 0 && !plan.probes.some((p) => p.followUpOf) && !skipSecondRound) {
       const source = plan.probes.find((p) => p.id === disputed[0]) ?? plan.probes[0];
       const claim = claims.find((c) => c.id === source.claimId) ?? claims[0];
       const extra = makeFollowUpProbe(claim, source);
@@ -1233,19 +1405,23 @@ export async function completeDefendSession(opts: {
       pasteEvents: signals.pasteEvents,
       focusBlurEvents: signals.focusBlurEvents,
     });
-    if (opts.waitForStudyDeck !== false) await rememberStudyDeck(deliverable.id, true);
+    if (!demo && opts.waitForStudyDeck !== false) await rememberStudyDeck(deliverable.id, true);
     await writeGradingProgress(session.id, { done: grades.length, total: grades.length, stage: "signing" });
     const signedAt = Date.now();
+    const demoExpiresAt = demo ? hoursFromNow(demoRetentionHours()) : null;
     signed = buildSignedReceipt({
       difficulty: request.difficulty,
       sha256: deliverable.sha256,
       byteLength: deliverable.byte_length,
       grades,
       integrity,
-      displayName: opts.showName ? opts.user.display_name : null,
+      displayName: demo ? null : opts.showName ? opts.user.display_name : null,
       claimScores: claimScores(grades, plan),
       interviewMode: session.channel === "voice" ? "voice" : session.channel === "text_accommodation" ? "text-accommodation" : "text",
       plan,
+      demo: demo
+        ? { sample: true, credential: false, file: request.title, expiresAt: demoExpiresAt! }
+        : undefined,
     });
     await recordStageTiming({
       requestId: session.request_id,
@@ -1285,19 +1461,30 @@ export async function completeDefendSession(opts: {
         );
       }
       await tx.run(
-        `INSERT INTO receipts (id, session_id, request_id, payload_json, signature, public_key, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [signed.payload.id, session.id, request.id, JSON.stringify(signed), signed.signature, signed.publicKey, nowIso],
+        `INSERT INTO receipts (id, session_id, request_id, payload_json, signature, public_key, created_at, purge_after)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          signed.payload.id,
+          session.id,
+          request.id,
+          JSON.stringify(signed),
+          signed.signature,
+          signed.publicKey,
+          nowIso,
+          signed.payload.demo?.expiresAt ?? null,
+        ],
       );
       // The defense is done: the document body is no longer needed.
       // The Learn deck was cached above, while this text was still readable.
       await tx.run(`UPDATE deliverables SET text_enc = NULL WHERE id = ?`, [deliverable.id]);
     });
-    await noteChallengeDefended(session.request_id, {
-      sessionId: session.id,
-      deliverableId: deliverable.id,
-      receiptId: signed.payload.id,
-    });
+    if (!demo) {
+      await noteChallengeDefended(session.request_id, {
+        sessionId: session.id,
+        deliverableId: deliverable.id,
+        receiptId: signed.payload.id,
+      });
+    }
   } catch (e) {
     // Release the claim so the creator can retry after a grading or storage failure.
     await db.run(
@@ -1320,7 +1507,7 @@ export async function completeDefendSession(opts: {
     score: aggregateScore(grades, plan),
     flagged: shouldFlagForHuman(grades, plan) || integrity.status !== "Clear",
     stampPath: `/api/stamp/${signed.payload.id}`,
-    challenge: await challengeCompletionHint(session.request_id),
+    challenge: demo ? null : await challengeCompletionHint(session.request_id),
   };
 }
 
@@ -1362,11 +1549,15 @@ async function receiptForSession(db: Db, sessionId: string): Promise<SignedRecei
 export async function getReceipt(receiptId: string): Promise<SignedReceipt | null> {
   if (!/^rcpt_[A-Za-z0-9]{10,40}$/.test(receiptId)) return null;
   const db = await getDb();
-  const row = await db.get<{ payload_json: string }>(
-    `SELECT payload_json FROM receipts WHERE id = ?`,
+  const row = await db.get<{ payload_json: string; purge_after: string | null }>(
+    `SELECT payload_json, purge_after FROM receipts WHERE id = ?`,
     [receiptId],
   );
-  return row ? (JSON.parse(row.payload_json) as SignedReceipt) : null;
+  if (!row) return null;
+  if (row.purge_after && row.purge_after < new Date().toISOString()) return null;
+  const receipt = JSON.parse(row.payload_json) as SignedReceipt;
+  if (receipt.payload.demo?.sample && receipt.payload.demo.expiresAt < new Date().toISOString()) return null;
+  return receipt;
 }
 
 /** Requests the user sent (receiver) or defended (creator), newest first. */
@@ -1396,7 +1587,7 @@ export async function listDashboard(user: User) {
      LEFT JOIN receipts rc ON rc.request_id = r.id
      LEFT JOIN deliverables d ON d.id =
        (SELECT id FROM deliverables WHERE request_id = r.id ORDER BY created_at DESC LIMIT 1)
-     WHERE r.owner_user_id = ? OR r.creator_user_id = ?
+     WHERE (r.owner_user_id = ? OR r.creator_user_id = ?) AND r.kind <> 'demo'
      ORDER BY r.created_at DESC
      LIMIT 200`,
     [user.id, user.id],
@@ -1458,7 +1649,7 @@ export async function listAdminSessions() {
      JOIN users u ON u.id = s.user_id
      LEFT JOIN receipts rc ON rc.session_id = s.id
      LEFT JOIN human_grades hg ON hg.session_id = s.id
-     WHERE s.mode = 'defend'
+     WHERE s.mode = 'defend' AND r.kind <> 'demo'
      ORDER BY s.started_at DESC
      LIMIT 200`,
   );
@@ -1724,7 +1915,7 @@ export async function listProjects(user: User) {
      FROM defense_requests r
      JOIN deliverables d ON d.id =
        (SELECT id FROM deliverables WHERE request_id = r.id ORDER BY created_at DESC LIMIT 1)
-     WHERE r.creator_user_id = ? AND r.learn_closed_at IS NULL
+     WHERE r.creator_user_id = ? AND r.learn_closed_at IS NULL AND r.kind <> 'demo'
      ORDER BY d.created_at DESC
      LIMIT 100`,
     [new Date().toISOString(), user.id],
@@ -1807,6 +1998,13 @@ export async function purgeExpired() {
   await db.run(`DELETE FROM rate_limits WHERE window_start < ?`, [
     new Date(Date.now() - 2 * 24 * 3600_000).toISOString(),
   ]);
+  // Sample counters only. This statement never deletes another bucket.
+  await db.run(
+    `DELETE FROM rate_limits WHERE bucket_key LIKE 'demo:%' AND window_start < ?`,
+    [new Date(Date.now() - 24 * 3600_000).toISOString()],
+  );
+  await purgeExpiredDemoPasses(db, nowIso);
+  await db.run(`DELETE FROM receipts WHERE purge_after IS NOT NULL AND purge_after < ?`, [nowIso]);
   await refundStaleDefenseHolds();
   const analyticsEvents = await purgeOldAnalyticsEvents(db, new Date(nowIso));
   return {
@@ -1815,6 +2013,84 @@ export async function purgeExpired() {
     sessions: sessions.changes,
     analyticsEvents,
   };
+}
+
+/**
+ * An expired sample pass takes its defense request and ephemeral user with it.
+ * The ledger row stays, moved onto one retained account, so the lifetime
+ * sample cap still counts that charge after the visitor is gone.
+ */
+async function purgeExpiredDemoPasses(db: Db, nowIso: string) {
+  const expired = await db.all<{ user_id: string; request_id: string }>(
+    `SELECT p.user_id, p.request_id
+     FROM demo_passes p
+     JOIN defense_requests r ON r.id = p.request_id
+     WHERE p.expires_at < ? AND r.kind = 'demo'`,
+    [nowIso],
+  );
+  if (expired.length === 0) return;
+  const anchor = await demoLedgerAnchorId(db);
+  for (const requestId of expired.map((row) => row.request_id)) {
+    await db.run(
+      `DELETE FROM budget_holds WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
+      [requestId],
+    );
+    await db.run(
+      `DELETE FROM defense_holds WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
+      [requestId],
+    );
+    await db.run(
+      `DELETE FROM grades WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
+      [requestId],
+    );
+    await db.run(
+      `DELETE FROM human_grades WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
+      [requestId],
+    );
+    await db.run(`DELETE FROM receipts WHERE request_id = ?`, [requestId]);
+    await db.run(`DELETE FROM flashcards WHERE request_id = ?`, [requestId]);
+    await db.run(`DELETE FROM sessions WHERE request_id = ?`, [requestId]);
+    await db.run(`DELETE FROM deliverables WHERE request_id = ?`, [requestId]);
+    await db.run(`DELETE FROM llm_calls WHERE request_id = ?`, [requestId]);
+    await db.run(`DELETE FROM stage_timings WHERE request_id = ?`, [requestId]);
+    await db.run(`DELETE FROM demo_passes WHERE request_id = ?`, [requestId]);
+    await db.run(`DELETE FROM defense_requests WHERE id = ? AND kind = 'demo'`, [requestId]);
+  }
+  for (const userId of new Set(expired.map((row) => row.user_id))) {
+    if (userId === anchor) continue;
+    const still = await db.get<{ id: string }>(
+      `SELECT id FROM defense_requests WHERE owner_user_id = ? OR creator_user_id = ?`,
+      [userId, userId],
+    );
+    const pass = await db.get<{ token_hash: string }>(
+      `SELECT token_hash FROM demo_passes WHERE user_id = ?`,
+      [userId],
+    );
+    if (still || pass) continue;
+    const user = await db.get<{ email: string }>(`SELECT email FROM users WHERE id = ?`, [userId]);
+    if (!user || !isDemoPrincipalEmail(user.email)) continue;
+    await db.run(`UPDATE credit_ledger SET user_id = ? WHERE user_id = ?`, [anchor, userId]);
+    await db.run(`DELETE FROM credit_wallets WHERE user_id = ?`, [userId]);
+    await db.run(`DELETE FROM beta_grants WHERE user_id = ?`, [userId]);
+    await db.run(`DELETE FROM auth_sessions WHERE user_id = ?`, [userId]);
+    await db.run(`DELETE FROM users WHERE id = ?`, [userId]);
+  }
+}
+
+/** Keeps sample ledger rows after the ephemeral visitor is deleted. */
+async function demoLedgerAnchorId(db: Db): Promise<string> {
+  const email = "ledger@demo.defendit.invalid";
+  const existing = await db.get<{ id: string }>(`SELECT id FROM users WHERE email = ?`, [email]);
+  if (existing) return existing.id;
+  const id = newId("usr");
+  await db.run(
+    `INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, NULL, ?)
+     ON CONFLICT (email) DO NOTHING`,
+    [id, email, new Date().toISOString()],
+  );
+  const row = await db.get<{ id: string }>(`SELECT id FROM users WHERE email = ?`, [email]);
+  if (!row) throw new Error("demo ledger anchor missing");
+  return row.id;
 }
 
 export function publicKeyInfo() {

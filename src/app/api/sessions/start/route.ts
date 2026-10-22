@@ -3,7 +3,9 @@ import { z } from "zod";
 import type { User } from "@/lib/auth";
 import { challengeCoversDefense } from "@/lib/challenges";
 import { abortDefenseCredit, attachDefenseCredit, beginDefenseCredit } from "@/lib/credits";
-import { handleError, HttpError, ipLimitKey, limitOr429, requireUser } from "@/lib/http";
+import { resolveDefenseStart } from "@/lib/demo";
+import { DEMO_COPY } from "@/lib/demo-policy";
+import { handleError, HttpError, ipLimitKey, jsonError, limitOr429 } from "@/lib/http";
 import { LIMITS } from "@/lib/ratelimit";
 import { publicProbes, startSession, type FirstQuestionInfo } from "@/lib/services";
 import { recordStageTiming } from "@/lib/timings";
@@ -19,28 +21,36 @@ const schema = z.object({
 });
 
 export async function POST(req: Request) {
-  const guard = await requireUser(req);
-  if (guard.response) return guard.response;
   let creditKey: string | null = null;
   let sessionId: string | null = null;
+  let userId: string | null = null;
   try {
-    const limited =
-      (await limitOr429(`start:${guard.user.id}`, LIMITS.sessionStartPerUser)) ||
-      (await limitOr429(ipLimitKey("start", req), LIMITS.sessionStartPerIp));
-    if (limited) return limited;
     const body = schema.parse(await req.json());
-    // A challenge defense does not spend the defender's defense credit.
-    // startSession reserves the shared beta budget for a beta challenge.
-    if (body.mode === "defend" && !(await challengeCoversDefense(body.token, guard.user.id))) {
-      const reserved = await beginDefenseCredit(guard.user.id);
-      creditKey = reserved.idempotencyKey;
+    const actor = await resolveDefenseStart(req, body.token);
+    if (actor.response) return actor.response;
+    userId = actor.user.id;
+    if (actor.demo && body.mode !== "defend") return jsonError(403, DEMO_COPY.noLearn);
+    if (!actor.demo) {
+      const limited =
+        (await limitOr429(`start:${actor.user.id}`, LIMITS.sessionStartPerUser)) ||
+        (await limitOr429(ipLimitKey("start", req), LIMITS.sessionStartPerIp));
+      if (limited) return limited;
+      // A challenge defense does not spend the defender's defense credit.
+      // startSession reserves the shared beta budget for a beta challenge.
+      if (body.mode === "defend" && !(await challengeCoversDefense(body.token, actor.user.id))) {
+        const reserved = await beginDefenseCredit(actor.user.id);
+        creditKey = reserved.idempotencyKey;
+      }
     }
-    if (body.mode === "defend" && creditKey && (req.headers.get("accept") || "").includes("application/x-ndjson")) {
-      return streamDefendStart(body, guard.user, creditKey, req.headers);
-    }
-    const session = await startSession({ ...body, user: guard.user, analyticsHeaders: req.headers });
+    const wantsStream =
+      body.mode === "defend" && (req.headers.get("accept") || "").includes("application/x-ndjson");
+    // A challenge defense has no credit hold, so it stays on the JSON path.
+    // A sample demo streams so the first question can show before the rest are written.
+    const stream = wantsStream && (actor.demo || creditKey);
+    if (stream) return streamDefendStart(body, actor.user, creditKey, actor.demo, req.headers);
+    const session = await startSession({ ...body, user: actor.user, analyticsHeaders: req.headers });
     sessionId = session.sessionId;
-    if (creditKey) await attachDefenseCredit(guard.user.id, creditKey, session.sessionId);
+    if (creditKey) await attachDefenseCredit(actor.user.id, creditKey, session.sessionId);
     const voice = getVoiceProvider();
     const voiceStarted = Date.now();
     const voiceSession = await voice.createSession({
@@ -67,6 +77,7 @@ export async function POST(req: Request) {
       plan: body.mode === "defend" ? { ...session.plan, probes } : { probeCount: session.plan.probes.length },
       firstQuestion: probes?.[0]?.question,
       probes,
+      demo: session.demo,
       voice: {
         provider: voice.id,
         modality: voice.modality,
@@ -77,9 +88,9 @@ export async function POST(req: Request) {
     // A challenge defense has no per-start credit. Its euro reservation stays
     // when this start fails or is replaced by a newer one. Decline, expiry,
     // and revoke release it. Releasing it here would take it from that newer start.
-    if (creditKey) {
+    if (creditKey && userId) {
       try {
-        await abortDefenseCredit(guard.user.id, creditKey, sessionId);
+        await abortDefenseCredit(userId, creditKey, sessionId);
       } catch (abortError) {
         console.error("[credits] refund", abortError instanceof Error ? abortError.message : abortError);
       }
@@ -97,7 +108,8 @@ export async function POST(req: Request) {
 function streamDefendStart(
   body: z.infer<typeof schema>,
   user: User,
-  creditKey: string,
+  creditKey: string | null,
+  demo: boolean,
   headers: Headers,
 ) {
   const encoder = new TextEncoder();
@@ -116,10 +128,13 @@ function streamDefendStart(
           analyticsHeaders: headers,
           onFirstQuestion: async (info) => {
             sessionId = info.sessionId;
-            await attachDefenseCredit(user.id, creditKey, info.sessionId);
-            attached = true;
+            if (creditKey) {
+              await attachDefenseCredit(user.id, creditKey, info.sessionId);
+              attached = true;
+            }
             send({
               type: "question",
+              demo,
               sessionId: info.sessionId,
               channel: info.channel,
               total: info.total,
@@ -144,7 +159,7 @@ function streamDefendStart(
             });
           },
         });
-        if (!attached) {
+        if (!attached && creditKey) {
           sessionId = session.sessionId;
           await attachDefenseCredit(user.id, creditKey, session.sessionId);
           attached = true;
@@ -152,6 +167,7 @@ function streamDefendStart(
         const probes = publicProbes(session.plan);
         send({
           type: "ready",
+          demo,
           sessionId: session.sessionId,
           startedAt: session.startedAt,
           mode: body.mode,
@@ -163,7 +179,7 @@ function streamDefendStart(
         });
         controller.close();
       } catch (e) {
-        if (!attached) {
+        if (!attached && creditKey) {
           try {
             await abortDefenseCredit(user.id, creditKey, sessionId);
           } catch (abortError) {

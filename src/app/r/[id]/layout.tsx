@@ -16,6 +16,7 @@ export async function generateMetadata({
   return {
     metadataBase: new URL(appUrl()),
     ...toNextMetadata(shareMetadata(card, id), `/r/${id}`),
+    ...(card.visibility === "demo" ? { robots: { index: false, follow: false } } : {}),
   };
 }
 

@@ -44,7 +44,11 @@ export function PlotterStamp({ payload, verifyUrl, autoPlay = true }: { payload:
         dangerouslySetInnerHTML={svg ? { __html: svg } : undefined}
       />
       <figcaption className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ink-2)]">
-        <span>This is the stamp you send. Scan the code to verify the file.</span>
+        <span>
+          {payload.demo?.sample
+            ? "Sample demo on a bundled file. Not a credential."
+            : "This is the stamp you send. Scan the code to verify the file."}
+        </span>
         <button type="button" className="mono uppercase tracking-[0.08em] text-[var(--blueprint)] underline" onClick={play}>
           Replay
         </button>

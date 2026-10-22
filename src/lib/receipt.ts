@@ -64,6 +64,7 @@ export function buildSignedReceipt(opts: {
   interviewMode?: InterviewMode;
   attempt?: number;
   plan?: InterviewPlan;
+  demo?: ReceiptPayload["demo"];
 }): SignedReceipt {
   const score = aggregateScore(opts.grades, opts.plan);
   const graders = gradersForReceipt(opts.grades);
@@ -88,6 +89,7 @@ export function buildSignedReceipt(opts: {
     },
     attempt: opts.attempt ?? 1,
     assuranceLevel: "L1",
+    ...(opts.demo ? { demo: opts.demo } : {}),
   };
   if (opts.displayName) {
     payload.creator = { displayName: opts.displayName, nameSelfReported: true };

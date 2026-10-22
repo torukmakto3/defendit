@@ -2,6 +2,7 @@ import { randomBytes } from "crypto";
 import { appUrl } from "./config";
 import { sha256Hex } from "./crypto";
 import { getDb, type Db } from "./db";
+import { isDemoPrincipalEmail } from "./demo-policy";
 import { newId } from "./ids";
 import { HttpError } from "./errors";
 import { isDeployed } from "./secrets";
@@ -111,6 +112,7 @@ export async function requestMagicLink(opts: {
   nextPath?: string;
 }): Promise<{ devLink?: string }> {
   const email = normalizeEmail(opts.email);
+  assertSignInEmail(email);
   const canEmail = canSendSignInEmail();
   if (!canEmail && !devLinksAllowed(email)) {
     throw new HttpError(503, signInUnavailableMessage(email));
@@ -199,12 +201,19 @@ export async function createSessionForEmail(
   return db.transaction((tx) => insertUserSession(tx, normalizeEmail(email), displayName, nowIso));
 }
 
+function assertSignInEmail(email: string) {
+  if (isDemoPrincipalEmail(email)) {
+    throw new HttpError(400, "That address can't be used to sign in.");
+  }
+}
+
 async function insertUserSession(
   tx: Db,
   email: string,
   displayName: string | null,
   nowIso: string,
 ): Promise<{ user: User; sessionToken: string }> {
+  assertSignInEmail(email);
   const name = displayName?.trim().slice(0, 80) || null;
   // Two first-time sign-ins for one email can race; the unique email wins either way.
   await tx.run(

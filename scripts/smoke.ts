@@ -216,6 +216,50 @@ async function main() {
   const dash = await call("/api/dashboard", { cookie: ana });
   check(dash.status === 200 && dash.json.rows.some((x: { receiptId: string }) => x.receiptId === id), "dashboard lists own receipt");
 
+  const demo = await post("/api/demo/start", { sample: "harbor-readme" });
+  check(demo.status === 200 && demo.json?.demo === true, `sample demo opened (${demo.status !== 200 ? demo.text : demo.json.title})`);
+  const headerBag = demo.headers as Headers & { getSetCookie?: () => string[] };
+  const setCookies = headerBag.getSetCookie?.() ?? [demo.headers.get("set-cookie") || ""];
+  const demoCookie = setCookies.map((value) => value.split(";")[0]).find((value) => value.startsWith("di_demo="));
+  check(demoCookie, "sample demo sets an HttpOnly pass, not a sign-in session");
+  check(/httponly/i.test(setCookies.join(";")), "sample pass cookie is HttpOnly");
+  const demoStart = await post("/api/sessions/start", { token: demo.json.token, mode: "defend" }, demoCookie);
+  check(demoStart.status === 200 && demoStart.json.channel === "text" && demoStart.json.probes?.length === 3, "sample defense is 3 text questions");
+  check(demoStart.json.demo === true, "sample defense is marked as a demo");
+  for (const p of demoStart.json.probes as { id: string; type: string }[]) {
+    const saved = await post(
+      "/api/sessions/defend/answer",
+      {
+        sessionId: demoStart.json.sessionId,
+        probeId: p.id,
+        answer:
+          p.type === "planted_error"
+            ? "The 2,000-note assumption was altered. Harbor only fits the index in one process if the workspace stays under that."
+            : "Harbor indexes Markdown notes on one machine. The load-bearing assumption is that a workspace stays under 2,000 notes.",
+      },
+      demoCookie,
+    );
+    if (saved.status !== 200) throw new Error(`FAILED: sample answer not saved — ${saved.text}`);
+  }
+  const demoDone = await post("/api/sessions/defend/complete", { sessionId: demoStart.json.sessionId, showName: true }, demoCookie);
+  check(demoDone.status === 200 && demoDone.json?.receipt?.payload?.demo?.sample === true, "sample receipt is labelled a demo");
+  check(demoDone.json.receipt.payload.demo.credential === false, "sample receipt is not a credential");
+  check(demoDone.json.receipt.payload.creator == null, "sample receipt has no creator name");
+  const demoId = demoDone.json.receipt.payload.id as string;
+  const demoPub = await call(`/api/receipts/${demoId}`);
+  check(demoPub.status === 200 && demoPub.json.receipt.payload.demo.file === "Harbor README", "public sample receipt names the bundled file");
+  check(!JSON.stringify(demoPub.json).includes("separate search service"), "sample receipt carries no document text");
+  const demoLearn = await post("/api/sessions/start", { token: demo.json.token, mode: "learn" }, demoCookie);
+  check(demoLearn.status === 403, "sample pass cannot open Learn");
+  const demoUpload = await call("/api/creator/ingest", { method: "POST", body: new FormData(), cookie: demoCookie });
+  check(demoUpload.status === 401, "sample pass cannot upload a file");
+  const demoChallenge = await post("/api/requests", { difficulty: "standard", title: "nope" }, demoCookie);
+  check(demoChallenge.status === 401, "sample pass cannot create a challenge");
+  const demoDash = await call("/api/dashboard", { cookie: demoCookie });
+  check(demoDash.status === 401, "sample pass cannot open the dashboard");
+  const listed = await call("/api/dashboard", { cookie: ana });
+  check(listed.status === 200 && !listed.json.rows.some((x: { receiptId: string }) => x.receiptId === demoId), "sample receipt stays out of the dashboard");
+
   console.log(`\nreceipt ${BASE}/r/${id}`);
   console.log("SMOKE OK");
 }

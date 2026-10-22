@@ -47,6 +47,7 @@ export default function VerifyPage() {
   const [score, setScore] = useState<number | null>(null);
   const [gradedWith, setGradedWith] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sampleFile, setSampleFile] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`/api/receipts/${id}`)
@@ -60,6 +61,7 @@ export default function VerifyPage() {
         }
         setExpected(j.receipt.payload.deliverable.sha256);
         setOutcome(j.receipt.payload.outcome);
+        setSampleFile(j.receipt.payload.demo?.sample ? j.receipt.payload.demo.file || "a sample file" : null);
         setScore(j.receipt.payload.score);
         setGradedWith(gradedWithLine(j.receipt.payload));
         setSignatureValid(await verifyInBrowser(j.receipt));
@@ -76,7 +78,13 @@ export default function VerifyPage() {
 
   return (
     <div className="shell max-w-2xl">
-      <h1 className="text-3xl font-bold sm:text-4xl">Verify receipt</h1>
+      <h1 className="text-3xl font-bold sm:text-4xl">{sampleFile ? "Verify sample demo" : "Verify receipt"}</h1>
+      {sampleFile && (
+        <p className="mt-3 border border-[var(--signal)] bg-[var(--card)] p-4 text-sm">
+          Demo on a sample file ({sampleFile}). Not a credential. Matching the hash only shows this is
+          the bundled sample, not that someone defended their own work.
+        </p>
+      )}
       <p className="mt-3 text-[var(--ink-2)]">
         Drop your copy of the file. Hashing happens in your browser — the file
         never leaves your machine.
