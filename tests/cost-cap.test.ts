@@ -13,7 +13,9 @@ import {
 import { getDb, resetDbForTests } from "../src/lib/db";
 import { newId } from "../src/lib/ids";
 import { getPrimaryLlm, LlmBudgetError, withLlmScope } from "../src/lib/llm";
+import { beginBudget, releaseBudget } from "../src/lib/llm/usage";
 import {
+  adminSessionsCsv,
   completeDefendSession,
   creatorIngest,
   listAdminSessions,
@@ -109,6 +111,47 @@ describe("cost tier and rates", () => {
     expect(summary.voiceUsd).toBeCloseTo(0.45);
     expect(secondRoundFits(0.61, 0.75, 3)).toBe(false);
     expect(secondRoundFits(0.61, 3, 3)).toBe(true);
+  });
+
+  it("prefixes formula-like CSV cells so a spreadsheet does not evaluate them", () => {
+    const csv = adminSessionsCsv([
+      {
+        id: "=1+1",
+        title: "=1,2",
+        creator_email: "+cmd",
+        difficulty: "-1",
+        status: "@sum",
+        cost_tier: "consumer",
+        budget_usd: 0.75,
+        llm_cost_usd: 0.1,
+        voice_cost_usd: 0.2,
+        total_cost_usd: 0.3,
+        budget_capped: 0,
+      },
+      {
+        id: "ses_ok",
+        title: "\t=tab",
+        creator_email: "\r=cr",
+        difficulty: "standard",
+        status: "completed",
+        cost_tier: "consumer",
+        budget_usd: 0.75,
+        llm_cost_usd: 0,
+        voice_cost_usd: 0,
+        total_cost_usd: 0,
+        budget_capped: 0,
+      },
+    ]);
+    const [header, formula, control] = csv.split("\n");
+    expect(header.startsWith("id,title,")).toBe(true);
+    expect(formula).toContain("'=1+1");
+    expect(formula).toContain(`"'=1,2"`);
+    expect(formula).toContain("'+cmd");
+    expect(formula).toContain("'-1");
+    expect(formula).toContain("'@sum");
+    expect(control).toContain("'\t=tab");
+    expect(control).toContain("'\r=cr");
+    expect(control).toContain("ses_ok");
   });
 });
 
@@ -297,5 +340,61 @@ describe("defense cost cap", () => {
     expect(row?.budget_usd).toBe(3);
     expect(row?.budget_capped).toBe(0);
     expect(gradeCalls).toBe(3);
+  });
+
+  it("lets only one of two concurrent requests reserve the last slice of the cap", async () => {
+    const cheap = process.env.CHEAP_LLM_RESERVE_USD;
+    process.env.CHEAP_LLM_RESERVE_USD = "0.05";
+    try {
+      const user = await signIn("race@fund.example");
+      const ingest = await creatorIngest({ user, fileName: "race.md", buffer: memo, difficulty: "standard" });
+      const session = await startSession({ token: ingest.token, user, mode: "defend" });
+      const db = await getDb();
+      const before = await db.get<{ cost_usd: number; reserved_usd: number; voice_cost_usd: number }>(
+        `SELECT cost_usd, reserved_usd, voice_cost_usd FROM sessions WHERE id = ?`,
+        [session.sessionId],
+      );
+      const spent = Number(before?.cost_usd ?? 0) + Number(before?.reserved_usd ?? 0) + Number(before?.voice_cost_usd ?? 0);
+      await db.run(`UPDATE sessions SET budget_usd = ? WHERE id = ?`, [spent + 0.05, session.sessionId]);
+
+      let reservedWhileBothWaited = -1;
+      let arrived = 0;
+      let openGate: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        openGate = resolve;
+      });
+      const attempt = () =>
+        withLlmScope({ sessionId: session.sessionId, requestId: ingest.requestId, user }, async () => {
+          const decision = await beginBudget({
+            purpose: "extract_claims",
+            modelId: "mock-defend-v1",
+            promptText: "Extract the claims",
+          });
+          arrived += 1;
+          if (arrived === 2) {
+            const mid = await db.get<{ reserved_usd: number }>(
+              `SELECT reserved_usd FROM sessions WHERE id = ?`,
+              [session.sessionId],
+            );
+            reservedWhileBothWaited = Number(mid?.reserved_usd ?? 0);
+            openGate();
+          }
+          await gate;
+          await releaseBudget(decision.reservationId);
+          return decision.allow;
+        });
+
+      const [first, second] = await Promise.all([attempt(), attempt()]);
+      const allowed = [first, second].filter(Boolean);
+      expect(allowed).toHaveLength(1);
+      expect(reservedWhileBothWaited).toBeCloseTo(0.05);
+      const after = await db.get<{ reserved_usd: number }>(
+        `SELECT reserved_usd FROM sessions WHERE id = ?`,
+        [session.sessionId],
+      );
+      expect(Number(after?.reserved_usd ?? 0)).toBeCloseTo(0);
+    } finally {
+      process.env.CHEAP_LLM_RESERVE_USD = cheap;
+    }
   });
 });

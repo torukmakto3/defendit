@@ -162,7 +162,7 @@ export function getCheapestLlm(): LlmProvider {
  * hold each council grader on a session-total update (#23).
  */
 export async function trackedComplete(provider: LlmProvider, req: LlmRequest): Promise<LlmResponse> {
-  const decision = beginBudget({
+  const decision = await beginBudget({
     purpose: req.purpose,
     modelId: provider.id,
     promptText: req.messages.map((message) => message.content).join("\n"),
@@ -187,7 +187,7 @@ export async function trackedComplete(provider: LlmProvider, req: LlmRequest): P
     }
     return res;
   } catch (error) {
-    releaseBudget(decision.reservationId);
+    await releaseBudget(decision.reservationId);
     throw error;
   }
 }

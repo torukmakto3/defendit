@@ -797,7 +797,9 @@ function clampSeconds(value: number): number {
 }
 
 function csvCell(value: unknown): string {
-  const text = String(value ?? "");
+  let text = String(value ?? "");
+  // Spreadsheets treat a leading = + - @, tab, or CR as a formula.
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
   if (/[",\n]/.test(text)) return `"${text.replaceAll('"', '""')}"`;
   return text;
 }

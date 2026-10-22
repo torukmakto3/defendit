@@ -216,6 +216,8 @@ describe("session totals", () => {
           "over_budget",
           "budget_usd",
           "budget_capped",
+          "reserved_usd",
+          "reserved_grades",
           "voice_cost_usd",
         ]),
       );

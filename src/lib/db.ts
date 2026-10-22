@@ -207,6 +207,13 @@ const ADDED_COLUMNS: [string, string, string][] = [
   ["sessions", "budget_usd", "DOUBLE PRECISION"],
   // 1 when a call was skipped or moved to the cheap model so the cap would hold.
   ["sessions", "budget_capped", "INTEGER NOT NULL DEFAULT 0"],
+  // In-flight model calls. A conditional UPDATE adds the reserve only when
+  // spent + voice + reserved + this call still fits, so two requests cannot
+  // both pass the cap. Released when the call is stored or abandoned.
+  ["sessions", "reserved_usd", "DOUBLE PRECISION NOT NULL DEFAULT 0"],
+  // Grade reservations held in reserved_usd. Lets one over-cap grade through
+  // and stops a second request from taking that same exception.
+  ["sessions", "reserved_grades", "INTEGER NOT NULL DEFAULT 0"],
   // LiveKit interviewer usage, reported by the agent. Dollars are seconds × env rates.
   ["sessions", "voice_agent_sec", "DOUBLE PRECISION NOT NULL DEFAULT 0"],
   ["sessions", "voice_stt_sec", "DOUBLE PRECISION NOT NULL DEFAULT 0"],

@@ -1,12 +1,8 @@
 import { isAdminEmail, normalizeEmail } from "./auth";
 
 /**
- * Per-defense cost tier.
- *
- * Plans and the credit ledger arrive in #39. Until that work replaces
- * `getCostTier`, every account is a consumer. Admins and addresses on
- * `COST_TIER_ENTERPRISE_EMAILS` are enterprise. This is the only place that
- * maps a user to a tier.
+ * Per-defense cost tier. `getCostTier` is the only user → tier mapping.
+ * Callers stay on that function when the plan model arrives.
  */
 export type CostTier = "consumer" | "enterprise";
 
@@ -18,7 +14,20 @@ const STANDARD_RESERVE_USD = 0.05;
 /** Predicted cost of the small model (`llama-3.1-8b-instruct` / `FLASHCARD_MODEL`). */
 const CHEAP_RESERVE_USD = 0.01;
 
+/**
+ * Cap tier for this account.
+ *
+ * TODO(#43): when `src/lib/plans.ts` is on main, read the account's plan and
+ * return `costTierForPlan(planId)` from that module (team and enterprise are
+ * the enterprise cap; beta, payg, and subscription stay consumer). Do not
+ * import `plans.ts` until that PR has merged. Until then the tier comes from
+ * the email: admins and `COST_TIER_ENTERPRISE_EMAILS` are enterprise.
+ */
 export function getCostTier(user: { email: string } | null | undefined): CostTier {
+  return costTierFromEmail(user);
+}
+
+function costTierFromEmail(user: { email: string } | null | undefined): CostTier {
   if (!user?.email) return "consumer";
   if (isAdminEmail(user.email)) return "enterprise";
   if (enterpriseAllowlistHas(user.email)) return "enterprise";
