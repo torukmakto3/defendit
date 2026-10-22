@@ -31,17 +31,17 @@ export function SuggestedShares({ url }: { url: string }) {
   }
 
   return (
-    <div className="panel grid gap-3 p-5">
-      <p className="text-sm font-semibold">Suggested reply</p>
+    <div className="panel grid gap-4 p-5">
+      <h2 className="type-section">Suggested reply</h2>
       <p className="text-sm text-[var(--ink-2)]">
         Edit it, then post it from your own account. It stays optional for them, and they control what is public.
       </p>
-      <div className="flex flex-wrap gap-2">
+      <div className="segment" role="group" aria-label="Suggested replies">
         {SHARE_DRAFTS.map((draft, i) => (
           <button
             key={draft.label}
             type="button"
-            className={i === index ? "btn btn-primary" : "btn btn-ghost"}
+            aria-pressed={i === index}
             onClick={() => pick(i)}
           >
             {draft.label}
@@ -295,24 +295,24 @@ export function CreateChallengeForm({ onward }: { onward?: "defender" | "viewer"
 
   if (link) {
     return (
-      <div className="panel mt-8 p-6">
-        <p className="eyebrow">Link ready</p>
-        <p className="mt-3 break-all font-mono text-sm">{link}</p>
-        <p className="mt-3 text-sm text-[var(--ink-2)]">
-          Post it from your own account. They opt in or ignore it. You are not posting for them.
-        </p>
-        <button type="button" className="btn btn-primary mt-6" onClick={() => void navigator.clipboard.writeText(link)}>
-          Copy link
-        </button>
-        <div className="mt-4">
-          <SuggestedShares url={link} />
+      <div className="grid gap-6">
+        <div className="panel grid gap-4 p-5">
+          <p className="eyebrow">Link ready</p>
+          <p className="break-all font-mono text-sm">{link}</p>
+          <p className="text-sm text-[var(--ink-2)]">
+            Post it from your own account. They opt in or ignore it. You are not posting for them.
+          </p>
+          <button type="button" className="btn btn-primary w-full justify-self-start sm:w-auto" onClick={() => void navigator.clipboard.writeText(link)}>
+            Copy link
+          </button>
         </div>
+        <SuggestedShares url={link} />
       </div>
     );
   }
 
   return (
-    <form onSubmit={onSubmit} className="panel mt-8 grid gap-4 p-6">
+    <form onSubmit={onSubmit} className="panel grid gap-4 p-5">
       <div>
         <label className="label" htmlFor="subject">
           What should they defend?
@@ -348,7 +348,7 @@ export function CreateChallengeForm({ onward }: { onward?: "defender" | "viewer"
         </select>
       </div>
       {error && <p className="text-sm text-danger">{error}</p>}
-      <button type="submit" className="btn btn-primary justify-self-start" disabled={busy}>
+      <button type="submit" className="btn btn-primary w-full justify-self-start sm:w-auto" disabled={busy}>
         {busy ? "Creating…" : "Create challenge link"}
       </button>
     </form>
