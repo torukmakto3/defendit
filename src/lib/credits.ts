@@ -31,8 +31,10 @@
  * against `BETA_BUDGET_EUR` (default 150). A beta challenge defense reserves
  * that same amount when the defense starts, without spending the defender's
  * defense credit, and releases it on decline, expiry, or revoke.
- * Challenge-credit holds do not count against the budget. Each account is
- * granted `BETA_DEFENSE_CREDITS` free defenses once (default 3). While
+ * Challenge-credit holds do not count against the budget. A no-login sample
+ * demo charges the same `BETA_DEFENSE_EUR` through `chargeBetaDefenseBudget`,
+ * which uses this module's conditional `credit_budget` update. Each account
+ * is granted `BETA_DEFENSE_CREDITS` free defenses once (default 3). While
  * billing is off, the next defense after those are spent is a 402. The
  * global budget can stop a sponsored defense sooner. Starting a defense
  * refunds an unfinished hold that is already attached to an in-progress
@@ -45,6 +47,7 @@
  * $3 (`src/lib/plans.ts`). This module does not enforce the cap.
  */
 
+import { isDemoPrincipalEmail } from "./demo-policy";
 import { getDb, type Db } from "./db";
 import { HttpError } from "./errors";
 import { newId } from "./ids";
@@ -424,6 +427,68 @@ function pickBucket(buckets: Map<string, number>, purpose: SpendKind, amount: nu
 }
 
 const BETA_BUDGET_ID = "beta";
+
+/**
+ * Whether another sponsored defense of `costCents` still fits. A read, so
+ * the sample path can refuse before it spends a rate-limit slot. The charge
+ * itself is `chargeBetaDefenseBudget`.
+ */
+export async function betaBudgetCanAfford(costCents: number): Promise<boolean> {
+  if (costCents < 0) return false;
+  const db = await getDb();
+  const row = await db.get<{ spent_cents: number | string | null }>(
+    `SELECT spent_cents FROM credit_budget WHERE id = ?`,
+    [BETA_BUDGET_ID],
+  );
+  const spent = row
+    ? num(row.spent_cents)
+    : num(
+        (
+          await db.get<{ n: number | string | null }>(
+            `SELECT COALESCE(SUM(budget_cents), 0) AS n FROM credit_ledger`,
+          )
+        )?.n,
+      );
+  return spent + costCents <= betaBudgetCents();
+}
+
+/**
+ * Count one sample demo against the global beta budget. Same conditional
+ * update as a sponsored defense hold. Writes a zero-amount ledger row so a
+ * later reseed of `credit_budget` still includes the charge. Does not grant
+ * or spend a wallet credit.
+ */
+export async function chargeBetaDefenseBudget(input: {
+  userId: string;
+  idempotencyKey: string;
+  refId: string;
+  db?: Db;
+}): Promise<boolean> {
+  return withTx(input.db, async (tx) => {
+    const existing = await tx.get<{ id: string }>(
+      `SELECT id FROM credit_ledger WHERE idempotency_key = ?`,
+      [input.idempotencyKey],
+    );
+    if (existing) return true;
+    const cost = betaDefenseCents();
+    if (!(await reserveBetaBudget(tx, cost))) return false;
+    await insertEntry(tx, {
+      userId: input.userId,
+      kind: "defense",
+      reason: "consume",
+      amount: 0,
+      idempotencyKey: input.idempotencyKey,
+      source: "beta",
+      purpose: "demo",
+      refType: "demo",
+      refId: input.refId,
+      sponsored: true,
+      budgetCents: cost,
+      periodId: null,
+    });
+    return true;
+  });
+}
 
 /**
  * Claim `costCents` of the global beta budget, or return false when it would
@@ -1229,6 +1294,11 @@ async function releaseUnfinishedDefenseHolds(tx: Db, userId: string): Promise<vo
 export async function beginDefenseCredit(
   userId: string,
 ): Promise<{ idempotencyKey: string; sponsored: boolean }> {
+  const db = await getDb();
+  const existing = await db.get<{ email: string }>(`SELECT email FROM users WHERE id = ?`, [userId]);
+  if (existing && isDemoPrincipalEmail(existing.email)) {
+    throw new HttpError(403, "A sample demo does not spend account credits.");
+  }
   await ensureBetaGrant(userId);
   const idempotencyKey = `defense-hold:${userId}:${newId("hold")}`;
   const entry = await withTx(undefined, async (tx) => {

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { beaconReceiptShared } from "@/components/analytics-beacon";
+import { SignInCard } from "@/components/auth";
 import { Companion } from "@/components/companion/Companion";
 import { ShareBar } from "@/components/challenge/actions";
 import { PublicChallengeResult } from "@/components/challenge/PublicResult";
@@ -96,6 +97,7 @@ export default function ReceiptPage() {
   }
 
   const p = data.receipt.payload;
+  const sample = p.demo?.sample === true;
   const defended = p.outcome === "Defended";
   const { claims, approximate } = claimResults(p, labels);
 
@@ -104,8 +106,9 @@ export default function ReceiptPage() {
       <div className="grid grid-cols-[auto_1fr] items-center gap-4 sm:gap-5">
         <Companion state={defended ? "surprised" : p.outcome === "Not defended" ? "skeptical" : "listening"} size={72} />
         <div className="min-w-0">
-          <p className="eyebrow">Understanding receipt</p>
-          <h1 className="mt-1 text-3xl font-bold sm:text-4xl">{p.outcome}</h1>
+          <p className="eyebrow">{sample ? "Sample demo · not a credential" : "Understanding receipt"}</p>
+          <h1 className="mt-1 text-3xl font-bold sm:text-4xl">{sample ? "Demo on a sample file" : p.outcome}</h1>
+          {sample && <p className="mt-1 text-lg font-semibold">{p.outcome}</p>}
           <p className="mt-1 text-sm text-[var(--ink-2)]">
             <span className={data.signatureValid ? "text-[var(--ok)]" : "text-danger"}>
               {data.signatureValid ? "Signature valid" : "Signature invalid"}
@@ -149,9 +152,11 @@ export default function ReceiptPage() {
           <div>
             <small>Defended by</small>
             <b>
-              {p.creator
-                ? `${p.creator.displayName} (self-reported name, verified email sign-in)`
-                : "Not disclosed by the creator"}
+              {sample
+                ? `Nobody. This is a demo on ${p.demo?.file ?? "a sample file"}, not a credential.`
+                : p.creator
+                  ? `${p.creator.displayName} (self-reported name, verified email sign-in)`
+                  : "Not disclosed by the creator"}
             </b>
           </div>
           <div><small>Integrity (reported separately from the score)</small><b>{integritySummary(p.integrity)}</b></div>
@@ -185,6 +190,22 @@ export default function ReceiptPage() {
         <p className="text-sm text-[var(--ink-2)]">You kept this private. Nothing is posted.</p>
       )}
 
+      {sample ? (
+        <div className="grid gap-4">
+          <div className="panel grid gap-2 p-5">
+            <h2 className="text-xl font-bold">Demo on a sample file. Not a credential.</h2>
+            <p className="text-sm text-[var(--ink-2)]">
+              This interview used a bundled file, {p.demo?.file}. It does not show that you understand
+              your own work. Answers are deleted on the same schedule as any defense, and this demo
+              receipt is removed after a day. It is not listed anywhere.
+            </p>
+            <Link href={`/verify/${p.id}`} className="btn btn-ghost justify-self-start">
+              Check the sample hash
+            </Link>
+          </div>
+          <SignInCard title="Sign in and defend your own file (3 free)" />
+        </div>
+      ) : (
       <div className="panel p-5">
         <h2 className="text-xl font-bold">Send it your way</h2>
         <p className="mt-2 text-sm text-[var(--ink-2)]">
@@ -233,6 +254,7 @@ export default function ReceiptPage() {
           )}
         </div>
       </div>
+      )}
       <p className="text-xs text-[var(--ink-2)]">{gradedWithLine(p)}</p>
     </div>
   );

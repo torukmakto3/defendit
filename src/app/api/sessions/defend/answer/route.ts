@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { handleError, limitOr429, requireUser } from "@/lib/http";
+import { resolveDefenseSession } from "@/lib/demo";
+import { handleError, limitOr429 } from "@/lib/http";
 import { LIMITS } from "@/lib/ratelimit";
 import { recordDefendAnswer } from "@/lib/services";
 
@@ -15,13 +16,13 @@ const schema = z.object({
 });
 
 export async function POST(req: Request) {
-  const guard = await requireUser(req);
-  if (guard.response) return guard.response;
   try {
-    const limited = await limitOr429(`answer:${guard.user.id}`, LIMITS.defendAnswerPerUser);
-    if (limited) return limited;
     const body = schema.parse(await req.json());
-    return NextResponse.json(await recordDefendAnswer({ ...body, user: guard.user }));
+    const actor = await resolveDefenseSession(req, body.sessionId);
+    if (actor.response) return actor.response;
+    const limited = await limitOr429(`answer:${actor.user.id}`, LIMITS.defendAnswerPerUser);
+    if (limited) return limited;
+    return NextResponse.json(await recordDefendAnswer({ ...body, user: actor.user }));
   } catch (e) {
     return handleError(e, "Could not save the answer");
   }

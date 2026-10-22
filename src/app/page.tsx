@@ -19,6 +19,8 @@ export default function HomePage() {
   const [displayName, setDisplayName] = useState<string | null>(null);
   const nameValue = displayName ?? me?.displayName ?? "";
   const [difficulty, setDifficulty] = useState("hard");
+  const [demoBusy, setDemoBusy] = useState(false);
+  const [demoError, setDemoError] = useState<string | null>(null);
   const [ready, setReady] = useState<{
     token: string;
     title: string;
@@ -60,6 +62,25 @@ export default function HomePage() {
     [difficulty],
   );
 
+  async function startSample() {
+    setDemoBusy(true);
+    setDemoError(null);
+    try {
+      const res = await fetch("/api/demo/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sample: "harbor-readme" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "The sample demo is unavailable.");
+      router.push(data.defendUrl as string);
+    } catch (e) {
+      setDemoError(e instanceof Error ? e.message : "The sample demo is unavailable.");
+    } finally {
+      setDemoBusy(false);
+    }
+  }
+
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragging(false);
@@ -91,6 +112,18 @@ export default function HomePage() {
           from your file. Do Not Track and Global Privacy Control skip the visit count.
         </p>
         <LandingBeacon />
+      </section>
+
+      <section className="panel grid gap-3 p-5 sm:p-6">
+        <h2 className="text-xl font-bold">No file yet?</h2>
+        <p className="max-w-2xl text-sm text-[var(--ink-2)]">
+          Try a short text interview on a bundled README. No account and no email. The receipt is
+          marked as a demo on that sample, and it is not a credential.
+        </p>
+        <button type="button" className="btn btn-primary justify-self-start" disabled={demoBusy} onClick={() => void startSample()}>
+          {demoBusy ? "Opening the sample…" : "Try it with a sample file"}
+        </button>
+        {demoError && <p className="text-sm text-danger">{demoError}</p>}
       </section>
 
       {me === null && <SignInCard title="Sign in to drop a deliverable" />}

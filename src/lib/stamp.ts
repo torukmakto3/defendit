@@ -10,7 +10,7 @@ import type { ReceiptPayload } from "./types";
  * The QR is always dark on white so it scans in either theme.
  */
 type StampPayload = Pick<ReceiptPayload, "score" | "difficulty" | "outcome"> &
-  Partial<Pick<ReceiptPayload, "bands" | "integrity" | "rubricVersion" | "deliverable" | "createdAt">>;
+  Partial<Pick<ReceiptPayload, "bands" | "integrity" | "rubricVersion" | "deliverable" | "createdAt" | "demo">>;
 
 const DAY = {
   sheet: "#F5F7FA",
@@ -52,7 +52,8 @@ export async function generateStampSvg(opts: {
   const date = p.createdAt ? p.createdAt.slice(0, 10) : "";
   const verifyText = opts.verifyUrl.replace(/^https?:\/\//, "");
   const outcomeSize = p.outcome.length > 10 ? 30 : 38;
-  const approved = p.outcome === "Defended";
+  const sample = p.demo?.sample === true;
+  const approved = p.outcome === "Defended" && !sample;
 
   // Animation hooks: .pl-draw (stroke drawn in), .pl-fade, .pl-stamp, with
   // --len / --at / --d. Finished state is the default; the page adds .playing.
@@ -65,7 +66,7 @@ export async function generateStampSvg(opts: {
     `x="${x}" y="${y}" font-size="${size}" font-family="${family}" font-weight="${weight}" style="fill:${fill}" ${extra}`;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="560" height="300" viewBox="0 0 560 300" role="img" aria-label="Defend It receipt: ${escapeHtml(p.outcome)}, ${p.score} of 100, ${escapeHtml(diff)}">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="560" height="300" viewBox="0 0 560 300" role="img" aria-label="${sample ? "Sample demo, not a credential" : "Defend It receipt"}: ${escapeHtml(p.outcome)}, ${p.score} of 100, ${escapeHtml(diff)}">
   <defs>
     <pattern id="pl-grid" width="14" height="14" patternUnits="userSpaceOnUse">
       <path d="M14 0H0V14" fill="none" style="stroke:${c.grid}" stroke-width="1"/>
@@ -75,7 +76,7 @@ export async function generateStampSvg(opts: {
   <rect width="560" height="300" fill="url(#pl-grid)"/>
   <rect x="10" y="10" width="540" height="280" fill="none" stroke-width="2" ${draw(1640, 0, 1)}/>
   <g ${fade(0.9)}><path d="M4 18V4H18M556 282V296H542" fill="none" stroke-width="2" stroke="${DAY.blue}" style="stroke:${c.blue}"/></g>
-  <g ${fade(0.8)}><text ${t(30, 38, 10, c.blue, MONO, 400, 'letter-spacing="1.6"')}>DEFEND IT · UNDERSTANDING RECEIPT</text></g>
+  <g ${fade(0.8)}><text ${t(30, 38, 10, c.blue, MONO, 400, 'letter-spacing="1.6"')}>${sample ? "DEFEND IT · SAMPLE DEMO" : "DEFEND IT · UNDERSTANDING RECEIPT"}</text></g>
   <g ${fade(1.05)}><text ${t(30, 84, outcomeSize, c.ink, DISPLAY, 700)}>${escapeHtml(p.outcome)}</text></g>
   <g ${fade(1.25)}><text ${t(30, 112, 11, c.ink2, MONO, 400)}>${escapeHtml(hash)}</text></g>
   <g ${fade(1.35)}><text ${t(30, 132, 11, c.ink2, MONO, 400)}>${escapeHtml(diff)} · ${escapeHtml(date)}</text></g>
@@ -105,9 +106,14 @@ export async function generateStampSvg(opts: {
     approved
       ? `<g class="pl-stamp" style="--at:2.25s"><g transform="rotate(-8 322 66)">
     <rect x="242" y="42" width="160" height="48" style="fill:${c.sheet};fill-opacity:.85;stroke:${c.signal}" stroke-width="3.5"/>
-    <text ${t(322, 76, 22, c.signal, DISPLAY, 700, 'text-anchor="middle" letter-spacing="3.5"')}>APPROVED</text>
+    <text ${t(322, 76, 22, c.signal, DISPLAY, 700, 'text-anchor="middle" letter-spacing="3.5"')}>${sample ? "SAMPLE" : "APPROVED"}</text>
   </g></g>`
-      : ""
+      : sample
+        ? `<g class="pl-stamp" style="--at:2.25s"><g transform="rotate(-8 322 66)">
+    <rect x="242" y="42" width="160" height="48" style="fill:${c.sheet};fill-opacity:.85;stroke:${c.signal}" stroke-width="3.5"/>
+    <text ${t(322, 76, 22, c.signal, DISPLAY, 700, 'text-anchor="middle" letter-spacing="3.5"')}>SAMPLE</text>
+  </g></g>`
+        : ""
   }
 </svg>`;
 }

@@ -24,9 +24,18 @@ export interface QuestionPrefetch {
 
 const prefetchCtx = (requestId: string) => `defense_requests.question_prefetch:${requestId}`;
 
-export function questionPrefetchFingerprint(claims: Claim[], pinnedClaimIds?: string[]): string {
+export function questionPrefetchFingerprint(
+  claims: Claim[],
+  pinnedClaimIds?: string[],
+  shape?: "demo",
+): string {
   const pins = [...(pinnedClaimIds ?? [])].map((id) => id.trim()).filter(Boolean).sort();
-  return sha256Hex(JSON.stringify({ pins, claims: claims.map((claim) => [claim.id, claim.text]) }));
+  const body: { pins: string[]; claims: [string, string][]; shape?: "demo" } = {
+    pins,
+    claims: claims.map((claim) => [claim.id, claim.text]),
+  };
+  if (shape === "demo") body.shape = "demo";
+  return sha256Hex(JSON.stringify(body));
 }
 
 /** Phrase probe 0 only. The plan's later questions stay on their templates. */
@@ -34,6 +43,7 @@ export async function precomputeFirstQuestion(opts: {
   claims: Claim[];
   difficulty: Difficulty;
   pinnedClaimIds?: string[];
+  shape?: "demo";
 }): Promise<QuestionPrefetch> {
   const seed = newId("seed");
   const drafted = buildInterviewPlan({
@@ -41,13 +51,14 @@ export async function precomputeFirstQuestion(opts: {
     difficulty: opts.difficulty,
     seed,
     pinnedClaimIds: opts.pinnedClaimIds,
+    shape: opts.shape,
   });
   const started = Date.now();
   const plan = await phraseQuestions(drafted, opts.claims, { indexes: [0] });
   return {
     seed,
     difficulty: opts.difficulty,
-    fingerprint: questionPrefetchFingerprint(opts.claims, opts.pinnedClaimIds),
+    fingerprint: questionPrefetchFingerprint(opts.claims, opts.pinnedClaimIds, opts.shape),
     plan,
     restPhrased: plan.probes.length <= 1,
     firstQuestionMs: Math.max(0, Date.now() - started),
@@ -67,6 +78,7 @@ export async function loadQuestionPrefetch(
   claims: Claim[],
   difficulty: Difficulty,
   pinnedClaimIds?: string[],
+  shape?: "demo",
 ): Promise<QuestionPrefetch | null> {
   const db = await getDb();
   const row = await db.get<{ question_prefetch_enc: string | null }>(
@@ -77,7 +89,7 @@ export async function loadQuestionPrefetch(
   const stored = decryptJson<QuestionPrefetch>(row.question_prefetch_enc, prefetchCtx(requestId));
   if (!stored?.plan?.probes?.length || !stored.seed) return null;
   if (stored.difficulty !== difficulty) return null;
-  if (stored.fingerprint !== questionPrefetchFingerprint(claims, pinnedClaimIds)) return null;
+  if (stored.fingerprint !== questionPrefetchFingerprint(claims, pinnedClaimIds, shape)) return null;
   return stored;
 }
 

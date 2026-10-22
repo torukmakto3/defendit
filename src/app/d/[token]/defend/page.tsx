@@ -53,6 +53,7 @@ export default function DefendPage() {
   const { me } = useMe();
   const [showName, setShowName] = useState(false);
   const [gradeProgress, setGradeProgress] = useState<GradingProgress | null>(null);
+  const [sampleDemo, setSampleDemo] = useState(false);
   useEffect(() => {
     showNameRef.current = showName;
   }, [showName]);
@@ -132,8 +133,10 @@ export default function DefendPage() {
             sessionId?: string;
             channel?: "text" | "voice" | "text_accommodation";
             startedAt?: string;
+            demo?: boolean;
           };
           if (start.error) throw new Error(start.error);
+          if (start.demo) setSampleDemo(true);
           const nextProbes = start.probes || [];
           rememberSession(start.sessionId ?? null);
           setChannel(readChannel(start.channel));
@@ -144,6 +147,7 @@ export default function DefendPage() {
           return;
         }
         await readNdjson(res.body, (event) => {
+          if (event.demo === true) setSampleDemo(true);
           if (event.type === "error") throw new Error(typeof event.error === "string" ? event.error : "Failed to start");
           if (event.type === "question" && event.probe && typeof event.probe === "object") {
             const probe = event.probe as Probe;
@@ -465,9 +469,15 @@ export default function DefendPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="eyebrow">
-            Defend · {channel === "text_accommodation" ? "typed (accommodation)" : "text interview"}
+            {sampleDemo ? "Sample demo · " : "Defend · "}
+            {channel === "text_accommodation" ? "typed (accommodation)" : "text interview"}
           </p>
-          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">Live defense</h1>
+          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">{sampleDemo ? "Sample defense" : "Live defense"}</h1>
+          {sampleDemo && (
+            <p className="mt-2 max-w-xl text-sm text-[var(--ink-2)]">
+              Three questions on a bundled sample file. The receipt is a demo, not a credential.
+            </p>
+          )}
         </div>
         <div className="text-right text-sm">
           <div>
@@ -563,6 +573,7 @@ function readChannel(value: unknown): "text" | "voice" | "text_accommodation" {
 
 interface StartEvent {
   type?: string;
+  demo?: unknown;
   error?: unknown;
   sessionId?: unknown;
   channel?: unknown;
