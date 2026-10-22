@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import type { User } from "@/lib/auth";
+import { abortDefenseCredit, attachDefenseCredit, beginDefenseCredit } from "@/lib/credits";
 import { handleError, HttpError, limitOr429, requireUser } from "@/lib/http";
 import { LIMITS } from "@/lib/ratelimit";
 import { publicProbes, startSession, type FirstQuestionInfo } from "@/lib/services";
@@ -19,14 +20,22 @@ const schema = z.object({
 export async function POST(req: Request) {
   const guard = await requireUser(req);
   if (guard.response) return guard.response;
+  let creditKey: string | null = null;
+  let sessionId: string | null = null;
   try {
     const limited = await limitOr429(`start:${guard.user.id}`, LIMITS.sessionStartPerUser);
     if (limited) return limited;
     const body = schema.parse(await req.json());
-    if (body.mode === "defend" && (req.headers.get("accept") || "").includes("application/x-ndjson")) {
-      return streamDefendStart(body, guard.user);
+    if (body.mode === "defend") {
+      const reserved = await beginDefenseCredit(guard.user.id);
+      creditKey = reserved.idempotencyKey;
+    }
+    if (body.mode === "defend" && creditKey && (req.headers.get("accept") || "").includes("application/x-ndjson")) {
+      return streamDefendStart(body, guard.user, creditKey);
     }
     const session = await startSession({ ...body, user: guard.user });
+    sessionId = session.sessionId;
+    if (creditKey) await attachDefenseCredit(guard.user.id, creditKey, session.sessionId);
     const voice = getVoiceProvider();
     const voiceStarted = Date.now();
     const voiceSession = await voice.createSession({
@@ -59,14 +68,26 @@ export async function POST(req: Request) {
       },
     });
   } catch (e) {
+    if (creditKey) {
+      try {
+        await abortDefenseCredit(guard.user.id, creditKey, sessionId);
+      } catch (abortError) {
+        console.error("[credits] refund", abortError instanceof Error ? abortError.message : abortError);
+      }
+    }
     return handleError(e, "Could not start session");
   }
 }
 
-/** First line is question 1. Later lines carry the rest of the plan, after it is phrased. */
-function streamDefendStart(body: z.infer<typeof schema>, user: User) {
+/**
+ * First line is question 1. Later lines carry the rest of the plan.
+ * The credit is held before the stream starts. It is attached once the
+ * session row exists, and refunded only when the stream fails before that.
+ */
+function streamDefendStart(body: z.infer<typeof schema>, user: User, creditKey: string) {
   const encoder = new TextEncoder();
   let voiceMeta: { provider: string; modality: string; sessionHandle: string } | null = null;
+  let sessionId: string | null = null;
   const stream = new ReadableStream({
     async start(controller) {
       const send = (value: unknown) => {
@@ -77,6 +98,8 @@ function streamDefendStart(body: z.infer<typeof schema>, user: User) {
           ...body,
           user,
           onFirstQuestion: async (info) => {
+            sessionId = info.sessionId;
+            await attachDefenseCredit(user.id, creditKey, info.sessionId);
             send({
               type: "question",
               sessionId: info.sessionId,
@@ -102,6 +125,10 @@ function streamDefendStart(body: z.infer<typeof schema>, user: User) {
             });
           },
         });
+        if (!sessionId) {
+          sessionId = session.sessionId;
+          await attachDefenseCredit(user.id, creditKey, session.sessionId);
+        }
         const probes = publicProbes(session.plan);
         send({
           type: "ready",
@@ -115,6 +142,13 @@ function streamDefendStart(body: z.infer<typeof schema>, user: User) {
         });
         controller.close();
       } catch (e) {
+        if (!sessionId) {
+          try {
+            await abortDefenseCredit(user.id, creditKey, null);
+          } catch (abortError) {
+            console.error("[credits] refund", abortError instanceof Error ? abortError.message : abortError);
+          }
+        }
         if (!(e instanceof HttpError)) console.error("[api]", e instanceof Error ? e.message : e);
         send({ type: "error", error: e instanceof HttpError ? e.message : "Could not start session" });
         controller.close();

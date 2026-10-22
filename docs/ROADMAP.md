@@ -20,6 +20,7 @@ Status of Defend It on `main` as of 22 Oct 2026. #2, #3 (including #13 and #14),
 
 ## Next
 
+- **Plans, credit ledger, and the one-time beta grant** ([#39](https://github.com/torukmakto3/defendit/issues/39)). One wallet. A defense and a challenge each cost 1 credit. The first time any signed-in account needs credits, it gets `BETA_DEFENSE_CREDITS` defenses (default 3), 2 challenges, and 3 Learn slots, once. Stripe stays off behind `BILLING_ENABLED=false`. A further free defense is refused, and the global beta budget can refuse a sponsored defense sooner. Each sponsored defense counts €0.70 (`BETA_DEFENSE_EUR`), about the $0.75 consumer cap, against the €150 budget. Starting another defense refunds an earlier unfinished hold, so only one defense holds a credit. A purged or retention-expired Learn project does not keep its slot.
 - **Real email sign-in via Resend** (`RESEND_API_KEY`, `EMAIL_FROM`). Blocked on a sending domain. Google covers production sign-in until then. Preview can still use on-screen links.
 - **Live calibration with Liquid models.** The mock harness is in place (`npm run calibrate`). A live run is `CALIBRATE_LIVE=1` and needs provider keys. Tighten anchors where the good/bad gap is thin.
 

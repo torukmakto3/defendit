@@ -1,0 +1,15 @@
+{
+  "id": "evt_test_invoice_sub",
+  "type": "invoice.paid",
+  "data": {
+    "object": {
+      "id": "in_test_sub",
+      "amount_paid": 1100,
+      "currency": "eur",
+      "metadata": {
+        "user_id": "usr_replace",
+        "sku": "subscription_month"
+      }
+    }
+  }
+}
