@@ -14,11 +14,14 @@ export function StudyReupload({
   defended,
   message,
   onUploaded,
+  emphasis = "primary",
 }: {
   token: string;
   defended: boolean;
   message: string;
   onUploaded?: () => void;
+  /** Secondary when the page already has its own primary action. */
+  emphasis?: "primary" | "secondary";
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,7 +52,10 @@ export function StudyReupload({
     <form onSubmit={onSubmit} className="grid gap-3">
       <p>{message}</p>
       <input name="file" type="file" className="field" accept={ACCEPT} required />
-      <button className="btn btn-primary justify-self-start" disabled={busy}>
+      <button
+        className={`btn w-full justify-self-start sm:w-auto ${emphasis === "primary" ? "btn-primary" : "btn-ghost"}`}
+        disabled={busy}
+      >
         {busy ? "Reading the file…" : "Upload the file"}
       </button>
       {error && <p className="text-sm text-danger">{error}</p>}
