@@ -931,7 +931,57 @@ export async function getDefendGradingProgress(sessionId: string, user: User) {
   return {
     status: session.status,
     progress: readGradingProgress(session.grading_progress),
+    receiptId: session.status === "completed" ? await receiptIdForSession(session.id) : null,
   };
+}
+
+export interface DefendInterviewState {
+  sessionId: string;
+  channel: Channel;
+  status: string;
+  answered: number;
+  total: number;
+  probes: ReturnType<typeof publicProbes>;
+  progress: GradingProgress | null;
+  receiptId: string | null;
+}
+
+/**
+ * The defend session a reload should continue. Starting a visit always inserts
+ * a new row; this read is how the page finds the one already in progress.
+ */
+export async function getDefendInterviewState(token: string, user: User): Promise<DefendInterviewState> {
+  maybePurge();
+  const request = await requireRequest(token);
+  assertCreator(request, user);
+  const db = await getDb();
+  const session = await db.get<SessionRow>(
+    `SELECT * FROM sessions
+     WHERE request_id = ? AND user_id = ? AND mode = 'defend'
+       AND status IN ('in_progress', 'grading', 'completed')
+     ORDER BY started_at DESC LIMIT 1`,
+    [request.id, user.id],
+  );
+  if (!session || isPast(session.purge_after)) throw new HttpError(404, "No interview in progress");
+  const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
+  if (!plan) throw new HttpError(410, "This session has expired.");
+  const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
+  return {
+    sessionId: session.id,
+    channel: session.channel,
+    status: session.status,
+    answered: turns.length,
+    total: plan.probes.length,
+    probes: publicProbes(plan),
+    progress: readGradingProgress(session.grading_progress),
+    receiptId: session.status === "completed" ? await receiptIdForSession(session.id) : null,
+  };
+}
+
+async function receiptIdForSession(sessionId: string): Promise<string | null> {
+  const db = await getDb();
+  const row = await db.get<{ id: string }>(`SELECT id FROM receipts WHERE session_id = ?`, [sessionId]);
+  return row?.id ?? null;
 }
 
 export async function completeDefendSession(opts: {

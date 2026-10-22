@@ -24,6 +24,7 @@ import {
   listDashboard,
   publicProbes,
   purgeExpired,
+  getDefendInterviewState,
   recordDefendAnswer,
   recordVoiceAnswer,
   voicePlan,
@@ -312,6 +313,28 @@ describe("interview integrity", () => {
     const ingest = await creatorIngest({ user, fileName: "e.md", buffer: memo });
     const s1 = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
     await expect(completeDefendSession({ sessionId: s1.sessionId, user })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("reloads onto the open defend session without minting another", async () => {
+    const { user } = await signIn("resume@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "r.md", buffer: memo, difficulty: "standard" });
+    const started = await startSession({ token: ingest.token, user, mode: "defend" });
+    await recordDefendAnswer({
+      sessionId: started.sessionId,
+      user,
+      probeId: started.plan.probes[0].id,
+      answer: "Because churn near 1.2% still supports the round.",
+    });
+    const state = await getDefendInterviewState(ingest.token, user);
+    expect(state.sessionId).toBe(started.sessionId);
+    expect(state).toMatchObject({ status: "in_progress", answered: 1, channel: "text" });
+    expect(state.total).toBe(started.plan.probes.length);
+    expect(state.probes[1]?.question).toBe(started.plan.probes[1].question);
+    expect(JSON.stringify(state.probes)).not.toContain("expectedFocus");
+    // A second start still mints its own session. The page resumes; callers that
+    // want a parallel defense are unchanged.
+    const again = await startSession({ token: ingest.token, user, mode: "defend" });
+    expect(again.sessionId).not.toBe(started.sessionId);
   });
 });
 

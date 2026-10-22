@@ -37,10 +37,11 @@ npm run lint           # eslint .
 npm run typecheck      # tsc --noEmit
 npm run calibrate      # mock grading stability (CALIBRATE_LIVE=1 for a live council)
 npm run soak           # Learn and Defend on the calibration fixtures
+npm run e2e            # Playwright interview retries, mock mode, starts the app
 npm run build && npm start
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) runs `npm ci`, typecheck, lint, test, and mock-mode smoke on Node 22 for every pull request.
+GitHub Actions (`.github/workflows/ci.yml`) runs `npm ci`, typecheck, lint, test, and mock-mode smoke on Node 22 for every pull request. A separate Browser job runs the Playwright interview tests in mock mode and caches the browsers, so that job does not lengthen Check.
 
 Local runtime files: `./data/defend-it-v2.db`, `./uploads/`, and the auto-generated `./data/signing-key.json`. The public key is served at `/.well-known/defend-it-pubkey.json`. The click-through happy path is in `README.md`.
 

@@ -6,7 +6,7 @@ import { useMe } from "@/components/auth";
 import { Companion } from "@/components/companion/Companion";
 import { VoiceInterview } from "@/components/voice/VoiceInterview";
 import { gradingProgressLabel, type GradingProgress } from "@/lib/grading-progress";
-import { canSubmit, INITIAL_INTERVIEW, interviewReducer, type InterviewState } from "@/lib/interview-state";
+import { canSubmit, INITIAL_INTERVIEW, interviewReducer, withProbeAt, type InterviewState } from "@/lib/interview-state";
 
 interface Probe {
   id: string;
@@ -14,6 +14,17 @@ interface Probe {
   type: string;
   question: string;
   plantedContent?: string;
+}
+
+interface DefendState {
+  sessionId: string;
+  channel: "text" | "voice" | "text_accommodation";
+  status: string;
+  answered: number;
+  total: number;
+  probes: Probe[];
+  progress: GradingProgress | null;
+  receiptId: string | null;
 }
 
 export default function DefendPage() {
@@ -32,9 +43,20 @@ export default function DefendPage() {
   const [elapsed, setElapsed] = useState(0);
   const tickRef = useRef<number | null>(null);
   const startedRef = useRef(false);
+  const sessionIdRef = useRef<string | null>(null);
+  const pasteRef = useRef(0);
+  const focusRef = useRef(0);
+  const showNameRef = useRef(false);
+  /** Set when a reload found a grade still claimed, so a released claim can offer retry. */
+  const watchGradingRelease = useRef(false);
   const { me } = useMe();
   const [showName, setShowName] = useState(false);
   const [gradeProgress, setGradeProgress] = useState<GradingProgress | null>(null);
+  useEffect(() => {
+    pasteRef.current = pasteEvents;
+    focusRef.current = focusBlurEvents;
+    showNameRef.current = showName;
+  }, [pasteEvents, focusBlurEvents, showName]);
   useEffect(() => {
     if (me?.displayName) setShowName(true);
   }, [me]);
@@ -52,9 +74,19 @@ export default function DefendPage() {
     return next;
   }, []);
 
+  const rememberSession = useCallback((id: string | null) => {
+    sessionIdRef.current = id;
+    setSessionId(id);
+  }, []);
+
   const begin = useCallback(
     async (accommodation = false) => {
       setError(null);
+      // A new session must not keep the previous plan. Voice falling back to
+      // typing used to submit the spoken session's probe ids.
+      setProbes([]);
+      setChannel(null);
+      rememberSession(null);
       try {
         const res = await fetch("/api/sessions/start", {
           method: "POST",
@@ -75,8 +107,8 @@ export default function DefendPage() {
           };
           if (start.error) throw new Error(start.error);
           const nextProbes = start.probes || [];
-          setSessionId(start.sessionId ?? null);
-          setChannel(start.channel ?? "text");
+          rememberSession(start.sessionId ?? null);
+          setChannel(readChannel(start.channel));
           setProbes(nextProbes);
           dispatch({ type: "start_ok", total: nextProbes.length });
           setSessionStartedAt(new Date().toISOString());
@@ -86,10 +118,12 @@ export default function DefendPage() {
           if (event.type === "error") throw new Error(typeof event.error === "string" ? event.error : "Failed to start");
           if (event.type === "question" && event.probe && typeof event.probe === "object") {
             const probe = event.probe as Probe;
-            setSessionId(typeof event.sessionId === "string" ? event.sessionId : null);
-            setChannel(event.channel === "voice" || event.channel === "text_accommodation" ? event.channel : "text");
-            setProbes((prev) => (prev.length > 1 ? prev : [probe]));
-            if (interviewRef.current.phase === "starting") {
+            const nextId = typeof event.sessionId === "string" ? event.sessionId : null;
+            const switched = nextId !== null && nextId !== sessionIdRef.current;
+            rememberSession(nextId);
+            setChannel(readChannel(event.channel));
+            setProbes((prev) => (switched || prev.length <= 1 ? [probe] : prev));
+            if (switched || interviewRef.current.phase === "starting") {
               dispatch({ type: "start_ok", total: typeof event.total === "number" ? event.total : 1 });
               setSessionStartedAt(new Date().toISOString());
             }
@@ -99,8 +133,8 @@ export default function DefendPage() {
           }
           if (event.type === "ready" && Array.isArray(event.probes)) {
             const nextProbes = event.probes as Probe[];
-            setSessionId(typeof event.sessionId === "string" ? event.sessionId : null);
-            setChannel(event.channel === "voice" || event.channel === "text_accommodation" ? event.channel : "text");
+            rememberSession(typeof event.sessionId === "string" ? event.sessionId : null);
+            setChannel(readChannel(event.channel));
             setProbes((prev) => {
               const index = interviewRef.current.index;
               if (index <= 0) return nextProbes;
@@ -112,43 +146,20 @@ export default function DefendPage() {
             }
           }
         });
+        if (interviewRef.current.phase === "starting") {
+          throw new Error("Failed to start");
+        }
       } catch (e) {
         dispatch({ type: "start_fail" });
         setError(e instanceof Error ? e.message : "Failed to start");
       }
     },
-    [token, dispatch],
+    [token, dispatch, rememberSession],
   );
 
-  useEffect(() => {
-    // One plan per visit, even when React re-runs effects in development.
-    if (startedRef.current) return;
-    startedRef.current = true;
-    void begin();
-  }, [begin]);
-
-  useEffect(() => {
-    if (interview.phase !== "grading" || !sessionId) return;
-    let stop = false;
-    const poll = async () => {
-      while (!stop) {
-        try {
-          const res = await fetch(`/api/sessions/defend/progress?sessionId=${encodeURIComponent(sessionId)}`);
-          const data = (await res.json()) as { progress?: GradingProgress | null };
-          if (data.progress) setGradeProgress(data.progress);
-        } catch {
-          // The complete request is the source of truth; a missed poll just keeps the last line.
-        }
-        await new Promise((resolve) => setTimeout(resolve, 400));
-      }
-    };
-    void poll();
-    return () => {
-      stop = true;
-    };
-  }, [interview.phase, sessionId]);
-
   const completeDefense = useCallback(async () => {
+    const id = sessionIdRef.current;
+    if (!id) throw new Error("Grading failed");
     if (interviewRef.current.phase !== "grading") {
       const total = interviewRef.current.total;
       dispatch({ type: "saved", answered: total, total });
@@ -157,7 +168,12 @@ export default function DefendPage() {
       const result = await fetch("/api/sessions/defend/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, pasteEvents, focusBlurEvents, showName }),
+        body: JSON.stringify({
+          sessionId: id,
+          pasteEvents: pasteRef.current,
+          focusBlurEvents: focusRef.current,
+          showName: showNameRef.current,
+        }),
       }).then((r) => r.json());
       if (result.followUp?.probe) {
         setProbes((prev) => (prev.some((p) => p.id === result.followUp.probe.id) ? prev : [...prev, result.followUp.probe]));
@@ -178,7 +194,92 @@ export default function DefendPage() {
       dispatch({ type: "grade_fail" });
       setError(e instanceof Error ? e.message : "Grading failed");
     }
-  }, [sessionId, pasteEvents, focusBlurEvents, showName, router, dispatch]);
+  }, [router, dispatch]);
+
+  const applyState = useCallback(
+    (state: DefendState) => {
+      rememberSession(state.sessionId);
+      setChannel(readChannel(state.channel));
+      setProbes(state.probes);
+      setSessionStartedAt(new Date().toISOString());
+      setError(null);
+      setAnswer("");
+      if (state.progress) setGradeProgress(state.progress);
+      if (state.status === "completed" && state.receiptId) {
+        dispatch({ type: "grade_ok" });
+        router.push(`/r/${state.receiptId}`);
+        return;
+      }
+      if (state.answered >= state.total || state.status === "grading") {
+        dispatch({ type: "resume_grading", total: state.total });
+        watchGradingRelease.current = state.status === "grading";
+        if (state.status === "in_progress") void completeDefense();
+        return;
+      }
+      watchGradingRelease.current = false;
+      dispatch({ type: "resume", index: state.answered, total: state.total });
+    },
+    [rememberSession, dispatch, router, completeDefense],
+  );
+
+  const resumeOrBegin = useCallback(async () => {
+    setError(null);
+    try {
+      const res = await fetch(`/api/sessions/defend/state?token=${encodeURIComponent(token)}`, { cache: "no-store" });
+      if (res.status === 404) {
+        await begin();
+        return;
+      }
+      const body = (await res.json()) as DefendState & { error?: string };
+      if (!res.ok) throw new Error(body.error || "Could not resume the interview");
+      applyState(body);
+    } catch (e) {
+      dispatch({ type: "start_fail" });
+      setError(e instanceof Error ? e.message : "Could not resume the interview");
+    }
+  }, [token, begin, applyState, dispatch]);
+
+  useEffect(() => {
+    // One plan per visit, even when React re-runs effects in development.
+    if (startedRef.current) return;
+    startedRef.current = true;
+    void resumeOrBegin();
+  }, [resumeOrBegin]);
+
+  useEffect(() => {
+    if (interview.phase !== "grading" || !sessionId) return;
+    let stop = false;
+    const poll = async () => {
+      while (!stop) {
+        try {
+          const res = await fetch(`/api/sessions/defend/progress?sessionId=${encodeURIComponent(sessionId)}`);
+          const data = (await res.json()) as {
+            status?: string;
+            progress?: GradingProgress | null;
+            receiptId?: string | null;
+          };
+          if (data.progress) setGradeProgress(data.progress);
+          if (data.status === "completed" && data.receiptId) {
+            stop = true;
+            dispatch({ type: "grade_ok" });
+            router.push(`/r/${data.receiptId}`);
+            return;
+          }
+          if (watchGradingRelease.current && data.status === "in_progress") {
+            watchGradingRelease.current = false;
+            setError("Grading didn't finish.");
+          }
+        } catch {
+          // The complete request is the source of truth; a missed poll just keeps the last line.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+    };
+    void poll();
+    return () => {
+      stop = true;
+    };
+  }, [interview.phase, sessionId, dispatch, router]);
 
   useEffect(() => {
     if (!sessionStartedAt) return;
@@ -216,8 +317,10 @@ export default function DefendPage() {
       }).then((r) => r.json());
       if (saved.error) throw new Error(saved.error);
       setAnswer("");
-      if (saved.nextProbe?.id) {
-        setProbes((prev) => prev.map((probe) => (probe.id === saved.nextProbe.id ? { ...probe, ...saved.nextProbe } : probe)));
+      const nextProbe = saved.nextProbe as Probe | undefined;
+      if (nextProbe?.id) {
+        const answered = typeof saved.answered === "number" ? saved.answered : 0;
+        setProbes((prev) => withProbeAt(prev, nextProbe, answered));
       }
       dispatch({ type: "saved", answered: saved.answered, total: saved.total });
       if (saved.done) await completeDefense();
@@ -246,7 +349,7 @@ export default function DefendPage() {
           className="btn btn-primary justify-self-start"
           onClick={() => {
             dispatch({ type: "retry" });
-            void begin();
+            void resumeOrBegin();
           }}
         >
           Try again
@@ -413,6 +516,10 @@ export default function DefendPage() {
       </div>
     </div>
   );
+}
+
+function readChannel(value: unknown): "text" | "voice" | "text_accommodation" {
+  return value === "voice" || value === "text_accommodation" ? value : "text";
 }
 
 interface StartEvent {

@@ -21,7 +21,9 @@ export type InterviewEvent =
   | { type: "grade_ok" }
   | { type: "grade_fail" }
   | { type: "follow_up"; answered: number; total: number }
-  | { type: "retry" };
+  | { type: "retry" }
+  | { type: "resume"; index: number; total: number }
+  | { type: "resume_grading"; total: number };
 
 export const INITIAL_INTERVIEW: InterviewState = { phase: "starting", index: 0, total: 0 };
 
@@ -51,11 +53,30 @@ export function interviewReducer(state: InterviewState, event: InterviewEvent): 
     case "retry":
       if (state.phase === "error") return { phase: "starting", index: 0, total: 0 };
       return state;
+    case "resume":
+      return { phase: "answering", index: event.index, total: event.total };
+    case "resume_grading":
+      return { phase: "grading", index: event.total, total: event.total };
     default: {
       const neverEvent: never = event;
       return neverEvent;
     }
   }
+}
+
+/**
+ * Put `probe` at `index`, or merge it when that id is already on screen.
+ * A start stream that dies before the full plan still sends the next question
+ * with the saved answer; this is where that question lands.
+ */
+export function withProbeAt<T extends { id: string }>(prev: readonly T[], probe: T, index: number): T[] {
+  const at = prev.findIndex((item) => item.id === probe.id);
+  if (at === -1) {
+    const next = prev.slice();
+    next[index] = probe;
+    return next;
+  }
+  return prev.map((item, i) => (i === at ? { ...item, ...probe } : item));
 }
 
 /** Saving and grading ignore a second click. */
