@@ -70,6 +70,31 @@ export function isCheckoutSku(sku: Sku): sku is CheckoutSku {
   }
 }
 
+/** Customer-facing name. The waiver must not show the raw sku. */
+export function checkoutProductName(sku: string): string {
+  if (!isSku(sku) || !isCheckoutSku(sku)) return "this purchase";
+  switch (sku) {
+    case "defense":
+      return "One defense";
+    case "challenge":
+      return "One challenge";
+    case "pack3":
+      return "3-credit pack";
+    case "pack8":
+      return "8-credit pack";
+    case "subscription_month":
+      return "Pro monthly";
+    case "subscription_year":
+      return "Pro yearly";
+    case "team_month":
+      return "Team";
+    default: {
+      const unknown: never = sku;
+      return unknown;
+    }
+  }
+}
+
 export function checkoutMode(sku: CheckoutSku): "payment" | "subscription" {
   switch (sku) {
     case "defense":
@@ -116,44 +141,44 @@ export function checkoutCatalog(): CheckoutProduct[] | null {
   return [
     {
       sku: "defense",
-      name: "One defense",
+      name: checkoutProductName("defense"),
       priceLabel: formatEur(PAYG_CENTS.defense),
       detail: "1 defense credit for you. VAT included.",
     },
     {
       sku: "challenge",
-      name: "One challenge",
+      name: checkoutProductName("challenge"),
       priceLabel: formatEur(PAYG_CENTS.challenge),
       detail: "1 challenge credit to send to someone else. You can't claim a challenge you bought. VAT included.",
     },
     {
       sku: "pack3",
-      name: "3-credit pack",
+      name: checkoutProductName("pack3"),
       priceLabel: formatEur(PACKS.pack3.priceCents),
       detail: `${PACKS.pack3.credits} credits, usable for a defense or a challenge. VAT included.`,
     },
     {
       sku: "pack8",
-      name: "8-credit pack",
+      name: checkoutProductName("pack8"),
       priceLabel: formatEur(PACKS.pack8.priceCents),
       detail: `${PACKS.pack8.credits} credits, usable for a defense or a challenge. VAT included.`,
     },
     {
       sku: "subscription_month",
-      name: "Pro monthly",
+      name: checkoutProductName("subscription_month"),
       priceLabel: formatEur(skuPriceCents("subscription_month")),
       detail: "10 defenses, 5 challenges, and 10 Learn projects each period. VAT included.",
     },
     {
       sku: "subscription_year",
-      name: "Pro yearly",
+      name: checkoutProductName("subscription_year"),
       priceLabel: formatEur(skuPriceCents("subscription_year")),
       detail:
         "10 defenses, 5 challenges, and 10 Learn projects each month. Unused defenses and challenges do not roll over. VAT included.",
     },
     {
       sku: "team_month",
-      name: "Team",
+      name: checkoutProductName("team_month"),
       priceLabel: formatEur(skuPriceCents("team_month")),
       detail: "50 defenses a month. VAT is added. Not switchable with Pro in the portal.",
     },

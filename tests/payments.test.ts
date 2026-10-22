@@ -183,6 +183,19 @@ function checkoutEvent(input: {
   };
 }
 
+async function subscriptionFlags(
+  subscriptionId: string,
+): Promise<{ terminal: number; refillsStopped: number }> {
+  const row = await (await getDb()).get<{ terminal: number | string; refills_stopped: number | string | null }>(
+    `SELECT terminal, refills_stopped FROM stripe_subscription_state WHERE subscription_id = ?`,
+    [subscriptionId],
+  );
+  return {
+    terminal: Number(row?.terminal ?? 0),
+    refillsStopped: Number(row?.refills_stopped ?? 0),
+  };
+}
+
 function invoiceEvent(input: {
   id: string;
   invoiceId: string;
@@ -599,6 +612,47 @@ describe("webhook", () => {
     expect(row?.card_fingerprint).toBe("fp_checkout");
   });
 
+  it("stores a subscription card fingerprint from the invoice payment", async () => {
+    setCardFingerprintLoaderForTests(async (paymentIntentId) =>
+      paymentIntentId === "pi_in_sub_fp" ? "fp_sub" : null,
+    );
+    const { user } = await signIn("fp-sub@pay.example");
+    const checkoutRes = await postWebhook(
+      checkoutEvent({
+        id: "evt_fp_sub_cs",
+        userId: user.id,
+        sku: "subscription_month",
+        amount: 1100,
+        paymentIntent: "",
+        mode: "subscription",
+        subscription: "sub_fp",
+      }),
+    );
+    expect(checkoutRes.status).toBe(200);
+    const before = await (await getDb()).get<{ card_fingerprint: string | null }>(
+      `SELECT card_fingerprint FROM billing_profiles WHERE user_id = ?`,
+      [user.id],
+    );
+    expect(before?.card_fingerprint ?? null).toBeNull();
+    const paid = await postWebhook(
+      invoiceEvent({
+        id: "evt_fp_sub_inv",
+        invoiceId: "in_sub_fp",
+        userId: user.id,
+        sku: "subscription_month",
+        amount: 1100,
+        reason: "subscription_create",
+        subscription: "sub_fp",
+      }),
+    );
+    expect(paid.status).toBe(200);
+    const after = await (await getDb()).get<{ card_fingerprint: string }>(
+      `SELECT card_fingerprint FROM billing_profiles WHERE user_id = ?`,
+      [user.id],
+    );
+    expect(after?.card_fingerprint).toBe("fp_sub");
+  });
+
   it("stores the invoice payment from InvoicePayment and ignores invoice.charge", async () => {
     const { user } = await signIn("inv-pay@pay.example");
     const event = invoiceEvent({
@@ -854,12 +908,316 @@ describe("webhook", () => {
     });
     expect(refund.status).toBe(200);
     expect(await getBalance(user.id)).toMatchObject({ defense: 0, challenge: 0 });
-    expect((await getUserPlan(user.id)).status).toBe("canceled");
+    expect((await getUserPlan(user.id)).status).toBe("active");
+    expect(await subscriptionFlags("sub_year_claw")).toEqual({ terminal: 0, refillsStopped: 1 });
     const again = await grantDueSubscriptionRefills({
       userId: user.id,
       now: new Date(Date.UTC(2026, 2, 31, 12)),
     });
     expect(again.granted).toBe(0);
+    expect((await getBalance(user.id)).defense).toBe(0);
+  });
+
+  it("does not take the other pack when one pack8 was already spent", async () => {
+    const { user } = await signIn("two-pack8@pay.example");
+    await postWebhook(
+      checkoutEvent({
+        id: "evt_pack_a",
+        userId: user.id,
+        sku: "pack8",
+        amount: 2000,
+        paymentIntent: "pi_pack_a",
+      }),
+    );
+    await postWebhook(
+      checkoutEvent({
+        id: "evt_pack_b",
+        userId: user.id,
+        sku: "pack8",
+        amount: 2000,
+        paymentIntent: "pi_pack_b",
+      }),
+    );
+    expect((await getBalance(user.id)).flex).toBe(16);
+    for (let i = 0; i < 8; i += 1) {
+      await holdCredit({ userId: user.id, kind: "defense", idempotencyKey: `hold-two-pack-${i}` });
+    }
+    expect((await getBalance(user.id)).flex).toBe(8);
+    const refund = await postWebhook({
+      id: "evt_pack_a_refund",
+      type: "charge.refunded",
+      data: { object: { id: "ch_pack_a", payment_intent: "pi_pack_a", amount: 2000, amount_refunded: 2000 } },
+    });
+    expect(refund.status).toBe(200);
+    expect((await getBalance(user.id)).flex).toBe(8);
+    const packs = await (await getDb()).all<{ payment_intent_id: string; clawed_credits: number; refunded_at: string | null }>(
+      `SELECT payment_intent_id, clawed_credits, refunded_at FROM stripe_grants WHERE user_id = ? ORDER BY payment_intent_id`,
+      [user.id],
+    );
+    expect(packs).toEqual([
+      expect.objectContaining({ payment_intent_id: "pi_pack_a", clawed_credits: 8, refunded_at: expect.any(String) }),
+      expect.objectContaining({ payment_intent_id: "pi_pack_b", clawed_credits: 0, refunded_at: null }),
+    ]);
+  });
+
+  it("keeps yearly refills running after a partial refund", async () => {
+    const { user } = await signIn("year-partial@pay.example");
+    const anchor = Math.floor(Date.UTC(2026, 0, 31) / 1000);
+    const paid = await postWebhook(
+      invoiceEvent({
+        id: "evt_year_partial",
+        invoiceId: "in_year_partial",
+        userId: user.id,
+        sku: "subscription_year",
+        amount: 9900,
+        reason: "subscription_create",
+        subscription: "sub_year_partial",
+        periodStart: anchor,
+        periodEnd: Math.floor(Date.UTC(2027, 0, 31) / 1000),
+        anchor,
+      }),
+    );
+    expect(paid.status).toBe(200);
+    expect((await getBalance(user.id)).defense).toBe(10);
+    const refund = await postWebhook({
+      id: "evt_year_partial_refund",
+      type: "charge.refunded",
+      data: {
+        object: { id: "ch_in_year_partial", payment_intent: "pi_in_year_partial", amount: 9900, amount_refunded: 990 },
+      },
+    });
+    expect(refund.status).toBe(200);
+    expect((await getBalance(user.id)).defense).toBe(9);
+    expect((await getUserPlan(user.id)).status).toBe("active");
+    expect(await subscriptionFlags("sub_year_partial")).toEqual({ terminal: 0, refillsStopped: 0 });
+    const due = await grantDueSubscriptionRefills({
+      userId: user.id,
+      now: new Date(Date.UTC(2026, 1, 28, 12)),
+    });
+    expect(due.granted).toBe(1);
+    expect((await getBalance(user.id)).defense).toBe(10);
+  });
+
+  it("stops refills on a full yearly refund without blocking the next paid invoice", async () => {
+    const { user } = await signIn("year-full@pay.example");
+    const anchor = Math.floor(Date.UTC(2026, 0, 31) / 1000);
+    const first = await postWebhook({
+      ...invoiceEvent({
+        id: "evt_year_full",
+        invoiceId: "in_year_full",
+        userId: user.id,
+        sku: "subscription_year",
+        amount: 9900,
+        reason: "subscription_create",
+        subscription: "sub_year_full",
+        periodStart: anchor,
+        periodEnd: Math.floor(Date.UTC(2027, 0, 31) / 1000),
+        anchor,
+      }),
+      created: 10,
+    });
+    expect(first.status).toBe(200);
+    const refund = await postWebhook({
+      id: "evt_year_full_refund",
+      type: "charge.refunded",
+      data: {
+        object: { id: "ch_in_year_full", payment_intent: "pi_in_year_full", amount: 9900, amount_refunded: 9900 },
+      },
+    });
+    expect(refund.status).toBe(200);
+    expect(await getBalance(user.id)).toMatchObject({ defense: 0, challenge: 0 });
+    expect((await getUserPlan(user.id)).status).toBe("active");
+    expect(await subscriptionFlags("sub_year_full")).toEqual({ terminal: 0, refillsStopped: 1 });
+    const stopped = await grantDueSubscriptionRefills({
+      userId: user.id,
+      now: new Date(Date.UTC(2026, 1, 28, 12)),
+    });
+    expect(stopped.granted).toBe(0);
+    const next = await postWebhook({
+      ...invoiceEvent({
+        id: "evt_year_full_next",
+        invoiceId: "in_year_full_next",
+        userId: user.id,
+        sku: "subscription_year",
+        amount: 9900,
+        reason: "subscription_cycle",
+        subscription: "sub_year_full",
+        periodStart: Math.floor(Date.UTC(2027, 0, 31) / 1000),
+        periodEnd: Math.floor(Date.UTC(2028, 0, 31) / 1000),
+        anchor,
+      }),
+      created: 500,
+    });
+    expect(next.status).toBe(200);
+    expect(await next.json()).not.toMatchObject({ ignored: true });
+    expect((await getBalance(user.id)).defense).toBe(10);
+    expect(await subscriptionFlags("sub_year_full")).toEqual({ terminal: 0, refillsStopped: 0 });
+    const resumed = await grantDueSubscriptionRefills({
+      userId: user.id,
+      now: new Date(Date.UTC(2027, 1, 28, 12)),
+    });
+    expect(resumed.granted).toBe(1);
+  });
+
+  it("stops refills on a yearly dispute and still grants the next paid invoice", async () => {
+    const { user } = await signIn("year-dispute@pay.example");
+    const anchor = Math.floor(Date.UTC(2026, 0, 31) / 1000);
+    expect(
+      (
+        await postWebhook({
+          ...invoiceEvent({
+            id: "evt_year_disp",
+            invoiceId: "in_year_disp",
+            userId: user.id,
+            sku: "subscription_year",
+            amount: 9900,
+            reason: "subscription_create",
+            subscription: "sub_year_disp",
+            periodStart: anchor,
+            periodEnd: Math.floor(Date.UTC(2027, 0, 31) / 1000),
+            anchor,
+          }),
+          created: 10,
+        })
+      ).status,
+    ).toBe(200);
+    const dispute = await postWebhook({
+      id: "evt_year_disp_open",
+      type: "charge.dispute.created",
+      data: { object: { id: "dp_year", charge: "ch_in_year_disp", payment_intent: "pi_in_year_disp" } },
+    });
+    expect(dispute.status).toBe(200);
+    expect((await getUserPlan(user.id)).status).toBe("active");
+    expect(await subscriptionFlags("sub_year_disp")).toEqual({ terminal: 0, refillsStopped: 1 });
+    const next = await postWebhook({
+      ...invoiceEvent({
+        id: "evt_year_disp_next",
+        invoiceId: "in_year_disp_next",
+        userId: user.id,
+        sku: "subscription_year",
+        amount: 9900,
+        reason: "subscription_cycle",
+        subscription: "sub_year_disp",
+        periodStart: Math.floor(Date.UTC(2027, 0, 31) / 1000),
+        periodEnd: Math.floor(Date.UTC(2028, 0, 31) / 1000),
+        anchor,
+      }),
+      created: 500,
+    });
+    expect(next.status).toBe(200);
+    expect(await next.json()).not.toMatchObject({ ignored: true });
+    expect((await getBalance(user.id)).defense).toBe(10);
+    expect(await subscriptionFlags("sub_year_disp")).toEqual({ terminal: 0, refillsStopped: 0 });
+  });
+
+  it("links year-2 refills to year 2's invoice and a year-2 refund leaves year 1", async () => {
+    const { user } = await signIn("two-year@pay.example");
+    const anchor = Math.floor(Date.UTC(2026, 0, 31) / 1000);
+    const year2Start = Math.floor(Date.UTC(2027, 0, 31) / 1000);
+    const first = await postWebhook(
+      invoiceEvent({
+        id: "evt_two_y1",
+        invoiceId: "in_two_y1",
+        userId: user.id,
+        sku: "subscription_year",
+        amount: 9900,
+        reason: "subscription_create",
+        subscription: "sub_two_year",
+        periodStart: anchor,
+        periodEnd: year2Start,
+        anchor,
+      }),
+    );
+    expect(first.status).toBe(200);
+    expect(
+      (
+        await grantDueSubscriptionRefills({
+          userId: user.id,
+          now: new Date(Date.UTC(2026, 1, 28, 12)),
+        })
+      ).granted,
+    ).toBe(1);
+    const second = await postWebhook({
+      ...invoiceEvent({
+        id: "evt_two_y2",
+        invoiceId: "in_two_y2",
+        userId: user.id,
+        sku: "subscription_year",
+        amount: 9900,
+        reason: "subscription_cycle",
+        subscription: "sub_two_year",
+        periodStart: year2Start,
+        periodEnd: Math.floor(Date.UTC(2028, 0, 31) / 1000),
+        anchor,
+      }),
+      created: 400,
+    });
+    expect(second.status).toBe(200);
+    expect(
+      (
+        await grantDueSubscriptionRefills({
+          userId: user.id,
+          now: new Date(Date.UTC(2027, 1, 28, 12)),
+        })
+      ).granted,
+    ).toBe(1);
+    const rows = await (await getDb()).all<{
+      id: string;
+      invoice_id: string;
+      payment_intent_id: string;
+      charge_id: string;
+    }>(
+      `SELECT id, invoice_id, payment_intent_id, charge_id FROM stripe_grants
+       WHERE user_id = ? AND kind = 'defense' ORDER BY id`,
+      [user.id],
+    );
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    expect(byId.get("refill:sub_two_year:0:defense")).toMatchObject({
+      invoice_id: "in_two_y1",
+      payment_intent_id: "pi_in_two_y1",
+      charge_id: "ch_in_two_y1",
+    });
+    expect(byId.get("refill:sub_two_year:1:defense")).toMatchObject({
+      invoice_id: "in_two_y1",
+      payment_intent_id: "pi_in_two_y1",
+    });
+    expect(byId.get("refill:sub_two_year:12:defense")).toMatchObject({
+      invoice_id: "in_two_y2",
+      payment_intent_id: "pi_in_two_y2",
+      charge_id: "ch_in_two_y2",
+    });
+    expect(byId.get("refill:sub_two_year:13:defense")).toMatchObject({
+      invoice_id: "in_two_y2",
+      payment_intent_id: "pi_in_two_y2",
+      charge_id: "ch_in_two_y2",
+    });
+    const refund = await postWebhook({
+      id: "evt_two_y2_refund",
+      type: "charge.refunded",
+      data: {
+        object: { id: "ch_in_two_y2", payment_intent: "pi_in_two_y2", amount: 9900, amount_refunded: 9900 },
+      },
+    });
+    expect(refund.status).toBe(200);
+    const after = await (await getDb()).all<{
+      invoice_id: string;
+      clawed_credits: number;
+      refunded_at: string | null;
+    }>(
+      `SELECT invoice_id, clawed_credits, refunded_at FROM stripe_grants
+       WHERE user_id = ? AND kind = 'defense'`,
+      [user.id],
+    );
+    for (const row of after) {
+      if (row.invoice_id === "in_two_y1") {
+        expect(row.refunded_at).toBeNull();
+        expect(Number(row.clawed_credits)).toBe(0);
+      } else {
+        expect(row.invoice_id).toBe("in_two_y2");
+        expect(row.refunded_at).not.toBeNull();
+        expect(Number(row.clawed_credits)).toBe(10);
+      }
+    }
     expect((await getBalance(user.id)).defense).toBe(0);
   });
 
@@ -991,6 +1349,8 @@ describe("checkout session", () => {
     const waiverMessage = waiver && typeof waiver === "object" ? waiver.message : "";
     expect(waiverMessage).toMatch(/\/terms/);
     expect(waiverMessage).toMatch(/14-day/);
+    expect(waiverMessage).toContain("provide One defense immediately");
+    expect(waiverMessage).not.toMatch(/provide defense immediately/);
     expect(params.automatic_tax).toEqual({ enabled: false });
     expect(params.tax_id_collection).toEqual({ enabled: true });
     expect(params.integration_identifier).toMatch(/^dit_checkout_[a-z]{8}$/);
@@ -1074,7 +1434,10 @@ describe("checkout session", () => {
     expect(params.subscription_data?.metadata).toMatchObject({ user_id: user.id, sku: "subscription_month" });
     expect(params.consent_collection).toEqual({ terms_of_service: "required" });
     const waiver = params.custom_text?.terms_of_service_acceptance;
-    expect(waiver && typeof waiver === "object" ? waiver.message : "").toMatch(/14-day/);
+    const proWaiver = waiver && typeof waiver === "object" ? waiver.message : "";
+    expect(proWaiver).toMatch(/14-day/);
+    expect(proWaiver).toContain("Pro monthly");
+    expect(proWaiver).not.toContain("subscription_month");
     expect(params.subscription_data?.billing_mode).toEqual({ type: "flexible" });
     expect(params.payment_intent_data).toBeUndefined();
     const enterprise = await checkout(

@@ -28,7 +28,7 @@ The test-mode catalog (account `acct_1UNDfOBIumCL91iA`, all `livemode: false`) i
 
 - No `payment_method_types` (dynamic payment methods).
 - `adaptive_pricing.enabled` is false (EUR only, for this beta).
-- `consent_collection.terms_of_service` is `required`. `custom_text.terms_of_service_acceptance` states the EU 14-day withdrawal waiver and links to `/terms`.
+- `consent_collection.terms_of_service` is `required`. `custom_text.terms_of_service_acceptance` states the EU 14-day withdrawal waiver, names the product, and links to `/terms`. The sandbox needs a Terms of service URL in Settings, Public details, before that consent is accepted. Point it at `/terms`.
 - `metadata` `{ user_id, sku }` on the Session, on `subscription_data`, and on `payment_intent_data`.
 - `client_reference_id` is the user id.
 - `subscription_data.billing_mode.type` is `flexible` for Pro and Team.
@@ -48,15 +48,15 @@ The same Stripe event id is acknowledged once. Credits are keyed on the Checkout
 
 | Event | Effect |
 |---|---|
-| `checkout.session.completed` | Store the customer. One-time sku, `payment_status=paid`: grant from the line’s lookup key. Subscription mode: store the subscription and grant nothing. The card fingerprint is read from the PaymentIntent's latest charge. A deleted subscription is not set active again. |
+| `checkout.session.completed` | Store the customer. One-time sku, `payment_status=paid`: grant from the line’s lookup key. Subscription mode: store the subscription and grant nothing. A one-time purchase reads the card fingerprint from the PaymentIntent's latest charge. A subscription Session usually has no PaymentIntent, so the fingerprint is stored from the invoice payment instead. A deleted subscription is not set active again. |
 | `checkout.session.async_payment_succeeded` | Same grant as completed, same session id. |
 | `checkout.session.async_payment_failed` | No grant. A notice on the dashboard. |
 | `invoice.paid` | `subscription_create`, `subscription_cycle`, or `subscription_update`. The sku comes from the non-proration line's `lookup_key`, then `parent.subscription_details.metadata`. `invoice.metadata` is ignored. Proration lines are not granted. The payment intent and charge are read from `invoicePayments.list({ invoice })`, not from `invoice.charge` or `invoice.payment_intent`. A monthly plan grants its allowance once (Pro 10 defenses, 5 challenges, 10 Learn slots; Team 50; Enterprise 200). Yearly Pro grants month 0 only, keyed `refill:<subscription id>:<period index>`, and stores that payment on the grant row. |
 | `invoice.payment_failed` | `past_due` and a portal notice. Credits stay. |
 | `customer.subscription.updated` | Sync plan, interval, status, `cancel_at_period_end`. The price `lookup_key` wins over metadata, so a portal switch from monthly to yearly sticks. No grant. An older event does not overwrite a newer one. `paused`, `incomplete`, and any unknown status are stored as non-active. |
 | `customer.subscription.deleted` | Plan returns to pay as you go. Unused subscription defenses and challenges expire. Purchased, pack, and beta credits stay. |
-| `charge.refunded` | Claw back unspent credits from the grants with that charge or payment intent. Another purchase is left alone. A partial refund removes `floor(credits × amount_refunded / amount)`. A refund with no charge amount removes the whole grant. Never below zero. Flag the account if the latest month, or the purchase, was already spent. A yearly Pro refund also marks every refill month and stops later refills. |
-| `charge.dispute.created` | Same clawback for the whole grant, and flag the account. A yearly dispute stops later refills. |
+| `charge.refunded` | Claw back unspent credits from the grants with that charge or payment intent. Another purchase is left alone. Removal is capped at the bucket balance minus the credits still outstanding on the user's other unrefunded grants in that bucket, and never goes below zero. A subscription top-up has already expired earlier months, so those rows do not reserve the current balance. A partial refund removes `floor(credits × amount_refunded / amount)` and does not stop yearly refills. A refund with no charge amount removes the whole grant. Flag the account if the latest month, or the purchase, was already spent. A full refund of yearly Pro sets `refills_stopped` so later months are not granted. It does not mark the subscription terminal and it does not cancel the subscription in Stripe. The next paid invoice clears the flag and grants. |
+| `charge.dispute.created` | Same clawback for the whole grant, and flag the account. A yearly dispute sets `refills_stopped` the same way a full refund does, without canceling in Stripe. |
 | `invoice.created` | If the customer has unbilled Enterprise overage rows, add `dit_enterprise_extra_unit` × that count. |
 | `invoice.finalized` | Ignored. `invoice.paid` is the grant. |
 | `credit_note.created` | Logged. No ledger change. |
@@ -75,9 +75,9 @@ Each subscription stores `current_period_start`, `current_period_end`, `grant_an
 
 A refill tops up to the allowance. Unused subscription defenses and challenges expire, then the month's 10 and 5 are granted. Learn slots top up to 10. Purchased, pack, and beta credits stay. Nothing rolls over.
 
-Each month is also a `stripe_grants` row linked to the yearly invoice's payment intent and charge. A refund or dispute of that payment claws every recorded month and stops further refills. Months that were already topped up (expired) do not, by themselves, flag the account. A shortfall on the latest month does.
+Each month is also a `stripe_grants` row. The invoice month stores that year's payment intent and charge. Later months copy the newest grant at or before that month, so year 2 is not linked to year 1's charge. A refund or dispute matches only the months tied to that payment. A partial refund claws the proportional credits and leaves refills running. A full refund or a dispute sets `refills_stopped` and does not cancel the Stripe subscription. The next `invoice.paid` clears the flag and grants the new year. Months that were already topped up (expired) do not, by themselves, flag the account. A shortfall on the latest month does.
 
-The job grants a subscription only when its status is `active` or `trialing`, it is not past `current_period_end`, and it has not been deleted. `customer.subscription.deleted`, status `unpaid`, and status `canceled` stop further refills. `cancel_at_period_end` does not, while the status is still active and the period has not ended. A missed run catches up the months in between and does not grant them twice.
+The job grants a subscription only when its status is `active` or `trialing`, it is not past `current_period_end`, it has not been deleted, and `refills_stopped` is not set. `customer.subscription.deleted`, status `unpaid`, and status `canceled` stop further refills. A full refund or a dispute stops them without canceling in Stripe. `cancel_at_period_end` does not, while the status is still active and the period has not ended. A missed run catches up the months in between and does not grant them twice.
 
 ## Environment
 

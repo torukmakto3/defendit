@@ -8,7 +8,7 @@
  * the invoice id as the ledger key. Yearly Pro grants month 0 from that
  * invoice and later months from the refill job, both keyed
  * `refill:<subscription id>:<period index>`. Each month is a stripe_grants
- * row linked to that invoice's payment, so a refund claws every month.
+ * row linked to that year's invoice payment, so a refund claws those months.
  * A second event for the same invoice or the same month does not credit again.
  * Customers are classic Stripe Customers (`cus_…`). See `stripe-client.ts`.
  */
@@ -414,6 +414,8 @@ async function applyCheckout(event: z.infer<typeof checkoutEventSchema>): Promis
         });
       }
     }
+    // Subscription Checkout usually has no PaymentIntent. The fingerprint
+    // is stored from the invoice payment in applyInvoicePaid.
     await rememberCard(userId, stripeId(session.payment_intent));
     await logEvent(event.id, event.type);
     return { duplicate: false };
@@ -482,8 +484,13 @@ async function applyInvoicePaid(event: z.infer<typeof invoiceEventSchema>): Prom
       return { duplicate: false, ignored: true };
     }
     activate = decision === "apply";
+    // A new paid invoice resumes refills. A deleted subscription never reaches here.
+    await clearSubscriptionRefillStop(subscriptionId);
   }
   const payment = await resolveInvoicePayment(invoice.id);
+  // The session has no PaymentIntent in subscription mode. Read the card
+  // fingerprint from this invoice's payment instead.
+  if (payment?.paymentIntentId) await rememberCard(resolved.userId, payment.paymentIntentId);
   if (plan.interval === "year") {
     if (!subscriptionId) throw new HttpError(400, "Invoice is missing a subscription.");
     const window = yearlyWindow(invoice);
@@ -603,7 +610,7 @@ async function applyRefund(event: z.infer<typeof refundEventSchema>): Promise<Bi
     flagReason: "refund_credits_already_spent",
     flagOnShortfallOnly: true,
     clawKey: (grantId) => `clawback:${event.id}:${grantId}`,
-    eventCreated: 0,
+    stopRefills: isFullRefund(charge.amount ?? null, charge.amount_refunded ?? null),
   });
 }
 
@@ -619,7 +626,7 @@ async function applyDispute(event: z.infer<typeof disputeEventSchema>): Promise<
     flagReason: "dispute_opened",
     flagOnShortfallOnly: false,
     clawKey: (grantId) => `stripe:${dispute.id}:${grantId}`,
-    eventCreated: 0,
+    stopRefills: true,
   });
 }
 
@@ -633,12 +640,13 @@ async function clawGrants(input: {
   flagReason: string;
   flagOnShortfallOnly: boolean;
   clawKey: (grantId: string) => string;
-  eventCreated: number;
+  /** Full refund or dispute. A partial refund leaves refills running. */
+  stopRefills: boolean;
 }): Promise<BillingResult> {
   const db = await getDb();
   let duplicate = false;
   let unmatched = false;
-  const stopped: { userId: string; subscriptionId: string }[] = [];
+  const stopped = new Set<string>();
   await db.transaction(async (tx) => {
     const inserted = await tx.run(
       `INSERT INTO stripe_events (event_id, event_type, created_at) VALUES (?, ?, ?)
@@ -675,6 +683,7 @@ async function clawGrants(input: {
           source: grant.source as CreditSource,
           amount: delta,
           idempotencyKey: input.clawKey(grant.id),
+          grantId: grant.id,
           refType: "stripe_refund",
           refId: input.eventId,
           db: tx,
@@ -690,17 +699,18 @@ async function clawGrants(input: {
         [target, target, now, grant.id],
       );
       const subscriptionId = subscriptionIdFromGrant(grant.id);
-      if (grant.sku === "subscription_year" && subscriptionId) {
-        stopped.push({ userId: grant.user_id, subscriptionId });
-      }
+      if (input.stopRefills && grant.sku === "subscription_year" && subscriptionId) stopped.add(subscriptionId);
     }
     if (shortfall || !input.flagOnShortfallOnly) await flagAccount(tx, grants[0].user_id, input.flagReason, now);
   });
-  for (const stop of uniqueStops(stopped)) {
-    await writeSubscriptionState(stop.subscriptionId, input.eventCreated, true);
-    await endPaidPlan(stop.userId, stop.subscriptionId, { keepCredits: true });
-  }
+  // Stop local refills only. Stripe is not told to cancel, and terminal stays
+  // unset so the next paid invoice can grant.
+  for (const subscriptionId of stopped) await stopSubscriptionRefills(subscriptionId);
   return { duplicate, unmatched };
+}
+
+function isFullRefund(amount: number | null, amountRefunded: number | null): boolean {
+  return amount != null && amountRefunded != null && amount > 0 && amountRefunded >= amount;
 }
 
 function refundTarget(credits: number, amount: number | null, amountRefunded: number | null): number {
@@ -726,18 +736,6 @@ function newestPeriodByKind(grants: GrantRow[]): Map<string, number> {
     newest.set(grant.kind, Math.max(newest.get(grant.kind) ?? -1, index));
   }
   return newest;
-}
-
-function uniqueStops(stops: { userId: string; subscriptionId: string }[]): { userId: string; subscriptionId: string }[] {
-  const seen = new Set<string>();
-  const out: { userId: string; subscriptionId: string }[] = [];
-  for (const stop of stops) {
-    const key = `${stop.userId}:${stop.subscriptionId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(stop);
-  }
-  return out;
 }
 
 async function applyCharge(event: z.infer<typeof chargeEventSchema>): Promise<BillingResult> {
@@ -1154,6 +1152,24 @@ async function decideSubscriptionWrite(
   }
   await writeSubscriptionState(subscriptionId, created, terminal || proposedTerminal);
   return "apply";
+}
+
+/** A full refund or dispute. Does not mark the subscription deleted. */
+async function stopSubscriptionRefills(subscriptionId: string): Promise<void> {
+  const db = await getDb();
+  await db.run(
+    `INSERT INTO stripe_subscription_state (subscription_id, last_event_created, terminal, refills_stopped)
+     VALUES (?, 0, 0, 1)
+     ON CONFLICT (subscription_id) DO UPDATE SET refills_stopped = 1`,
+    [subscriptionId],
+  );
+}
+
+async function clearSubscriptionRefillStop(subscriptionId: string): Promise<void> {
+  const db = await getDb();
+  await db.run(`UPDATE stripe_subscription_state SET refills_stopped = 0 WHERE subscription_id = ?`, [
+    subscriptionId,
+  ]);
 }
 
 async function writeSubscriptionState(subscriptionId: string, created: number, terminal: boolean): Promise<void> {

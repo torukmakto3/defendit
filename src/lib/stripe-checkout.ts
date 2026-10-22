@@ -10,7 +10,7 @@ import { randomBytes } from "crypto";
 import Stripe from "stripe";
 import { appUrl } from "./config";
 import { HttpError } from "./errors";
-import { stripeTaxEnabled } from "./stripe-config";
+import { checkoutProductName, stripeTaxEnabled } from "./stripe-config";
 import { stripeSdk } from "./stripe-client";
 
 export interface StripeCheckoutRequest {
@@ -79,7 +79,8 @@ export function checkoutSessionParams(input: StripeCheckoutRequest): Stripe.Chec
 /** EU 14-day withdrawal waiver. The terms page is owned by the legal pages pull request. */
 function withdrawalWaiver(sku: string): string {
   const terms = appUrl("/terms");
-  return `I agree to the Terms at ${terms} and I ask Defend It to provide ${sku} immediately. I waive the 14-day right of withdrawal once a credit is delivered.`;
+  const product = checkoutProductName(sku);
+  return `I agree to the Terms at ${terms} and I ask Defend It to provide ${product} immediately. I waive the 14-day right of withdrawal once a credit is delivered.`;
 }
 
 function integrationIdentifier(): string {

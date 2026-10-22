@@ -132,8 +132,8 @@ export async function syncYearlySubscriptionWindow(input: {
 
 /**
  * Grant every missing Pro month for active or trialing yearly subscriptions
- * that are still inside the Stripe period. Canceled, unpaid, and ended
- * subscriptions are left alone. Pass `userId` to do one account.
+ * that are still inside the Stripe period. Canceled, unpaid, ended, and
+ * refill-stopped subscriptions are left alone. Pass `userId` to do one account.
  */
 export async function grantDueSubscriptionRefills(opts?: {
   userId?: string;
@@ -157,7 +157,12 @@ export async function grantDueSubscriptionRefills(opts?: {
        AND grant_anchor IS NOT NULL
        AND current_period_start IS NOT NULL
        AND current_period_end IS NOT NULL
-       AND current_period_end > ?${userClause}`,
+       AND current_period_end > ?
+       AND NOT EXISTS (
+         SELECT 1 FROM stripe_subscription_state
+         WHERE subscription_id = user_plans.stripe_subscription_id
+           AND refills_stopped = 1
+       )${userClause}`,
     params,
   );
   let granted = 0;
@@ -215,9 +220,9 @@ async function refillRow(row: YearlyRow, now: Date): Promise<number> {
 }
 
 /**
- * Each refill month is a stripe_grants row tied to the yearly invoice payment,
- * so a refund of that payment matches every month. Month 0 is written by the
- * webhook; later months copy its invoice, payment intent, and charge.
+ * Each refill month is a stripe_grants row tied to that year's invoice.
+ * The webhook writes the invoice month. Later months copy the newest grant
+ * at or before this index, which is that year's invoice, not an older year.
  */
 async function recordRefillGrants(
   userId: string,
@@ -228,20 +233,20 @@ async function recordRefillGrants(
   const rows = grants.filter((grant) => grant.credits > 0);
   if (rows.length === 0) return;
   const db = await getDb();
-  const prior = await db.get<{
+  const candidates = await db.all<{
+    id: string;
     invoice_id: string | null;
     payment_intent_id: string | null;
     charge_id: string | null;
     sku: string;
     event_id: string;
   }>(
-    `SELECT invoice_id, payment_intent_id, charge_id, sku, event_id
+    `SELECT id, invoice_id, payment_intent_id, charge_id, sku, event_id
      FROM stripe_grants
-     WHERE user_id = ? AND id LIKE ?
-     ORDER BY created_at
-     LIMIT 1`,
+     WHERE user_id = ? AND id LIKE ?`,
     [userId, `refill:${subscriptionId}:%`],
   );
+  const prior = newestGrantAtOrBefore(candidates, periodIndex);
   const now = new Date().toISOString();
   const grantKey = `refill:${subscriptionId}:${periodIndex}`;
   for (const grant of rows) {
@@ -266,4 +271,32 @@ async function recordRefillGrants(
       ],
     );
   }
+}
+
+function refillPeriodIndex(grantId: string): number {
+  const match = /^refill:[^:]+:(\d+):/.exec(grantId);
+  return match ? Number(match[1]) : -1;
+}
+
+/** The invoice month for this refill, not an older year's grant. */
+function newestGrantAtOrBefore<T extends { id: string; payment_intent_id: string | null; charge_id: string | null }>(
+  rows: T[],
+  periodIndex: number,
+): T | null {
+  let best: T | null = null;
+  let bestIndex = -1;
+  for (const row of rows) {
+    const index = refillPeriodIndex(row.id);
+    if (index < 0 || index > periodIndex) continue;
+    if (!best || index > bestIndex) {
+      best = row;
+      bestIndex = index;
+      continue;
+    }
+    if (index < bestIndex) continue;
+    const rowPaid = !!(row.payment_intent_id || row.charge_id);
+    const bestPaid = !!(best.payment_intent_id || best.charge_id);
+    if (rowPaid && !bestPaid) best = row;
+  }
+  return best;
 }

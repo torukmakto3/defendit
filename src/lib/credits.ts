@@ -792,8 +792,12 @@ export async function grantCredits(input: GrantCreditsInput): Promise<LedgerEntr
 
 /**
  * Remove up to `amount` credits from one bucket. The bucket never goes
- * below zero. `shortfall` is the part that was already spent or held.
- * Replay of the same idempotency key returns the original removal.
+ * below zero. When `grantId` is set, the removal is also capped at the
+ * balance minus what other unrefunded grants in that bucket still have
+ * outstanding, so one refund cannot spend another purchase. A subscription
+ * top-up has already expired earlier months, so only a newer subscription
+ * grant still reserves the bucket. `shortfall` is the part that was already
+ * spent or held. Replay of the same idempotency key returns the original removal.
  */
 export async function clawbackCredits(input: {
   userId: string;
@@ -801,6 +805,8 @@ export async function clawbackCredits(input: {
   source: CreditSource;
   amount: number;
   idempotencyKey: string;
+  /** The stripe_grants row being refunded. Other rows in the bucket are protected. */
+  grantId?: string;
   refType?: string;
   refId?: string;
   db?: Db;
@@ -826,7 +832,11 @@ export async function clawbackCredits(input: {
       return { removed, shortfall: Math.max(0, input.amount - removed) };
     }
     const have = Math.max(0, await sumBucket(tx, input.userId, input.kind, input.source));
-    const removed = Math.min(input.amount, have);
+    const reserved = input.grantId
+      ? await reservedByOtherGrants(tx, input.userId, input.kind, input.source, input.grantId)
+      : 0;
+    const removable = Math.max(0, have - reserved);
+    const removed = Math.min(input.amount, removable);
     if (removed > 0) {
       await insertEntry(tx, {
         userId: input.userId,
@@ -845,6 +855,45 @@ export async function clawbackCredits(input: {
     }
     return { removed, shortfall: input.amount - removed };
   });
+}
+
+/**
+ * Credits other unrefunded grants still claim in this bucket.
+ * Packs and one-time purchases each keep their remaining credits.
+ * Subscription months top up, so an earlier month's credits are already
+ * gone. Only a newer subscription grant still occupies the bucket.
+ */
+async function reservedByOtherGrants(
+  tx: Db,
+  userId: string,
+  kind: string,
+  source: string,
+  grantId: string,
+): Promise<number> {
+  const rows = await tx.all<{
+    credits: number | string;
+    clawed_credits: number | string | null;
+    created_at: string;
+  }>(
+    `SELECT credits, clawed_credits, created_at FROM stripe_grants
+     WHERE user_id = ? AND kind = ? AND source = ? AND refunded_at IS NULL AND id <> ?`,
+    [userId, kind, source, grantId],
+  );
+  const unclawed = (row: { credits: number | string; clawed_credits: number | string | null }) =>
+    Math.max(0, Number(row.credits) - Number(row.clawed_credits ?? 0));
+  if (source !== "subscription") {
+    let reserved = 0;
+    for (const row of rows) reserved += unclawed(row);
+    return reserved;
+  }
+  const current = await tx.get<{ created_at: string }>(`SELECT created_at FROM stripe_grants WHERE id = ?`, [
+    grantId,
+  ]);
+  const currentAt = current?.created_at ?? "";
+  const newer = rows.filter((row) => row.created_at > currentAt);
+  if (newer.length === 0) return 0;
+  newer.sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+  return unclawed(newer[0]);
 }
 
 export async function holdCredit(input: HoldCreditInput): Promise<LedgerEntry> {
