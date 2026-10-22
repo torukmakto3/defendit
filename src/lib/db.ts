@@ -396,6 +396,29 @@ CREATE TABLE IF NOT EXISTS demo_passes (
   expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- Credits granted for one Stripe event, one row per kind. A refund claws
+-- back from these rows and never from the beta grant.
+CREATE TABLE IF NOT EXISTS stripe_grants (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  event_id TEXT NOT NULL,
+  sku TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  source TEXT NOT NULL,
+  credits INTEGER NOT NULL,
+  checkout_session_id TEXT,
+  invoice_id TEXT,
+  payment_intent_id TEXT,
+  charge_id TEXT,
+  refunded_at TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_stripe_grants_event ON stripe_grants(event_id);
+CREATE INDEX IF NOT EXISTS idx_stripe_grants_payment_intent ON stripe_grants(payment_intent_id);
+CREATE INDEX IF NOT EXISTS idx_stripe_grants_charge ON stripe_grants(charge_id);
+CREATE INDEX IF NOT EXISTS idx_stripe_grants_invoice ON stripe_grants(invoice_id);
 `;
 
 /** Stats filters on these session columns. Skip when an older table lacks them. */
@@ -443,6 +466,10 @@ const ADDED_COLUMNS: [string, string, string][] = [
   // Retention of the file is unchanged.
   ["defense_requests", "learn_closed_at", "TEXT"],
   ["credit_wallets", "learn_open", "INTEGER NOT NULL DEFAULT 0"],
+  // Set when a card refund could not take back credits that were already spent.
+  ["billing_profiles", "flagged_at", "TEXT"],
+  ["billing_profiles", "flag_reason", "TEXT"],
+  ["billing_profiles", "stripe_customer_id", "TEXT"],
   // Monotonic integrity totals. A reload restores these; a later report cannot lower them.
   ["sessions", "paste_events", "INTEGER NOT NULL DEFAULT 0"],
   ["sessions", "focus_blur_events", "INTEGER NOT NULL DEFAULT 0"],

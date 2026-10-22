@@ -783,6 +783,63 @@ export async function grantCredits(input: GrantCreditsInput): Promise<LedgerEntr
   });
 }
 
+/**
+ * Remove up to `amount` credits from one bucket. The bucket never goes
+ * below zero. `shortfall` is the part that was already spent or held.
+ * Replay of the same idempotency key returns the original removal.
+ */
+export async function clawbackCredits(input: {
+  userId: string;
+  kind: LedgerKind;
+  source: CreditSource;
+  amount: number;
+  idempotencyKey: string;
+  refType?: string;
+  refId?: string;
+  db?: Db;
+}): Promise<{ removed: number; shortfall: number }> {
+  if (!Number.isSafeInteger(input.amount) || input.amount <= 0) {
+    throw new HttpError(400, "Clawback amount must be a positive whole number.");
+  }
+  return withTx(input.db, async (tx) => {
+    await lockWallet(tx, input.userId);
+    const existing = await tx.get<LedgerRow>(`SELECT * FROM credit_ledger WHERE idempotency_key = ?`, [
+      input.idempotencyKey,
+    ]);
+    if (existing) {
+      if (
+        existing.user_id !== input.userId ||
+        existing.reason !== "admin_adjust" ||
+        existing.kind !== input.kind ||
+        (existing.source ?? null) !== input.source
+      ) {
+        throw new HttpError(409, "That idempotency key was already used.");
+      }
+      const removed = Math.abs(num(existing.amount));
+      return { removed, shortfall: Math.max(0, input.amount - removed) };
+    }
+    const have = Math.max(0, await sumBucket(tx, input.userId, input.kind, input.source));
+    const removed = Math.min(input.amount, have);
+    if (removed > 0) {
+      await insertEntry(tx, {
+        userId: input.userId,
+        kind: input.kind,
+        reason: "admin_adjust",
+        amount: -removed,
+        idempotencyKey: input.idempotencyKey,
+        source: input.source,
+        purpose: "stripe_refund",
+        refType: input.refType ?? "stripe_refund",
+        refId: input.refId ?? null,
+        sponsored: false,
+        budgetCents: null,
+        periodId: null,
+      });
+    }
+    return { removed, shortfall: input.amount - removed };
+  });
+}
+
 export async function holdCredit(input: HoldCreditInput): Promise<LedgerEntry> {
   const amount = requireOneCredit(input.amount);
   return withTx(input.db, async (tx) => {
@@ -1114,6 +1171,15 @@ export async function renewPlan(input: {
       [input.userId, input.planId, input.interval, input.periodId, periodEnd(input.interval), now],
     );
   });
+}
+
+/** Stop future renewals. Credits already granted stay until a refund claws them back. */
+export async function cancelPlan(userId: string): Promise<void> {
+  const db = await getDb();
+  await db.run(`UPDATE user_plans SET status = 'canceled', updated_at = ? WHERE user_id = ?`, [
+    new Date().toISOString(),
+    userId,
+  ]);
 }
 
 function renewalEntry(
@@ -1697,6 +1763,7 @@ export function ledgerLabel(entry: {
     case "expire":
       return "Expired at renewal";
     case "admin_adjust":
+      if (entry.purpose === "stripe_refund") return "Refund clawed back";
       return "Adjustment";
     default: {
       const unknown: never = entry.reason;

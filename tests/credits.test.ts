@@ -1322,6 +1322,9 @@ describe("billing stub", () => {
     globalThis.fetch = originalFetch;
     calls.length = 0;
     delete process.env.BILLING_ENABLED;
+    delete process.env.PAYMENTS_ENABLED;
+    delete process.env.STRIPE_SECRET_KEY;
+    delete process.env.STRIPE_WEBHOOK_SECRET;
   });
 
   function spyFetch() {
@@ -1331,7 +1334,7 @@ describe("billing stub", () => {
     }) as typeof fetch;
   }
 
-  it("contains no Stripe client and makes no network call while billing is off", async () => {
+  it("makes no network call and hides checkout while payments are off", async () => {
     const payments = readFileSync(join(__dirname, "..", "src", "lib", "payments.ts"), "utf8");
     const credits = readFileSync(join(__dirname, "..", "src", "lib", "credits.ts"), "utf8");
     const checkoutRoute = readFileSync(join(__dirname, "..", "src", "app", "api", "billing", "checkout", "route.ts"), "utf8");
@@ -1341,13 +1344,15 @@ describe("billing stub", () => {
     expect(payments).not.toMatch(/fetch\s*\(/);
     const example = readFileSync(join(__dirname, "..", ".env.example"), "utf8");
     expect(example).toContain("BILLING_ENABLED=false");
-    expect(example).not.toMatch(/STRIPE_/);
+    expect(example).toContain("PAYMENTS_ENABLED=false");
+    expect(example).toContain("STRIPE_SECRET_KEY");
+    expect(example).not.toMatch(/sk_live_[A-Za-z0-9]{8,}/);
 
     spyFetch();
     const { user, cookie } = await signIn("billing-off@fund.example");
     for (const flag of [undefined, "false"] as const) {
-      if (flag === undefined) delete process.env.BILLING_ENABLED;
-      else process.env.BILLING_ENABLED = flag;
+      if (flag === undefined) delete process.env.PAYMENTS_ENABLED;
+      else process.env.PAYMENTS_ENABLED = flag;
       const checkoutRes = await checkout(
         new Request("http://localhost/api/billing/checkout", {
           method: "POST",
@@ -1355,11 +1360,13 @@ describe("billing stub", () => {
           body: JSON.stringify({ sku: "defense" }),
         }),
       );
-      expect(checkoutRes.status).toBe(402);
-      expect(await checkoutRes.json()).toEqual({ error: "billing not enabled" });
-      const hook = await webhook();
-      expect(hook.status).toBe(402);
-      expect(await hook.json()).toEqual({ error: "billing not enabled" });
+      expect(checkoutRes.status).toBe(404);
+      expect(await checkoutRes.json()).toEqual({ error: "Not found" });
+      const hook = await webhook(
+        new Request("http://localhost/api/billing/webhook", { method: "POST", body: "{}" }),
+      );
+      expect(hook.status).toBe(404);
+      expect(await hook.json()).toEqual({ error: "Not found" });
     }
     expect(calls).toEqual([]);
 
@@ -1373,9 +1380,9 @@ describe("billing stub", () => {
     expect(calls).toEqual([]);
   });
 
-  it("still makes no network call when the flag is on, because Stripe is not configured", async () => {
+  it("still makes no network call when payments are on, because Stripe is not configured", async () => {
     spyFetch();
-    process.env.BILLING_ENABLED = "1";
+    process.env.PAYMENTS_ENABLED = "true";
     const { cookie } = await signIn("billing-on@fund.example");
     const checkoutRes = await checkout(
       new Request("http://localhost/api/billing/checkout", {
@@ -1386,7 +1393,9 @@ describe("billing stub", () => {
     );
     expect(checkoutRes.status).toBe(501);
     expect(await checkoutRes.json()).toEqual({ error: "Stripe is not configured" });
-    const hook = await webhook();
+    const hook = await webhook(
+      new Request("http://localhost/api/billing/webhook", { method: "POST", body: "{}" }),
+    );
     expect(hook.status).toBe(501);
     expect(await hook.json()).toEqual({ error: "Stripe is not configured" });
     expect(calls).toEqual([]);

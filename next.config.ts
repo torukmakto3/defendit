@@ -29,7 +29,7 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["better-sqlite3", "pdf-parse", "mammoth", "@resvg/resvg-js"],
+  serverExternalPackages: ["better-sqlite3", "pdf-parse", "mammoth", "@resvg/resvg-js", "stripe"],
   poweredByHeader: false,
   // pdfjs loads its canvas polyfill via a dynamic require that file tracing misses.
   outputFileTracingIncludes: {

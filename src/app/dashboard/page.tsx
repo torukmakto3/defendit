@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { SignInCard, useMe } from "@/components/auth";
+import { CheckoutButton } from "@/components/checkout-button";
 
 interface Row {
   token: string;
@@ -28,6 +29,9 @@ interface Wallet {
   plan: { name: string; costTier: string; status: string };
   learn: { active: number; limit: number | null };
   billingEnabled: boolean;
+  paymentsEnabled: boolean;
+  billingFlag: string | null;
+  products: { sku: string; name: string; priceLabel: string; detail: string }[];
   prices: {
     defense: string;
     challenge: string;
@@ -147,6 +151,32 @@ function WalletPanel({ wallet }: { wallet: Wallet }) {
       </p>
       {!wallet.billingEnabled && (
         <p className="mt-2 text-sm text-[var(--ink-2)]">Billing is not enabled. Credits already on the account still spend.</p>
+      )}
+      {wallet.billingFlag && (
+        <p className="mt-2 text-sm text-danger">
+          A refund covered credits that were already used. The balance was not taken below zero.
+        </p>
+      )}
+      {wallet.paymentsEnabled && wallet.products.length > 0 && (
+        <div className="mt-5">
+          <h3 className="text-sm font-semibold">Buy credits</h3>
+          <p className="mt-1 text-sm text-[var(--ink-2)]">
+            Prices include VAT. Pack credits work for a defense or a challenge. A challenge you buy can&apos;t be
+            claimed by your own account. <Link href="/pricing" className="text-[var(--moss)] underline">Pricing</Link>
+          </p>
+          <ul className="mt-3 grid gap-3 sm:grid-cols-2">
+            {wallet.products.map((product) => (
+              <li key={product.sku} className="border border-[var(--line)] p-3">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="font-semibold">{product.name}</span>
+                  <span className="mono text-sm">{product.priceLabel}</span>
+                </div>
+                <p className="mt-1 text-sm text-[var(--ink-2)]">{product.detail}</p>
+                <CheckoutButton sku={product.sku} label="Checkout" />
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       <div className="titleblock mt-4">
         <div>
