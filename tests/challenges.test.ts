@@ -1,7 +1,10 @@
 import { mkdtempSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { PublicChallengeResult } from "../src/components/challenge/PublicResult";
 import { consumeMagicLink, requestMagicLink, type User } from "../src/lib/auth";
 import { publicTierTitle, tierForScore } from "../src/lib/challenge-tier";
 import { billingEnabled } from "../src/lib/billing";
@@ -21,10 +24,19 @@ import {
   publicResultLines,
   receiptGate,
   recordResultView,
+  resultCardCopy,
   revokeChallenge,
   setOptOut,
 } from "../src/lib/challenges";
-import { beginDefenseCredit, betaBudgetCents, getBalance, grantCredits, holdCredit, refundCredit } from "../src/lib/credits";
+import {
+  beginDefenseCredit,
+  betaBudgetCents,
+  betaDefenseCents,
+  getBalance,
+  grantCredits,
+  holdCredit,
+  refundCredit,
+} from "../src/lib/credits";
 import { getDb } from "../src/lib/db";
 import { HttpError } from "../src/lib/errors";
 import {
@@ -466,7 +478,7 @@ describe("challenge links", () => {
     expect(hiddenGate.result?.showScore).toBe(false);
     expect(hiddenGate.result?.score).toBeNull();
     expect(hiddenGate.result?.verifyPath).toBeNull();
-    expect(hiddenGate.result?.headline).toBe("Defended");
+    expect(hiddenGate.result?.headline).toBe(publicTierTitle(hiddenGate.result?.tier ?? null));
     expect(hiddenGate.result?.tier).toBeTruthy();
     const hiddenJson = JSON.stringify(hiddenGate.result);
     expect(hiddenJson).not.toContain(DOC_SECRET);
@@ -677,6 +689,175 @@ describe("challenge links", () => {
     expect((await ledgerForSlug(accepted.slug)).map((row) => row.action).sort()).toEqual(["hold", "refund"]);
     expect(closureCopy("closed")!.toLowerCase()).not.toContain("declin");
     await claimChallenge({ slug: other.slug, user: target, ip: nextIp(), adultConfirmed: true });
+  });
+
+  it("titles a tier-only result and its social card with the band", async () => {
+    const hidden = await run("Tier band subject", "score_hidden", "beta");
+    const receiptId = hidden.receipt.payload.id;
+    const db = await getDb();
+    const stored = await db.get<{ payload_json: string }>(`SELECT payload_json FROM receipts WHERE id = ?`, [
+      receiptId,
+    ]);
+    const original = stored!.payload_json;
+    const bands = [
+      { score: 92, title: "Defended · Strong" },
+      { score: 76, title: "Defended" },
+      { score: 41, title: "Still sharpening" },
+    ];
+    for (const band of bands) {
+      const signed = JSON.parse(original) as SignedReceipt;
+      signed.payload.score = band.score;
+      await db.run(`UPDATE receipts SET payload_json = ? WHERE id = ?`, [JSON.stringify(signed), receiptId]);
+      const gate = await receiptGate(receiptId, null);
+      expect(gate.result?.showScore).toBe(false);
+      expect(gate.result?.score).toBeNull();
+      expect(gate.result?.tier).toBe(tierForScore(band.score));
+      expect(gate.result?.headline).toBe(band.title);
+      const card = await resultCardCopy(receiptId);
+      expect(card.title).toBe(band.title);
+      expect(card.score).toBeNull();
+      expect(card.subtitle).toBe("Tier band subject");
+      expect(card.subtitle).not.toBe(band.title);
+      const html = renderToStaticMarkup(createElement(PublicChallengeResult, { result: gate.result! }));
+      expect(html).toContain(`>${band.title}<`);
+      expect(html).not.toContain("uppercase");
+      expect(html.match(new RegExp(`>${band.title}<`, "g"))).toHaveLength(1);
+    }
+  });
+
+  it("reserves beta budget for a challenge defense and releases it on decline, expiry, and revoke", async () => {
+    async function spent(): Promise<number> {
+      const row = await (await getDb()).get<{ spent_cents: number | string | null }>(
+        `SELECT spent_cents FROM credit_budget WHERE id = 'beta'`,
+      );
+      return Number(row?.spent_cents ?? 0);
+    }
+    const cost = betaDefenseCents();
+
+    const creator = await signIn(nextEmail("budget-c"));
+    await fund(creator, 3);
+    const defender = await signIn(nextEmail("budget-d"));
+    const declined = await createChallenge({
+      user: creator,
+      subject: "Budget decline",
+      difficulty: "standard",
+      targetHint: defender.email,
+    });
+    const declinedClaim = await claimChallenge({
+      slug: declined.slug,
+      user: defender,
+      ip: nextIp(),
+      adultConfirmed: true,
+    });
+    await ingestDeliverable({ token: declinedClaim.token, user: defender, fileName: "memo.md", buffer: doc });
+    const defenseBefore = (await getBalance(defender.id)).defense;
+    const before = await spent();
+    await startSession({ token: declinedClaim.token, user: defender, mode: "defend" });
+    expect(await spent()).toBe(before + cost);
+    expect((await getBalance(defender.id)).defense).toBe(defenseBefore);
+    await startSession({ token: declinedClaim.token, user: defender, mode: "defend" });
+    expect(await spent()).toBe(before + cost);
+    const closed = await declineChallenge(declined.slug, defender, nextIp());
+    expect(closed.closed).toBe(true);
+    expect(await spent()).toBe(before);
+
+    const expired = await createChallenge({
+      user: creator,
+      subject: "Budget expiry",
+      difficulty: "standard",
+    });
+    const expiredClaim = await claimChallenge({
+      slug: expired.slug,
+      user: defender,
+      ip: nextIp(),
+      adultConfirmed: true,
+    });
+    await ingestDeliverable({ token: expiredClaim.token, user: defender, fileName: "memo.md", buffer: doc });
+    await startSession({ token: expiredClaim.token, user: defender, mode: "defend" });
+    expect(await spent()).toBe(before + cost);
+    const db = await getDb();
+    await db.run(`UPDATE challenges SET finish_by = ? WHERE slug = ?`, [
+      new Date(Date.now() - 1000).toISOString(),
+      expired.slug,
+    ]);
+    await expireDueChallenges();
+    expect(await spent()).toBe(before);
+
+    const revoked = await createChallenge({
+      user: creator,
+      subject: "Budget revoke",
+      difficulty: "standard",
+    });
+    const revokedClaim = await claimChallenge({
+      slug: revoked.slug,
+      user: defender,
+      ip: nextIp(),
+      adultConfirmed: true,
+    });
+    await ingestDeliverable({ token: revokedClaim.token, user: defender, fileName: "memo.md", buffer: doc });
+    await startSession({ token: revokedClaim.token, user: defender, mode: "defend" });
+    expect(await spent()).toBe(before + cost);
+    await db.run(`UPDATE challenges SET status = 'open' WHERE slug = ?`, [revoked.slug]);
+    await revokeChallenge(revoked.slug, creator);
+    expect(await spent()).toBe(before);
+
+    process.env.BETA_BUDGET_EUR = "0";
+    const paused = await createChallenge({
+      user: creator,
+      subject: "Budget paused",
+      difficulty: "standard",
+    });
+    const pausedClaim = await claimChallenge({
+      slug: paused.slug,
+      user: defender,
+      ip: nextIp(),
+      adultConfirmed: true,
+    });
+    await ingestDeliverable({ token: pausedClaim.token, user: defender, fileName: "memo.md", buffer: doc });
+    const pausedBefore = (await getBalance(defender.id)).defense;
+    await expect(startSession({ token: pausedClaim.token, user: defender, mode: "defend" })).rejects.toThrow(
+      /sponsored defenses are paused/i,
+    );
+    expect((await getBalance(defender.id)).defense).toBe(pausedBefore);
+    expect(await spent()).toBe(before);
+  });
+
+  it("keeps the challenge reservation when a newer start refunds unfinished holds", async () => {
+    const creator = await signIn(nextEmail("budget-keep-c"));
+    await fund(creator, 1);
+    const defender = await signIn(nextEmail("budget-keep-d"));
+    const created = await createChallenge({
+      user: creator,
+      subject: "Budget stays through a newer start",
+      difficulty: "standard",
+    });
+    const claimed = await claimChallenge({
+      slug: created.slug,
+      user: defender,
+      ip: nextIp(),
+      adultConfirmed: true,
+    });
+    await ingestDeliverable({ token: claimed.token, user: defender, fileName: "memo.md", buffer: doc });
+    await startSession({ token: claimed.token, user: defender, mode: "defend" });
+    const db = await getDb();
+    const challenge = await db.get<{ id: string }>(`SELECT id FROM challenges WHERE slug = ?`, [created.slug]);
+    if (!challenge) throw new Error("missing challenge");
+    const key = `budget:challenge-defense:${challenge.id}`;
+    await db.run(`UPDATE credit_ledger SET created_at = ? WHERE idempotency_key = ?`, [
+      new Date(Date.now() - 3 * 60 * 1000).toISOString(),
+      key,
+    ]);
+    await beginDefenseCredit(defender.id);
+    const reserved = await db.get<{ amount: number | string }>(
+      `SELECT amount FROM credit_ledger WHERE idempotency_key = ?`,
+      [key],
+    );
+    const released = await db.get<{ id: string }>(
+      `SELECT id FROM credit_ledger WHERE idempotency_key = ?`,
+      [`budget-release:challenge-defense:${challenge.id}`],
+    );
+    expect(Number(reserved?.amount)).toBe(0);
+    expect(released).toBeUndefined();
   });
 
   it("rate limits public share clicks", async () => {

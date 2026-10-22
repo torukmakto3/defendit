@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { ShareBar } from "@/components/challenge/actions";
-import { publicTierTitle } from "@/lib/challenge-tier";
 
 export interface PublicResultProps {
   slug: string;
@@ -24,11 +23,10 @@ export interface PublicResultProps {
  * defender published it. No claim text, transcript, or document body.
  */
 export function PublicChallengeResult({ result }: { result: PublicResultProps }) {
-  const title = publicTierTitle(result.tier);
   const shareText =
     result.showScore && result.score != null
-      ? `${title}. Score ${result.score}/100.`
-      : `${title}. The score is not shown.`;
+      ? `${result.headline}. Score ${result.score}/100.`
+      : `${result.headline}. The score is not shown.`;
 
   return (
     <div className="shell max-w-2xl">
@@ -36,10 +34,7 @@ export function PublicChallengeResult({ result }: { result: PublicResultProps })
       {result.sponsorLabel === "Sponsored by DefendIT" && (
         <p className="mt-3 text-sm text-[var(--ink-2)]">Free in beta. No one is paid to share.</p>
       )}
-      {result.visibility === "score_hidden" && (
-        <p className="mt-3 text-sm font-semibold uppercase tracking-[0.08em]">Defended</p>
-      )}
-      <h1 className="mt-2 text-3xl font-bold sm:text-4xl">{result.tier ?? result.headline}</h1>
+      <h1 className="mt-2 text-3xl font-bold sm:text-4xl">{result.headline}</h1>
       {result.showScore && result.score != null && (
         <p className="mt-3 text-lg">Score {result.score}/100</p>
       )}

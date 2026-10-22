@@ -28,13 +28,17 @@
  * Draw order for a defense: subscription, purchase, overage, admin, then
  * flexible packs, then sponsored beta credits. Sponsored defense holds
  * count `BETA_DEFENSE_EUR` (default 0.70, about the $0.75 consumer cap)
- * against `BETA_BUDGET_EUR` (default 150). Challenge holds do not. Each
- * account is granted `BETA_DEFENSE_CREDITS` free defenses once (default 3).
- * While billing is off, the next defense after those are spent is a 402.
- * The global budget can stop a sponsored defense sooner. Starting a defense
+ * against `BETA_BUDGET_EUR` (default 150). A beta challenge defense reserves
+ * that same amount when the defense starts, without spending the defender's
+ * defense credit, and releases it on decline, expiry, or revoke.
+ * Challenge-credit holds do not count against the budget. Each account is
+ * granted `BETA_DEFENSE_CREDITS` free defenses once (default 3). While
+ * billing is off, the next defense after those are spent is a 402. The
+ * global budget can stop a sponsored defense sooner. Starting a defense
  * refunds an unfinished hold that is already attached to an in-progress
  * session, or an unattached hold older than two minutes. A fresh unattached
- * hold from a concurrent start is left alone.
+ * hold from a concurrent start is left alone. That refund does not take
+ * back the challenge-defense reservation: a newer start still needs it.
  *
  * #42 reads the cost-cap tier from `costTierForUser(userId)` or
  * `costTierForUserPlan(planId)`. `consumer` is $0.75 and `enterprise` is
@@ -327,7 +331,8 @@ async function insertEntry(tx: Db, input: Insert): Promise<LedgerEntry> {
     throw new HttpError(400, "Idempotency key is missing.");
   }
   if (!Number.isSafeInteger(input.amount)) throw new HttpError(400, "Credit amount is not a whole number.");
-  if (input.amount === 0 && input.reason !== "consume") {
+  const tracksBudget = input.budgetCents != null && input.budgetCents !== 0;
+  if (input.amount === 0 && input.reason !== "consume" && !tracksBudget) {
     throw new HttpError(400, "Credit amount must be non-zero.");
   }
   const existing = await tx.get<LedgerRow>(`SELECT * FROM credit_ledger WHERE idempotency_key = ?`, [
@@ -436,6 +441,100 @@ async function reserveBetaBudget(tx: Db, costCents: number): Promise<boolean> {
     [costCents, BETA_BUDGET_ID, costCents, betaBudgetCents()],
   );
   return updated.changes === 1;
+}
+
+/** Serialize budget writers. The following read of the ledger then sees a reservation that just committed. */
+async function lockBetaBudget(tx: Db): Promise<void> {
+  await tx.run(
+    `INSERT INTO credit_budget (id, spent_cents)
+     VALUES (?, COALESCE((SELECT SUM(budget_cents) FROM credit_ledger), 0))
+     ON CONFLICT (id) DO NOTHING`,
+    [BETA_BUDGET_ID],
+  );
+  await tx.run(`UPDATE credit_budget SET spent_cents = spent_cents WHERE id = ?`, [BETA_BUDGET_ID]);
+}
+
+function challengeDefenseBudgetKey(challengeId: string): string {
+  return `budget:challenge-defense:${challengeId}`;
+}
+
+function challengeDefenseBudgetReleaseKey(challengeId: string): string {
+  return `budget-release:challenge-defense:${challengeId}`;
+}
+
+/**
+ * Count one beta challenge defense against `BETA_BUDGET_EUR`. The defender's
+ * defense credit is not spent. A repeat start for the same challenge does
+ * not reserve twice, and a start replaced by a newer one does not release
+ * this row: the newer start still needs it. Decline, expiry, and revoke do.
+ * Paid challenges are not sponsored by this budget.
+ */
+export async function reserveChallengeDefenseBudget(requestId: string, userId: string): Promise<void> {
+  const db = await getDb();
+  const row = await db.get<{ id: string; sponsor_type: string; claimed_by_user_id: string | null }>(
+    `SELECT id, sponsor_type, claimed_by_user_id FROM challenges WHERE request_id = ?`,
+    [requestId],
+  );
+  if (!row || row.sponsor_type !== "beta" || row.claimed_by_user_id !== userId) return;
+  const key = challengeDefenseBudgetKey(row.id);
+  const cost = betaDefenseCents();
+  await withTx(undefined, async (tx) => {
+    await lockBetaBudget(tx);
+    const existing = await tx.get<LedgerRow>(`SELECT * FROM credit_ledger WHERE idempotency_key = ?`, [key]);
+    if (existing) return;
+    const released = await tx.get<{ id: string }>(
+      `SELECT id FROM credit_ledger WHERE idempotency_key = ?`,
+      [challengeDefenseBudgetReleaseKey(row.id)],
+    );
+    if (released) return;
+    if (!(await reserveBetaBudget(tx, cost))) {
+      throw new HttpError(402, "The beta budget is used up, so sponsored defenses are paused.");
+    }
+    await insertEntry(tx, {
+      userId,
+      kind: "defense",
+      reason: "hold",
+      amount: 0,
+      idempotencyKey: key,
+      source: "beta",
+      purpose: "defense",
+      refType: "challenge_defense",
+      refId: row.id,
+      sponsored: true,
+      budgetCents: cost,
+      periodId: null,
+    });
+  });
+}
+
+/** Give a challenge-defense reservation back. No reservation means nothing to release. */
+export async function releaseChallengeDefenseBudget(challengeId: string, db?: Db): Promise<void> {
+  const key = challengeDefenseBudgetKey(challengeId);
+  const releaseKey = challengeDefenseBudgetReleaseKey(challengeId);
+  await withTx(db, async (tx) => {
+    await lockBetaBudget(tx);
+    const prior = await tx.get<{ id: string }>(`SELECT id FROM credit_ledger WHERE idempotency_key = ?`, [releaseKey]);
+    if (prior) return;
+    const reserved = await tx.get<LedgerRow>(`SELECT * FROM credit_ledger WHERE idempotency_key = ?`, [key]);
+    if (!reserved) return;
+    const cost = num(reserved.budget_cents);
+    if (cost <= 0) return;
+    await releaseBetaBudget(tx, cost);
+    await insertEntry(tx, {
+      userId: reserved.user_id,
+      kind: "defense",
+      reason: "refund",
+      amount: 0,
+      idempotencyKey: releaseKey,
+      source: "beta",
+      purpose: "defense",
+      refType: "challenge_defense",
+      refId: challengeId,
+      sponsored: true,
+      budgetCents: -cost,
+      periodId: null,
+    });
+  });
 }
 
 /** Give budget back. Call before the refund row is inserted, so the seed SUM does not already include it. */
@@ -1046,6 +1145,8 @@ const REPLACED_START = "This start was replaced by a newer one.";
  * double-click cannot refund the hold the other request is about to attach.
  * A hold already attached to an in-progress defense this account started is
  * released immediately. Grading and finished defenses keep their credit.
+ * A challenge-defense reservation is a zero-credit budget row. It is not a
+ * hold this function can return, and a newer start still needs it.
  */
 async function releaseUnfinishedDefenseHolds(tx: Db, userId: string): Promise<void> {
   const staleBefore = new Date(Date.now() - FRESH_UNATTACHED_HOLD_MS).toISOString();
@@ -1065,6 +1166,8 @@ async function releaseUnfinishedDefenseHolds(tx: Db, userId: string): Promise<vo
      WHERE l.user_id = ?
        AND l.reason = 'hold'
        AND l.purpose = 'defense'
+       AND l.amount < 0
+       AND COALESCE(l.ref_type, '') <> 'challenge_defense'
        AND NOT EXISTS (
          SELECT 1 FROM credit_ledger c
          WHERE c.ref_type = 'hold' AND c.ref_id = l.id AND c.reason IN ('consume', 'refund')

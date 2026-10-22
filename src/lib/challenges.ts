@@ -1,7 +1,15 @@
 import { normalizeEmail, type User } from "./auth";
 import { assertPaidChallengesOpen, billingEnabled } from "./billing";
 import { challengesEnabled, publicTierTitle, TIER_LEGEND, tierForScore, type ResultTier } from "./challenge-tier";
-import { assertNotSelfClaim, consumeCredit, ensureBetaGrant, holdCredit, linkChallengedDefense, refundCredit } from "./credits";
+import {
+  assertNotSelfClaim,
+  consumeCredit,
+  ensureBetaGrant,
+  holdCredit,
+  linkChallengedDefense,
+  refundCredit,
+  releaseChallengeDefenseBudget,
+} from "./credits";
 import { appUrl } from "./config";
 import { getDb, type Db } from "./db";
 import { HttpError } from "./errors";
@@ -17,8 +25,10 @@ import type { Difficulty, ReceiptOutcome, SignedReceipt } from "./types";
  * through `src/lib/credits.ts`. The hold is consumed when the defense
  * finishes, whatever the defender later publishes. Decline, expiry, and
  * revoke refund it. The defender's own defense credit is not spent: in beta
- * the challenge sponsors the defense. The euro cap is the ledger's
- * `BETA_BUDGET_EUR`. Paid challenges stay off unless billing is on, and
+ * the challenge sponsors the defense, and starting that defense reserves
+ * `BETA_DEFENSE_EUR` on the ledger's `BETA_BUDGET_EUR`. Decline, expiry, and
+ * revoke release that reservation. Paid challenges stay off unless billing
+ * is on, and
  * never call a payment provider. The creator cannot claim their own link.
  * A decline closes the challenge only when the account's verified email
  * matches an email target. Anyone else can hide the link for themselves.
@@ -274,7 +284,10 @@ export async function expireDueChallenges(db?: Db): Promise<number> {
         OR (status = 'claimed' AND finish_by IS NOT NULL AND finish_by < ?)`,
     [now, now],
   );
-  for (const row of due) await refundChallengeHold(conn, row);
+  for (const row of due) {
+    await refundChallengeHold(conn, row);
+    if (row.sponsor_type === "beta") await releaseChallengeDefenseBudget(row.id, conn);
+  }
   return due.length;
 }
 
@@ -748,6 +761,7 @@ export async function revokeChallenge(slug: string, user: User): Promise<void> {
   );
   if (updated.changes !== 1) throw new HttpError(409, "Only an open challenge can be revoked.");
   await refundChallengeHold(db, row);
+  if (row.sponsor_type === "beta") await releaseChallengeDefenseBudget(row.id, db);
 }
 
 /**
@@ -820,6 +834,7 @@ export async function declineChallenge(
     );
     if (updated.changes !== 1) throw new HttpError(409, "This challenge is closed.");
     await refundChallengeHold(tx, row);
+    if (row.sponsor_type === "beta") await releaseChallengeDefenseBudget(row.id, tx);
     return { closed: true };
   });
 }
@@ -1009,10 +1024,7 @@ function resultFromRow(row: ChallengeRow, signed: SignedReceipt, audience: "publ
   const tier = tierForScore(score);
   const published = visibility === "public" || visibility === "score_hidden";
   const showScore = audience === "defender" || visibility === "public";
-  let headline = "Defended";
-  if (visibility === "public") headline = tier;
-  else if (visibility === "score_hidden") headline = "Defended";
-  else if (audience === "defender" && visibility == null) headline = tier;
+  const headline = publicTierTitle(tier);
   return {
     slug: row.slug,
     receiptId: signed.payload.id,
@@ -1033,9 +1045,8 @@ function resultFromRow(row: ChallengeRow, signed: SignedReceipt, audience: "publ
 /** Strings the public result page and OG card are allowed to render. */
 export function publicResultLines(result: PublicResult): string[] {
   const lines = [result.sponsorLabel, result.headline, result.subject, result.legend];
-  if (result.tier) lines.push(result.tier);
+  if (result.tier && result.tier !== result.headline) lines.push(result.tier);
   if (result.showScore && result.score != null) lines.push(String(result.score));
-  if (result.visibility === "score_hidden") lines.push("Defended");
   return lines;
 }
 
@@ -1142,8 +1153,8 @@ export async function resultCardCopy(receiptId: string): Promise<{
     const show = gate.result.showScore && gate.result.score != null;
     return {
       kicker: gate.result.sponsorLabel,
-      title: show ? publicTierTitle(gate.result.tier) : "Defended",
-      subtitle: show ? gate.result.subject.slice(0, 80) : (gate.result.tier ?? ""),
+      title: publicTierTitle(gate.result.tier),
+      subtitle: gate.result.subject.slice(0, 80),
       foot: show ? "Signed receipt" : "Score not shown",
       score: show ? String(gate.result.score) : null,
     };

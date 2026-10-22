@@ -1,6 +1,11 @@
 import type { User } from "./auth";
 import { extractClaims } from "./claims";
-import { assertLearnSlotAvailable, finishDefenseCredit, refundStaleDefenseHolds } from "./credits";
+import {
+  assertLearnSlotAvailable,
+  finishDefenseCredit,
+  refundStaleDefenseHolds,
+  reserveChallengeDefenseBudget,
+} from "./credits";
 import { getPublicKeyHex, sha256Hex } from "./crypto";
 import { dashboardWorkspaceHref } from "./dashboard-links";
 import { getDb, type Db } from "./db";
@@ -518,7 +523,12 @@ export async function startSession(opts: {
   if (opts.mode === "defend" && request.status === "defended") {
     throw new HttpError(409, "This deliverable has already been defended.");
   }
-  if (opts.mode === "defend") await assertChallengeAllowsWork(request.id);
+  if (opts.mode === "defend") {
+    await assertChallengeAllowsWork(request.id);
+    // Beta challenge defenses skip the defender's credit in the route and
+    // reserve the shared euro budget here instead.
+    await reserveChallengeDefenseBudget(request.id, opts.user.id);
+  }
 
   const sessionId = newId("ses");
   const channel: Channel = opts.mode === "defend" ? channelFor(request.difficulty, opts) : "text";

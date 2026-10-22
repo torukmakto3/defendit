@@ -27,6 +27,8 @@ export async function POST(req: Request) {
     const limited = await limitOr429(`start:${guard.user.id}`, LIMITS.sessionStartPerUser);
     if (limited) return limited;
     const body = schema.parse(await req.json());
+    // A challenge defense does not spend the defender's defense credit.
+    // startSession reserves the shared beta budget for a beta challenge.
     if (body.mode === "defend" && !(await challengeCoversDefense(body.token, guard.user.id))) {
       const reserved = await beginDefenseCredit(guard.user.id);
       creditKey = reserved.idempotencyKey;
@@ -69,6 +71,9 @@ export async function POST(req: Request) {
       },
     });
   } catch (e) {
+    // A challenge defense has no per-start credit. Its euro reservation stays
+    // when this start fails or is replaced by a newer one. Decline, expiry,
+    // and revoke release it. Releasing it here would take it from that newer start.
     if (creditKey) {
       try {
         await abortDefenseCredit(guard.user.id, creditKey, sessionId);
