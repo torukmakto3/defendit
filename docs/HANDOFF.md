@@ -9,6 +9,7 @@ YYYY-MM-DD BLOCKED — what stopped the work · what the next agent needs
 
 ## Log
 
+2026-10-22 DONE — Rebased the titleblock polish onto c0b4fd9. Homepage polish lives in home-page.tsx and keeps the landing beacon, the visit-count line, and the sample-demo entry (outline, so Choose file or Defend now stays the filled action). The receipt keeps Copy and Share. /privacy uses the page title. · PR #54 · tsc, eslint (0 errors), vitest (395), production screenshots of /, /c/new, the interview, and the receipt
 2026-10-22 DONE — Segment buttons darken on hover and fade when disabled. The 44px control size was checked on accept, opt-out, report, Learn, the claimer file field, and the dashboard; nothing clips. Review shots are in docs/screenshots/pr54. Stays a draft until #48 and #49 land. · PR #54 · layout measured at 390, tsc, eslint (0 errors), vitest (313)
 2026-10-22 DONE — Titleblock polish on /, /c/new, the defense interview, and /r/[id]: DESIGN.md type scale, one filled action per screen, square panels. Grid and Rev B unchanged. · cursor/impeccable-polish-aeb2 · tsc, eslint, vitest (308), playwright (12), mock smoke
 2026-10-22 DONE — Tab icon D is a path in day card on the ink tile, so the browser glyph matches the PNG and ICO and the 16px mark is light-on-ink. Roadmap bullet removed. · PR #56 · tsc, eslint, vitest (384), brand e2e
