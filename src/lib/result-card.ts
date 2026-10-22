@@ -117,6 +117,11 @@ export interface CardInput {
   attempt?: number;
   /** Host without a scheme, such as defendit.me. */
   host?: string;
+  /**
+   * A published challenge result. Only then did the defender choose to show
+   * the score. An ordinary receipt always includes it.
+   */
+  challenge?: boolean;
 }
 
 export function buildResultCard(input: CardInput): ResultCard {
@@ -160,9 +165,10 @@ export function buildResultCard(input: CardInput): ResultCard {
   }
 
   const headline = publicTierTitle(tier);
+  const challenge = input.challenge === true;
   if (variant === "C") {
     const round = input.attempt && input.attempt > 0 ? `Round ${Math.min(99, Math.round(input.attempt))}` : null;
-    const scoreLine = [round, difficulty, `score shown by choice: ${score}/100`].filter(Boolean).join(" · ");
+    const scoreLine = [round, difficulty, sharpeningScore(score, challenge)].filter(Boolean).join(" · ");
     const focus = focusLine(input.strongest, input.nextFocus);
     const lines: CardLine[] = [{ text: defendedLine(who, file), tone: "body" }, { text: scoreLine, tone: "body" }];
     if (focus) lines.push({ text: focus, tone: "body" });
@@ -177,13 +183,14 @@ export function buildResultCard(input: CardInput): ResultCard {
       tier,
       imageId: resultCardImageId("public"),
       title: headline,
-      description: describeSharpening(score, difficulty, fingerprint?.label ?? null, date?.short ?? null),
+      description: describeSharpening(score, difficulty, fingerprint?.label ?? null, date?.short ?? null, challenge),
       alt: altSharpening({
         who,
         file,
         date: date?.long ?? null,
         difficulty,
         score,
+        challenge,
         round: round ? Math.min(99, Math.round(input.attempt ?? 1)) : 1,
         strongest: publicLabel(input.strongest, 40),
         nextFocus: publicLabel(input.nextFocus, 40),
@@ -268,6 +275,7 @@ export function cardFromReceipt(opts: {
   nextFocus?: string | null;
   host?: string;
   questionCount?: number;
+  challenge?: boolean;
 }): ResultCard {
   if (isDemoSample(opts.payload)) return demoSampleCard();
   const name = opts.payload.creator?.displayName ?? null;
@@ -286,6 +294,7 @@ export function cardFromReceipt(opts: {
     nextFocus: opts.nextFocus,
     attempt: opts.payload.attempt,
     host: opts.host,
+    challenge: opts.challenge,
   });
 }
 
@@ -545,8 +554,20 @@ function describeHidden(file: string | null, fingerprint: string | null, date: s
     .join(" · ");
 }
 
-function describeSharpening(score: number, difficulty: string, fingerprint: string | null, date: string | null): string {
-  return [`Still sharpening`, difficulty, `score shown by choice ${score}/100`, fingerprint ? `SHA-256 ${fingerprint}` : null, date]
+/** Challenge results name the defender's choice. An ordinary receipt just shows the number. */
+function sharpeningScore(score: number, challenge: boolean): string {
+  return challenge ? `score shown by choice: ${score}/100` : `Score ${score}/100`;
+}
+
+function describeSharpening(
+  score: number,
+  difficulty: string,
+  fingerprint: string | null,
+  date: string | null,
+  challenge: boolean,
+): string {
+  const shown = challenge ? `score shown by choice ${score}/100` : `Score ${score}/100`;
+  return [`Still sharpening`, difficulty, shown, fingerprint ? `SHA-256 ${fingerprint}` : null, date]
     .filter(Boolean)
     .join(" · ");
 }
@@ -600,6 +621,7 @@ function altSharpening(opts: {
   nextFocus: string | null;
   fingerprint: { start: string; end: string } | null;
   verifyPath: string;
+  challenge: boolean;
 }): string {
   const file = opts.file ? ` on ${opts.file}` : "";
   const when = opts.date ? ` on ${opts.date}` : "";
@@ -610,5 +632,8 @@ function altSharpening(opts: {
   const hash = opts.fingerprint
     ? ` File fingerprint SHA-256 starting ${opts.fingerprint.start} and ending ${opts.fingerprint.end}.`
     : "";
-  return `DefendIT receipt card. ${opts.who} took round ${opts.round} of a defense challenge${file}${when}, ${opts.difficulty} difficulty, status Still sharpening, score ${opts.score} out of 100 shown by the defender's choice.${focus}${hash} Verify at ${opts.verifyPath}.`;
+  const shown = opts.challenge
+    ? `score ${opts.score} out of 100 shown by the defender's choice`
+    : `score ${opts.score} out of 100`;
+  return `DefendIT receipt card. ${opts.who} took round ${opts.round} of a defense challenge${file}${when}, ${opts.difficulty} difficulty, status Still sharpening, ${shown}.${focus}${hash} Verify at ${opts.verifyPath}.`;
 }

@@ -50,6 +50,7 @@ export async function resultCardCopy(receiptId: string): Promise<ResultCardCopy>
           visibility: show ? "public" : "score_hidden",
           fileLabel: gate.result.subject,
           host,
+          challenge: true,
         })
       : buildResultCard({
           visibility: show ? "public" : "score_hidden",
@@ -60,6 +61,7 @@ export async function resultCardCopy(receiptId: string): Promise<ResultCardCopy>
           createdAt: "",
           receiptId,
           host,
+          challenge: true,
         });
     return withCardCopy(card, {
       kicker: gate.result.sponsorLabel,

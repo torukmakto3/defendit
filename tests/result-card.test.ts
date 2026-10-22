@@ -163,18 +163,38 @@ describe("result card copy", () => {
     expect(card.headline).toBe("Still sharpening");
     expect(card.lines.map((line) => line.text)).toEqual([
       '@handle defended "pitch-memo.pdf"',
-      "Round 1 · Standard · score shown by choice: 58/100",
+      "Round 1 · Standard · Score 58/100",
       "Strongest answer: assumptions · Next: edge cases",
       "File SHA-256  77be…02fa · 19 Oct 2026",
       "Verify: defendit.me/r/xxxx",
     ]);
     expect(card.actions).toEqual(["Defend your own", "Rematch"]);
     expect(card.alt).toBe(
-      "DefendIT receipt card. @handle took round 1 of a defense challenge on pitch-memo.pdf on 19 October 2026, Standard difficulty, status Still sharpening, score 58 out of 100 shown by the defender's choice. Strongest area: assumptions; next to work on: edge cases. File fingerprint SHA-256 starting 77be and ending 02fa. Verify at defendit.me/r/xxxx.",
+      "DefendIT receipt card. @handle took round 1 of a defense challenge on pitch-memo.pdf on 19 October 2026, Standard difficulty, status Still sharpening, score 58 out of 100. Strongest area: assumptions; next to work on: edge cases. File fingerprint SHA-256 starting 77be and ending 02fa. Verify at defendit.me/r/xxxx.",
     );
     const text = blob(card).toLowerCase();
     expect(text).not.toContain("fail");
     expect(text).not.toContain("not defended");
+    expect(text).not.toContain("by choice");
+    expect(text).toContain("58");
+  });
+
+  it("keeps the choice wording when a challenge result shows a low score", () => {
+    const card = fullCard({
+      score: 58,
+      difficulty: "standard",
+      sha256: HASH_C,
+      fileLabel: "pitch-memo.pdf",
+      attempt: 1,
+      strongest: "assumptions",
+      nextFocus: "edge cases",
+      challenge: true,
+    });
+    expect(card.variant).toBe("C");
+    expect(card.headline).toBe("Still sharpening");
+    expect(card.lines[1]?.text).toBe("Round 1 · Standard · score shown by choice: 58/100");
+    expect(card.alt).toContain("score 58 out of 100 shown by the defender's choice");
+    expect(card.description).toContain("score shown by choice 58/100");
   });
 
   it("a private receipt is a generic card with no score and no file name", () => {
