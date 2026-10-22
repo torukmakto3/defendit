@@ -28,6 +28,7 @@ import {
   STRIPE_API_VERSION,
 } from "../src/lib/stripe-client";
 import { assertStripeReady, checkoutCatalog, liveStripeRefused } from "../src/lib/stripe-config";
+import { setAfterClawTransactionForTests } from "../src/lib/payments";
 import { grantDueSubscriptionRefills } from "../src/lib/subscription-refill";
 import {
   checkoutLookupKey,
@@ -80,6 +81,7 @@ afterEach(() => {
   setInvoiceItemWriterForTests(null);
   setInvoicePaymentLoaderForTests(null);
   setCardFingerprintLoaderForTests(null);
+  setAfterClawTransactionForTests(null);
   delete process.env.BILLING_ENABLED;
   delete process.env.STRIPE_SECRET_KEY;
   delete process.env.STRIPE_WEBHOOK_SECRET;
@@ -996,6 +998,56 @@ describe("webhook", () => {
     });
     expect(due.granted).toBe(1);
     expect((await getBalance(user.id)).defense).toBe(10);
+  });
+
+  it("keeps the refill stop when the process dies after the refund event is stored", async () => {
+    const { user } = await signIn("year-atomic@pay.example");
+    const anchor = Math.floor(Date.UTC(2026, 0, 31) / 1000);
+    expect(
+      (
+        await postWebhook(
+          invoiceEvent({
+            id: "evt_year_atomic",
+            invoiceId: "in_year_atomic",
+            userId: user.id,
+            sku: "subscription_year",
+            amount: 9900,
+            reason: "subscription_create",
+            subscription: "sub_year_atomic",
+            periodStart: anchor,
+            periodEnd: Math.floor(Date.UTC(2027, 0, 31) / 1000),
+            anchor,
+          }),
+        )
+      ).status,
+    ).toBe(200);
+    const refund = {
+      id: "evt_year_atomic_refund",
+      type: "charge.refunded",
+      data: {
+        object: { id: "ch_in_year_atomic", payment_intent: "pi_in_year_atomic", amount: 9900, amount_refunded: 9900 },
+      },
+    };
+    setAfterClawTransactionForTests(() => {
+      throw new Error("crash after claw transaction");
+    });
+    const crashed = await postWebhook(refund);
+    expect(crashed.status).toBe(500);
+    const event = await (await getDb()).get(`SELECT event_id FROM stripe_events WHERE event_id = ?`, [
+      "evt_year_atomic_refund",
+    ]);
+    expect(event).toBeTruthy();
+    expect(await subscriptionFlags("sub_year_atomic")).toEqual({ terminal: 0, refillsStopped: 1 });
+    setAfterClawTransactionForTests(null);
+    const retry = await postWebhook(refund);
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ duplicate: true });
+    expect(await subscriptionFlags("sub_year_atomic")).toEqual({ terminal: 0, refillsStopped: 1 });
+    const due = await grantDueSubscriptionRefills({
+      userId: user.id,
+      now: new Date(Date.UTC(2026, 1, 28, 12)),
+    });
+    expect(due.granted).toBe(0);
   });
 
   it("stops refills on a full yearly refund without blocking the next paid invoice", async () => {

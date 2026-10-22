@@ -702,10 +702,12 @@ async function clawGrants(input: {
       if (input.stopRefills && grant.sku === "subscription_year" && subscriptionId) stopped.add(subscriptionId);
     }
     if (shortfall || !input.flagOnShortfallOnly) await flagAccount(tx, grants[0].user_id, input.flagReason, now);
+    // Same transaction as the event row. A crash before commit retries the
+    // event; a crash after commit cannot leave the event stored and the
+    // refills still running. Stripe is not told to cancel.
+    for (const subscriptionId of stopped) await stopSubscriptionRefills(tx, subscriptionId);
   });
-  // Stop local refills only. Stripe is not told to cancel, and terminal stays
-  // unset so the next paid invoice can grant.
-  for (const subscriptionId of stopped) await stopSubscriptionRefills(subscriptionId);
+  afterClawTransactionForTests?.();
   return { duplicate, unmatched };
 }
 
@@ -1154,10 +1156,19 @@ async function decideSubscriptionWrite(
   return "apply";
 }
 
+let afterClawTransactionForTests: (() => void) | null = null;
+
+/**
+ * Runs after the clawback transaction commits. A test throws here to prove
+ * the refill stop was already stored with the event.
+ */
+export function setAfterClawTransactionForTests(hook: (() => void) | null): void {
+  afterClawTransactionForTests = hook;
+}
+
 /** A full refund or dispute. Does not mark the subscription deleted. */
-async function stopSubscriptionRefills(subscriptionId: string): Promise<void> {
-  const db = await getDb();
-  await db.run(
+async function stopSubscriptionRefills(tx: Db, subscriptionId: string): Promise<void> {
+  await tx.run(
     `INSERT INTO stripe_subscription_state (subscription_id, last_event_created, terminal, refills_stopped)
      VALUES (?, 0, 0, 1)
      ON CONFLICT (subscription_id) DO UPDATE SET refills_stopped = 1`,
