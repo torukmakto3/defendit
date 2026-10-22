@@ -14,7 +14,7 @@ import { appUrl } from "./config";
 import { getDb, type Db } from "./db";
 import { HttpError } from "./errors";
 import { newId, newToken } from "./ids";
-import { rateLimit } from "./ratelimit";
+import { ipRateKey, LIMITS, rateLimit } from "./ratelimit";
 import type { Difficulty, ReceiptOutcome, SignedReceipt } from "./types";
 
 /**
@@ -108,20 +108,7 @@ function minAccountAgeHours(): number {
   return envInt("CHALLENGE_MIN_ACCOUNT_AGE_HOURS", 0);
 }
 
-function createAttemptLimit(): number {
-  return envInt("CHALLENGE_CREATE_LIMIT", 10);
-}
-
-function claimAttemptLimit(): number {
-  return envInt("CHALLENGE_CLAIM_LIMIT", 20);
-}
-
-function claimIpLimit(): number {
-  return envInt("CHALLENGE_CLAIM_IP_LIMIT", 30);
-}
-
 const DAY_SEC = 24 * 60 * 60;
-const HOUR_SEC = 60 * 60;
 
 export function normalizeHandle(raw: string): string {
   return raw.trim().toLowerCase().replace(/^@+/, "");
@@ -451,7 +438,11 @@ export async function createChallenge(input: CreateChallengeInput): Promise<Crea
     }
   }
 
-  const limited = await rateLimit(`challenge-create:${input.user.id}`, createAttemptLimit(), DAY_SEC);
+  const limited = await rateLimit(
+    `challenge-create:${input.user.id}`,
+    LIMITS.challengeCreatePerUser.limit,
+    LIMITS.challengeCreatePerUser.windowSec,
+  );
   if (!limited.ok) throw new HttpError(429, "Too many challenges. Try again later.");
 
   const db = await getDb();
@@ -676,9 +667,17 @@ export async function claimChallenge(opts: {
   if (!opts.adultConfirmed) throw new HttpError(400, "Confirm you are 18 or older.");
   if (!/^[a-z0-9]{8}$/.test(opts.slug)) throw new HttpError(404, "Challenge not found.");
 
-  const userLimited = await rateLimit(`challenge-claim:${opts.user.id}`, claimAttemptLimit(), DAY_SEC);
+  const userLimited = await rateLimit(
+    `challenge-claim:${opts.user.id}`,
+    LIMITS.challengeClaimPerUser.limit,
+    LIMITS.challengeClaimPerUser.windowSec,
+  );
   if (!userLimited.ok) throw new HttpError(429, "Too many attempts. Try again later.");
-  const ipLimited = await rateLimit(`challenge-claim-ip:${opts.ip}`, claimIpLimit(), HOUR_SEC);
+  const ipLimited = await rateLimit(
+    ipRateKey("challenge-claim", opts.ip),
+    LIMITS.challengeClaimPerIp.limit,
+    LIMITS.challengeClaimPerIp.windowSec,
+  );
   if (!ipLimited.ok) throw new HttpError(429, "Too many attempts. Try again later.");
 
   const db = await getDb();
@@ -795,9 +794,17 @@ export async function declineChallenge(
 ): Promise<{ closed: boolean }> {
   requireEnabled();
   if (!/^[a-z0-9]{8}$/.test(slug)) throw new HttpError(404, "Challenge not found.");
-  const userLimited = await rateLimit(`challenge-decline:${user.id}`, claimAttemptLimit(), DAY_SEC);
+  const userLimited = await rateLimit(
+    `challenge-decline:${user.id}`,
+    LIMITS.challengeClaimPerUser.limit,
+    LIMITS.challengeClaimPerUser.windowSec,
+  );
   if (!userLimited.ok) throw new HttpError(429, "Too many attempts. Try again later.");
-  const ipLimited = await rateLimit(`challenge-decline-ip:${ip}`, claimIpLimit(), HOUR_SEC);
+  const ipLimited = await rateLimit(
+    ipRateKey("challenge-decline", ip),
+    LIMITS.challengeClaimPerIp.limit,
+    LIMITS.challengeClaimPerIp.windowSec,
+  );
   if (!ipLimited.ok) throw new HttpError(429, "Too many attempts. Try again later.");
 
   const db = await getDb();
@@ -924,7 +931,11 @@ export async function recordShareClick(slug: string, user: User | null, channel:
 
 export async function reportChallenge(slug: string, ip: string, note?: string): Promise<void> {
   if (!challengesEnabled()) throw new HttpError(404, "Challenges are not available.");
-  const limited = await rateLimit(`challenge-report:${ip}`, 10, HOUR_SEC);
+  const limited = await rateLimit(
+    ipRateKey("challenge-report", ip),
+    LIMITS.challengeReportPerIp.limit,
+    LIMITS.challengeReportPerIp.windowSec,
+  );
   if (!limited.ok) throw new HttpError(429, "Too many reports. Try again later.");
   const db = await getDb();
   const row = await loadBySlug(db, slug);

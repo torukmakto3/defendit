@@ -39,6 +39,7 @@ import {
   refundCredit,
 } from "../src/lib/credits";
 import { getDb } from "../src/lib/db";
+import { ipRateKey } from "../src/lib/ratelimit";
 import { HttpError } from "../src/lib/errors";
 import {
   completeDefendSession,
@@ -406,6 +407,10 @@ describe("challenge links", () => {
     await expect(claimChallenge({ slug: linkB.slug, user: claimerB, ip, adultConfirmed: true })).rejects.toMatchObject({
       status: 429,
     });
+    const keys = await (await getDb()).all<{ bucket_key: string }>(`SELECT bucket_key FROM rate_limits`);
+    const stored = keys.map((row) => row.bucket_key);
+    expect(stored).toContain(ipRateKey("challenge-claim", ip));
+    expect(stored.some((key) => key.includes(ip))).toBe(false);
   });
 
   it("shows expired and revoked states and refunds a held paid credit", async () => {
@@ -1060,6 +1065,10 @@ describe("challenge links", () => {
     const ip = "203.0.113.44";
     expect((await send(ip)).status).toBe(200);
     expect((await send(ip)).status).toBe(429);
+    const keys = await (await getDb()).all<{ bucket_key: string }>(
+      `SELECT bucket_key FROM rate_limits WHERE bucket_key LIKE 'challenge-share:%'`,
+    );
+    expect(keys.map((row) => row.bucket_key)).toEqual([ipRateKey("challenge-share", ip)]);
   });
 });
 

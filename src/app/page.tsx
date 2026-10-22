@@ -82,7 +82,7 @@ export default function HomePage() {
           Prove you understand what AI helped you make.
         </h1>
         <p className="max-w-2xl text-[var(--ink-2)]">
-          Drop the memo, model or deck. Practise privately with the coach, take a short defense
+          Drop the memo, write-up or README. Practise privately with the coach, take a short defense
           grounded in your file, and send it with a signed receipt anyone can verify.
         </p>
       </section>
@@ -146,7 +146,10 @@ export default function HomePage() {
                 <>
                   <p className="text-lg font-semibold">Drag your deliverable here</p>
                   <p className="mono text-xs uppercase tracking-[0.08em] text-[var(--ink-2)]">
-                    PDF &middot; DOCX &middot; XLSX &middot; CSV &middot; TXT &middot; MD &middot; up to 4 MB
+                    PDF &middot; DOCX &middot; TXT &middot; MD &middot; XLSX &middot; CSV &middot; up to 4 MB
+                  </p>
+                  <p className="text-xs text-[var(--ink-2)]">
+                    Text and spreadsheets. Not slide decks, and not a whole repository.
                   </p>
                   <label className="btn btn-primary mt-2 cursor-pointer">
                     Choose file

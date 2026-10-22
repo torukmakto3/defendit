@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getUserFromRequest } from "@/lib/auth";
 import { recordShareClick } from "@/lib/challenges";
-import { clientIp, handleError, limitOr429 } from "@/lib/http";
-import { publicWriteBudget } from "@/lib/ratelimit";
+import { handleError, ipLimitKey, limitOr429 } from "@/lib/http";
+import { LIMITS } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
 
@@ -15,7 +15,7 @@ const schema = z.object({
 /** Records a share click. Nothing in the product waits on this event. */
 export async function POST(req: Request, ctx: { params: Promise<{ slug: string }> }) {
   try {
-    const limited = await limitOr429(`challenge-share:${clientIp(req)}`, publicWriteBudget("share"));
+    const limited = await limitOr429(ipLimitKey("challenge-share", req), LIMITS.challengeSharePerIp);
     if (limited) return limited;
     const { slug } = await ctx.params;
     const body = schema.parse(await req.json());

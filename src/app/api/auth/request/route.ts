@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { normalizeEmail, requestMagicLink } from "@/lib/auth";
 import { sha256Hex } from "@/lib/crypto";
-import { clientIp, handleError, jsonError, limitOr429, sameOrigin } from "@/lib/http";
+import { handleError, ipLimitKey, jsonError, limitOr429, sameOrigin } from "@/lib/http";
 import { LIMITS } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
@@ -18,7 +18,7 @@ export async function POST(req: Request) {
     const body = schema.parse(await req.json());
     const email = normalizeEmail(body.email);
     const limited =
-      (await limitOr429(`login:ip:${clientIp(req)}`, LIMITS.loginPerIp)) ||
+      (await limitOr429(ipLimitKey("login", req), LIMITS.loginPerIp)) ||
       (await limitOr429(`login:email:${sha256Hex(email)}`, LIMITS.loginPerEmail));
     if (limited) return limited;
     const { devLink } = await requestMagicLink({ email, nextPath: body.next });

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { handleError, jsonError, limitOr429, requireUser } from "@/lib/http";
+import { handleError, ipLimitKey, jsonError, limitOr429, requireUser } from "@/lib/http";
 import { LIMITS } from "@/lib/ratelimit";
 import { creatorIngest, MAX_UPLOAD_BYTES } from "@/lib/services";
 import type { Difficulty } from "@/lib/types";
@@ -11,7 +11,9 @@ export async function POST(req: Request) {
   const guard = await requireUser(req);
   if (guard.response) return guard.response;
   try {
-    const limited = await limitOr429(`ingest:${guard.user.id}`, LIMITS.ingestPerUser);
+    const limited =
+      (await limitOr429(`ingest:${guard.user.id}`, LIMITS.ingestPerUser)) ||
+      (await limitOr429(ipLimitKey("upload", req), LIMITS.uploadPerIp));
     if (limited) return limited;
     const form = await req.formData();
     const difficulty = String(form.get("difficulty") || "hard") as Difficulty;

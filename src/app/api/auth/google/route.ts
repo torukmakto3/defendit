@@ -11,7 +11,7 @@ import {
   requestHost,
   requestOrigin,
 } from "@/lib/google-auth";
-import { clientIp, handleError, jsonError, limitOr429 } from "@/lib/http";
+import { handleError, ipLimitKey, jsonError, limitOr429 } from "@/lib/http";
 import { LIMITS } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
@@ -20,7 +20,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   if (!googleAuthConfigured()) return jsonError(404, "Google sign-in is not configured");
   try {
-    const limited = await limitOr429(`login:ip:${clientIp(req)}`, LIMITS.loginPerIp);
+    const limited = await limitOr429(ipLimitKey("login", req), LIMITS.loginPerIp);
     if (limited) return limited;
     const explicit = new URL(req.url).searchParams.get("next");
     const next = nextPathFromRequest(req, explicit);

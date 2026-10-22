@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { User } from "@/lib/auth";
 import { challengeCoversDefense } from "@/lib/challenges";
 import { abortDefenseCredit, attachDefenseCredit, beginDefenseCredit } from "@/lib/credits";
-import { handleError, HttpError, limitOr429, requireUser } from "@/lib/http";
+import { handleError, HttpError, ipLimitKey, limitOr429, requireUser } from "@/lib/http";
 import { LIMITS } from "@/lib/ratelimit";
 import { publicProbes, startSession, type FirstQuestionInfo } from "@/lib/services";
 import { recordStageTiming } from "@/lib/timings";
@@ -24,7 +24,9 @@ export async function POST(req: Request) {
   let creditKey: string | null = null;
   let sessionId: string | null = null;
   try {
-    const limited = await limitOr429(`start:${guard.user.id}`, LIMITS.sessionStartPerUser);
+    const limited =
+      (await limitOr429(`start:${guard.user.id}`, LIMITS.sessionStartPerUser)) ||
+      (await limitOr429(ipLimitKey("start", req), LIMITS.sessionStartPerIp));
     if (limited) return limited;
     const body = schema.parse(await req.json());
     // A challenge defense does not spend the defender's defense credit.

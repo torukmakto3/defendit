@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { getUserFromRequest, isAdmin, type User } from "./auth";
 import { HttpError } from "./errors";
-import { rateLimit } from "./ratelimit";
+import { ipRateKey, rateLimit } from "./ratelimit";
+
+/** Shown with HTTP 429. Routes also set Retry-After. */
+export const RATE_LIMIT_MESSAGE = "Too many requests right now. Please wait a moment and try again.";
 
 export { HttpError };
 
@@ -9,10 +12,19 @@ export function jsonError(status: number, message: string, headers?: HeadersInit
   return NextResponse.json({ error: message }, { status, headers });
 }
 
+/**
+ * Client address from the proxy headers. Do not store this value.
+ * Rate-limit keys go through `ipRateKey`, which keeps only a hash.
+ */
 export function clientIp(req: Request): string {
   const fwd = req.headers.get("x-forwarded-for");
   if (fwd) return fwd.split(",")[0].trim();
   return req.headers.get("x-real-ip") || "unknown";
+}
+
+/** Rate-limit bucket for this request's address. The raw address is not part of the key. */
+export function ipLimitKey(scope: string, req: Request): string {
+  return ipRateKey(scope, clientIp(req));
 }
 
 /**
@@ -56,7 +68,7 @@ export async function limitOr429(
 ): Promise<NextResponse | null> {
   const r = await rateLimit(key, budget.limit, budget.windowSec);
   if (r.ok) return null;
-  return jsonError(429, "Too many requests. Try again later.", {
+  return jsonError(429, RATE_LIMIT_MESSAGE, {
     "Retry-After": String(r.retryAfterSec),
   });
 }

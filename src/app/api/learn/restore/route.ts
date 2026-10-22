@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { restoreStudyDeck } from "@/lib/flashcards";
-import { handleError, jsonError, limitOr429, requireUser } from "@/lib/http";
+import { handleError, ipLimitKey, jsonError, limitOr429, requireUser } from "@/lib/http";
 import { LIMITS } from "@/lib/ratelimit";
 import { MAX_UPLOAD_BYTES } from "@/lib/services";
 
@@ -12,7 +12,9 @@ export async function POST(req: Request) {
   const guard = await requireUser(req);
   if (guard.response) return guard.response;
   try {
-    const limited = await limitOr429(`ingest:${guard.user.id}`, LIMITS.ingestPerUser);
+    const limited =
+      (await limitOr429(`ingest:${guard.user.id}`, LIMITS.ingestPerUser)) ||
+      (await limitOr429(ipLimitKey("upload", req), LIMITS.uploadPerIp));
     if (limited) return limited;
     const form = await req.formData();
     const token = String(form.get("token") || "");
