@@ -9,6 +9,7 @@ YYYY-MM-DD BLOCKED — what stopped the work · what the next agent needs
 
 ## Log
 
+2026-10-22 DONE — Segment buttons darken on hover and fade when disabled. The 44px control size was checked on accept, opt-out, report, Learn, the claimer file field, and the dashboard; nothing clips. Review shots are in docs/screenshots/pr54. Stays a draft until #48 and #49 land. · PR #54 · layout measured at 390, tsc, eslint (0 errors), vitest (313)
 2026-10-22 DONE — Titleblock polish on /, /c/new, the defense interview, and /r/[id]: DESIGN.md type scale, one filled action per screen, square panels. Grid and Rev B unchanged. · cursor/impeccable-polish-aeb2 · tsc, eslint, vitest (308), playwright (12), mock smoke
 2026-10-22 DONE — Tab icon D is a path in day card on the ink tile, so the browser glyph matches the PNG and ICO and the 16px mark is light-on-ink. Roadmap bullet removed. · PR #56 · tsc, eslint, vitest (384), brand e2e
 2026-10-23 DONE — support@defendit.me for legal, privacy, score review, and deletion; hello@defendit.me for general FAQ contact. The placeholder email and its legal-review TODO are gone; draft marks on the legal pages stay. Webhook lists include charge.succeeded (17 events, matching HANDLED). · PR #58 · tsc, eslint, vitest (447), e2e (14)

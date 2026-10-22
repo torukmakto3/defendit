@@ -303,10 +303,21 @@ label:focus-within {
   font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  transition: background-color 0.15s ease;
+}
+.segment button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 8%, var(--card));
 }
 .segment button[aria-pressed="true"] {
   background: var(--ink);
   color: var(--card);
+}
+.segment button[aria-pressed="true"]:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 82%, var(--blueprint));
+}
+.segment button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 /* ---------- Companion (see src/components/companion) ---------- */
@@ -357,7 +368,8 @@ label:focus-within {
   .animate-rise,
   .animate-rise-delay,
   .animate-rise-delay-2,
-  .animate-pulse { animation: none !important; transition: none !important; }
+  .animate-pulse,
+  .segment button { animation: none !important; transition: none !important; }
 }
 
 /* ---------- Plotter-print stamp (src/lib/stamp.ts) ---------- */
