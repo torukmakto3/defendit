@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { POST as simulateBilling } from "../src/app/api/admin/billing/simulate/route";
 import { POST as checkout } from "../src/app/api/billing/checkout/route";
 import { POST as webhook } from "../src/app/api/billing/webhook/route";
@@ -31,7 +31,9 @@ import {
   setCardFingerprint,
   walletView,
 } from "../src/lib/credits";
+import * as credits from "../src/lib/credits";
 import { getDb } from "../src/lib/db";
+import { HttpError } from "../src/lib/errors";
 import { resolveGoogleCallback, type GoogleOAuthTxn } from "../src/lib/google-auth";
 import { applyBillingEvent, simulatePurchase, simulateRenewal } from "../src/lib/payments";
 import { COST_CAP_USD, getPlan } from "../src/lib/plans";
@@ -1117,6 +1119,170 @@ describe("defense gate", () => {
       firstId,
     ]);
     expect(abandoned?.status).toBe("abandoned");
+  });
+
+  it("runs two starts at once without refunding a fresh unattached hold", async () => {
+    const { user, cookie } = await signIn("concurrent-defend@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" });
+    const start = () =>
+      startDefend(
+        new Request("http://localhost/api/sessions/start", {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json" },
+          body: JSON.stringify({ token: ingest.token, mode: "defend", accommodation: true }),
+        }),
+      );
+
+    const [firstRes, secondRes] = await Promise.all([start(), start()]);
+    expect(firstRes.status).toBe(200);
+    expect(secondRes.status).toBe(200);
+    const first = (await firstRes.json()) as { sessionId: string };
+    const second = (await secondRes.json()) as { sessionId: string };
+    expect(second.sessionId).not.toBe(first.sessionId);
+    expect(await openDefenseHolds(user.id)).toBe(2);
+    expect((await getBalance(user.id)).held.defense).toBe(2);
+    expect((await getBalance(user.id)).defense).toBe(1);
+    const db = await getDb();
+    const sessions = await db.all<{ id: string; status: string }>(
+      `SELECT id, status FROM sessions WHERE user_id = ? AND mode = 'defend'`,
+      [user.id],
+    );
+    expect(sessions).toHaveLength(2);
+    expect(sessions.every((row) => row.status === "in_progress")).toBe(true);
+    for (const row of sessions) {
+      const link = await db.get<{ hold_idempotency_key: string }>(
+        `SELECT hold_idempotency_key FROM defense_holds WHERE session_id = ?`,
+        [row.id],
+      );
+      const holdKey = link?.hold_idempotency_key;
+      expect(holdKey).toEqual(expect.any(String));
+      if (!holdKey) throw new Error("missing hold");
+      const settled = await db.get(
+        `SELECT c.id FROM credit_ledger h
+         JOIN credit_ledger c ON c.ref_type = 'hold' AND c.ref_id = h.id AND c.reason IN ('consume', 'refund')
+         WHERE h.idempotency_key = ?`,
+        [holdKey],
+      );
+      expect(settled).toBeUndefined();
+    }
+
+    const stale = await beginDefenseCredit(user.id);
+    await db.run(`UPDATE credit_ledger SET created_at = ? WHERE idempotency_key = ?`, [
+      new Date(Date.now() - 3 * 60 * 1000).toISOString(),
+      stale.idempotencyKey,
+    ]);
+    const fresh = await beginDefenseCredit(user.id);
+    await beginDefenseCredit(user.id);
+    const staleRefund = await db.get(
+      `SELECT c.id FROM credit_ledger h
+       JOIN credit_ledger c ON c.ref_type = 'hold' AND c.ref_id = h.id AND c.reason = 'refund'
+       WHERE h.idempotency_key = ?`,
+      [stale.idempotencyKey],
+    );
+    const freshRefund = await db.get(
+      `SELECT c.id FROM credit_ledger h
+       JOIN credit_ledger c ON c.ref_type = 'hold' AND c.ref_id = h.id AND c.reason = 'refund'
+       WHERE h.idempotency_key = ?`,
+      [fresh.idempotencyKey],
+    );
+    expect(staleRefund).toBeTruthy();
+    expect(freshRefund).toBeUndefined();
+  });
+
+  it("abandons a start that tries to attach a refunded hold", async () => {
+    const { user } = await signIn("replaced-defend@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" });
+    const reserved = await beginDefenseCredit(user.id);
+    await refundCredit({
+      userId: user.id,
+      entryIdempotencyKey: reserved.idempotencyKey,
+      idempotencyKey: `refund:${reserved.idempotencyKey}`,
+    });
+    const session = await startSession({
+      token: ingest.token,
+      user,
+      mode: "defend",
+      accommodation: true,
+    });
+    await expect(attachDefenseCredit(user.id, reserved.idempotencyKey, session.sessionId)).rejects.toMatchObject({
+      status: 409,
+      message: "This start was replaced by a newer one.",
+    });
+    const row = await (await getDb()).get<{ status: string }>(`SELECT status FROM sessions WHERE id = ?`, [
+      session.sessionId,
+    ]);
+    expect(row?.status).toBe("abandoned");
+    expect(await openDefenseHolds(user.id)).toBe(0);
+    await expect(attachDefenseCredit(user.id, reserved.idempotencyKey, session.sessionId)).rejects.toMatchObject({
+      message: "This start was replaced by a newer one.",
+    });
+  });
+
+  it("refunds the hold when attach fails before the link is saved", async () => {
+    const { user, cookie } = await signIn("attach-fail@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" });
+    const spy = vi.spyOn(credits, "attachDefenseCredit").mockRejectedValueOnce(new HttpError(500, "attach failed"));
+    try {
+      const res = await startDefend(
+        new Request("http://localhost/api/sessions/start", {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json", accept: "application/x-ndjson" },
+          body: JSON.stringify({ token: ingest.token, mode: "defend", accommodation: true }),
+        }),
+      );
+      expect(res.status).toBe(200);
+      const lines = (await res.text())
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { type: string; error?: string });
+      expect(lines.at(-1)).toMatchObject({ type: "error", error: "attach failed" });
+      expect(await openDefenseHolds(user.id)).toBe(0);
+      expect((await getBalance(user.id)).defense).toBe(3);
+      expect((await getBalance(user.id)).held.defense).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("returns the receipt when the hold was refunded before grading", async () => {
+    const { user, cookie } = await signIn("refunded-receipt@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "standard" });
+    const res = await startDefend(
+      new Request("http://localhost/api/sessions/start", {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ token: ingest.token, mode: "defend", accommodation: true }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sessionId: string; plan: { probes: { id: string }[] } };
+    const db = await getDb();
+    const hold = await db.get<{ idempotency_key: string }>(
+      `SELECT l.idempotency_key FROM defense_holds h
+       JOIN credit_ledger l ON l.idempotency_key = h.hold_idempotency_key
+       WHERE h.session_id = ?`,
+      [body.sessionId],
+    );
+    await refundCredit({
+      userId: user.id,
+      entryIdempotencyKey: hold!.idempotency_key,
+      idempotencyKey: `refund:${hold!.idempotency_key}`,
+    });
+    expect((await getBalance(user.id)).defense).toBe(3);
+    expect((await getBalance(user.id)).held.defense).toBe(0);
+
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const done = await defendToReceipt(body, user);
+      expect(done.receipt?.payload.id).toEqual(expect.any(String));
+      expect(spy.mock.calls.some((call) => String(call[0]).includes("no charge"))).toBe(true);
+      const again = await completeDefendSession({ sessionId: body.sessionId, user });
+      expect(again).toMatchObject({ idempotent: true });
+      expect((await getBalance(user.id)).defense).toBe(3);
+      expect((await getBalance(user.id)).held.defense).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("consumes the held credit when the defense reaches a receipt", async () => {

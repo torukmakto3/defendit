@@ -82,12 +82,14 @@ export async function POST(req: Request) {
 /**
  * First line is question 1. Later lines carry the rest of the plan.
  * The credit is held before the stream starts. It is attached once the
- * session row exists, and refunded only when the stream fails before that.
+ * session row exists. If that attach throws, the hold is refunded. A later
+ * failure, after the hold is attached, keeps that one unfinished defense.
  */
 function streamDefendStart(body: z.infer<typeof schema>, user: User, creditKey: string) {
   const encoder = new TextEncoder();
   let voiceMeta: { provider: string; modality: string; sessionHandle: string } | null = null;
   let sessionId: string | null = null;
+  let attached = false;
   const stream = new ReadableStream({
     async start(controller) {
       const send = (value: unknown) => {
@@ -100,6 +102,7 @@ function streamDefendStart(body: z.infer<typeof schema>, user: User, creditKey: 
           onFirstQuestion: async (info) => {
             sessionId = info.sessionId;
             await attachDefenseCredit(user.id, creditKey, info.sessionId);
+            attached = true;
             send({
               type: "question",
               sessionId: info.sessionId,
@@ -125,9 +128,10 @@ function streamDefendStart(body: z.infer<typeof schema>, user: User, creditKey: 
             });
           },
         });
-        if (!sessionId) {
+        if (!attached) {
           sessionId = session.sessionId;
           await attachDefenseCredit(user.id, creditKey, session.sessionId);
+          attached = true;
         }
         const probes = publicProbes(session.plan);
         send({
@@ -142,9 +146,9 @@ function streamDefendStart(body: z.infer<typeof schema>, user: User, creditKey: 
         });
         controller.close();
       } catch (e) {
-        if (!sessionId) {
+        if (!attached) {
           try {
-            await abortDefenseCredit(user.id, creditKey, null);
+            await abortDefenseCredit(user.id, creditKey, sessionId);
           } catch (abortError) {
             console.error("[credits] refund", abortError instanceof Error ? abortError.message : abortError);
           }

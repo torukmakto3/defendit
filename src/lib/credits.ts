@@ -32,8 +32,9 @@
  * account is granted `BETA_DEFENSE_CREDITS` free defenses once (default 3).
  * While billing is off, the next defense after those are spent is a 402.
  * The global budget can stop a sponsored defense sooner. Starting a defense
- * refunds that account's earlier unfinished defense holds first, so only
- * one defense holds a credit.
+ * refunds an unfinished hold that is already attached to an in-progress
+ * session, or an unattached hold older than two minutes. A fresh unattached
+ * hold from a concurrent start is left alone.
  *
  * #42 reads the cost-cap tier from `costTierForUser(userId)` or
  * `costTierForUserPlan(planId)`. `consumer` is $0.75 and `enterprise` is
@@ -1034,12 +1035,20 @@ export async function linkChallengedDefense(input: {
   }
 }
 
+/** How long a hold may stay unattached while the first question is phrased. */
+const FRESH_UNATTACHED_HOLD_MS = 2 * 60 * 1000;
+
+const REPLACED_START = "This start was replaced by a newer one.";
+
 /**
- * Open defense holds for this account: not yet attached, or attached to a
- * defend session that is still in progress. Grading and finished defenses
- * keep their credit.
+ * Open defense holds for this account that a new start may take back.
+ * An unattached hold is released only after it has sat for two minutes, so a
+ * double-click cannot refund the hold the other request is about to attach.
+ * A hold already attached to an in-progress defense this account started is
+ * released immediately. Grading and finished defenses keep their credit.
  */
 async function releaseUnfinishedDefenseHolds(tx: Db, userId: string): Promise<void> {
+  const staleBefore = new Date(Date.now() - FRESH_UNATTACHED_HOLD_MS).toISOString();
   const rows = await tx.all<{ idempotency_key: string; session_id: string | null }>(
     `SELECT l.idempotency_key,
             (
@@ -1047,6 +1056,7 @@ async function releaseUnfinishedDefenseHolds(tx: Db, userId: string): Promise<vo
               JOIN sessions s ON s.id = h.session_id
               WHERE h.hold_idempotency_key = l.idempotency_key
                 AND h.user_id = l.user_id
+                AND s.user_id = l.user_id
                 AND s.mode = 'defend'
                 AND s.status = 'in_progress'
               LIMIT 1
@@ -1060,20 +1070,24 @@ async function releaseUnfinishedDefenseHolds(tx: Db, userId: string): Promise<vo
          WHERE c.ref_type = 'hold' AND c.ref_id = l.id AND c.reason IN ('consume', 'refund')
        )
        AND (
-         NOT EXISTS (
-           SELECT 1 FROM defense_holds h
-           WHERE h.hold_idempotency_key = l.idempotency_key AND h.user_id = l.user_id
+         (
+           NOT EXISTS (
+             SELECT 1 FROM defense_holds h
+             WHERE h.hold_idempotency_key = l.idempotency_key AND h.user_id = l.user_id
+           )
+           AND l.created_at <= ?
          )
          OR EXISTS (
            SELECT 1 FROM defense_holds h
            JOIN sessions s ON s.id = h.session_id
            WHERE h.hold_idempotency_key = l.idempotency_key
              AND h.user_id = l.user_id
+             AND s.user_id = l.user_id
              AND s.mode = 'defend'
              AND s.status = 'in_progress'
          )
        )`,
-    [userId],
+    [userId, staleBefore],
   );
   for (const row of rows) {
     await refundCredit({
@@ -1094,11 +1108,11 @@ async function releaseUnfinishedDefenseHolds(tx: Db, userId: string): Promise<vo
 
 /**
  * Hold one defense credit. Applies the beta grant first, for whichever way
- * the user signed in. Earlier unfinished defense holds are refunded in this
- * same transaction, so a retry, a reload, or a switch to the text
- * accommodation does not keep a second credit. The grant is the whole free
- * allowance. The global budget can still refuse a sponsored defense before
- * that allowance is gone.
+ * the user signed in. In this same transaction, refund an earlier hold that
+ * is already attached to an in-progress defense, or an unattached hold older
+ * than two minutes. A fresh unattached hold from a concurrent start stays.
+ * The grant is the whole free allowance. The global budget can still refuse
+ * a sponsored defense before that allowance is gone.
  */
 export async function beginDefenseCredit(
   userId: string,
@@ -1121,26 +1135,99 @@ export async function beginDefenseCredit(
   return { idempotencyKey: entry.idempotencyKey, sponsored: entry.sponsored };
 }
 
+/**
+ * Link a hold to the session that is about to ask question 1.
+ * The claim is one conditional UPDATE under the wallet lock: it matches
+ * only while that hold is still open. A refunded or settled hold abandons
+ * this session instead of letting it finish on a credit that was returned.
+ */
 export async function attachDefenseCredit(
   userId: string,
   idempotencyKey: string,
   sessionId: string,
 ): Promise<void> {
-  const db = await getDb();
-  const hold = await db.get<LedgerRow>(
-    `SELECT * FROM credit_ledger WHERE idempotency_key = ? AND user_id = ?`,
-    [idempotencyKey, userId],
+  let refused: "missing" | "replaced" | null = null;
+  await withTx(undefined, async (tx) => {
+    await lockWallet(tx, userId);
+    const hold = await tx.get<LedgerRow>(
+      `SELECT * FROM credit_ledger WHERE idempotency_key = ? AND user_id = ?`,
+      [idempotencyKey, userId],
+    );
+    if (!hold || hold.reason !== "hold") {
+      await abandonReplacedDefense(tx, userId, sessionId);
+      refused = "missing";
+      return;
+    }
+    const open = await tx.run(
+      `UPDATE credit_wallets
+       SET lock_nonce = lock_nonce + 1
+       WHERE user_id = ?
+         AND EXISTS (
+           SELECT 1 FROM credit_ledger h
+           WHERE h.id = ?
+             AND h.user_id = credit_wallets.user_id
+             AND h.reason = 'hold'
+             AND NOT EXISTS (
+               SELECT 1 FROM credit_ledger settled
+               WHERE settled.ref_type = 'hold'
+                 AND settled.ref_id = h.id
+                 AND settled.reason IN ('consume', 'refund')
+             )
+         )`,
+      [userId, hold.id],
+    );
+    if (open.changes !== 1) {
+      await abandonReplacedDefense(tx, userId, sessionId);
+      refused = "replaced";
+      return;
+    }
+    const bySession = await tx.get<{ hold_idempotency_key: string }>(
+      `SELECT hold_idempotency_key FROM defense_holds WHERE session_id = ?`,
+      [sessionId],
+    );
+    const byHold = await tx.get<{ session_id: string }>(
+      `SELECT session_id FROM defense_holds WHERE hold_idempotency_key = ?`,
+      [idempotencyKey],
+    );
+    const sameLink =
+      bySession?.hold_idempotency_key === idempotencyKey &&
+      (byHold == null || byHold.session_id === sessionId);
+    if (bySession || byHold) {
+      if (!sameLink) {
+        await abandonReplacedDefense(tx, userId, sessionId);
+        refused = "replaced";
+      } else if (num(hold.sponsored) === 1) {
+        await tx.run(`UPDATE sessions SET sponsored = 1 WHERE id = ? AND user_id = ?`, [sessionId, userId]);
+      }
+      return;
+    }
+    try {
+      await tx.run(
+        `INSERT INTO defense_holds (session_id, user_id, hold_idempotency_key, created_at)
+         VALUES (?, ?, ?, ?)`,
+        [sessionId, userId, idempotencyKey, new Date().toISOString()],
+      );
+    } catch (e) {
+      if (!isUniqueViolation(e)) throw e;
+      await abandonReplacedDefense(tx, userId, sessionId);
+      refused = "replaced";
+      return;
+    }
+    if (num(hold.sponsored) === 1) {
+      await tx.run(`UPDATE sessions SET sponsored = 1 WHERE id = ? AND user_id = ?`, [sessionId, userId]);
+    }
+  });
+  if (refused === "missing") throw new HttpError(409, "Defense credit hold not found.");
+  if (refused === "replaced") throw new HttpError(409, REPLACED_START);
+}
+
+async function abandonReplacedDefense(tx: Db, userId: string, sessionId: string): Promise<void> {
+  await tx.run(
+    `UPDATE sessions SET status = 'abandoned'
+     WHERE id = ? AND user_id = ? AND status = 'in_progress' AND mode = 'defend'`,
+    [sessionId, userId],
   );
-  if (!hold || hold.reason !== "hold") throw new HttpError(409, "Defense credit hold not found.");
-  await db.run(
-    `INSERT INTO defense_holds (session_id, user_id, hold_idempotency_key, created_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT (session_id) DO NOTHING`,
-    [sessionId, userId, idempotencyKey, new Date().toISOString()],
-  );
-  if (num(hold.sponsored) === 1) {
-    await db.run(`UPDATE sessions SET sponsored = 1 WHERE id = ? AND user_id = ?`, [sessionId, userId]);
-  }
+  await tx.run(`DELETE FROM defense_holds WHERE session_id = ? AND user_id = ?`, [sessionId, userId]);
 }
 
 /** Return the held credit and drop an in-progress defense that never reached grading. */
@@ -1149,22 +1236,33 @@ export async function abortDefenseCredit(
   idempotencyKey: string,
   sessionId?: string | null,
 ): Promise<void> {
-  await refundCredit({
-    userId,
-    entryIdempotencyKey: idempotencyKey,
-    idempotencyKey: `refund:${idempotencyKey}`,
+  await withTx(undefined, async (tx) => {
+    await lockWallet(tx, userId);
+    const hold = await tx.get<LedgerRow>(
+      `SELECT * FROM credit_ledger WHERE idempotency_key = ? AND user_id = ?`,
+      [idempotencyKey, userId],
+    );
+    if (hold?.reason === "hold") {
+      const settled = await settlement(tx, hold.id);
+      if (!settled) {
+        await refundCredit({
+          userId,
+          entryIdempotencyKey: idempotencyKey,
+          idempotencyKey: `refund:${idempotencyKey}`,
+          db: tx,
+        });
+      }
+    }
+    if (!sessionId) return;
+    await abandonReplacedDefense(tx, userId, sessionId);
   });
-  if (!sessionId) return;
-  const db = await getDb();
-  await db.run(
-    `UPDATE sessions SET status = 'abandoned'
-     WHERE id = ? AND user_id = ? AND status = 'in_progress' AND mode = 'defend'`,
-    [sessionId, userId],
-  );
-  await db.run(`DELETE FROM defense_holds WHERE session_id = ? AND user_id = ?`, [sessionId, userId]);
 }
 
-/** Consume the defense hold, if there is one, and grant the onward challenge credit. */
+/**
+ * Consume the defense hold, if there is one, and grant the onward challenge
+ * credit. An already-refunded hold is not charged again: the receipt is
+ * already signed, so this returns instead of raising.
+ */
 export async function finishDefenseCredit(userId: string, sessionId: string): Promise<void> {
   const db = await getDb();
   const link = await db.get<{ hold_idempotency_key: string }>(
@@ -1172,11 +1270,19 @@ export async function finishDefenseCredit(userId: string, sessionId: string): Pr
     [sessionId, userId],
   );
   if (link) {
-    await consumeCredit({
-      userId,
-      holdIdempotencyKey: link.hold_idempotency_key,
-      idempotencyKey: `consume:${link.hold_idempotency_key}`,
-    });
+    try {
+      await consumeCredit({
+        userId,
+        holdIdempotencyKey: link.hold_idempotency_key,
+        idempotencyKey: `consume:${link.hold_idempotency_key}`,
+      });
+    } catch (e) {
+      if (e instanceof HttpError && e.status === 409 && e.message === "That credit was already refunded.") {
+        console.error(`[credits] defense ${sessionId} finished after its hold was refunded; no charge`);
+      } else {
+        throw e;
+      }
+    }
   }
   await grantOnwardForSession(userId, sessionId);
 }
