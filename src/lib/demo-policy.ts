@@ -21,6 +21,7 @@ export const DEMO_COPY = {
   noUpload: "This sample file can't be replaced. Sign in to defend your own file.",
   openFromHome: "Open the sample from the homepage. This demo is not an account.",
   cta: "Sign in and defend your own file (3 free).",
+  unavailable: "The sample demo is unavailable right now. Sign in to defend your own file.",
 } as const;
 
 export const DEMO_SAMPLES = {
@@ -34,10 +35,13 @@ export function isDemoSampleId(value: string): value is DemoSampleId {
   return Object.prototype.hasOwnProperty.call(DEMO_SAMPLES, value);
 }
 
-/** Kill switch. Unset means on. `0` or `false` turns the sample path off. */
+/**
+ * Kill switch. Unset means off. Only `1` or `true` turns the sample path on.
+ * The lookup stays dynamic so a production build does not bake the value in.
+ */
 export function demoEnabled(): boolean {
-  const raw = process.env.DEMO_ENABLED;
-  if (raw == null || raw.trim() === "") return true;
+  const raw = process.env["DEMO_ENABLED"];
+  if (raw == null || raw.trim() === "") return false;
   return raw === "1" || raw === "true";
 }
 

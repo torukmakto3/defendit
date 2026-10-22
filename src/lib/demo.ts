@@ -17,7 +17,7 @@ import {
 import { jsonError, requireUser, sameOrigin } from "./http";
 import { rateLimit } from "./ratelimit";
 import { getRequestByToken } from "./services";
-import { isDeployed, load32ByteSecret } from "./secrets";
+import { isDeployed, keysRequired, load32ByteSecret } from "./secrets";
 
 /**
  * Hash of the client address, keyed with a server-side salt. The raw address
@@ -48,8 +48,28 @@ export type DemoAdmission =
  * does not consume a slot. The counters use the shared rate limiter. The
  * budget charge happens later, in the same transaction as the sample rows.
  */
+/**
+ * Production must set DEMO_IP_SALT before a sample can hash an address.
+ * A missing or malformed salt is a configuration failure, not a visitor error,
+ * so the route answers 503 instead of letting the secret loader throw a 500.
+ */
+function productionSaltProblem(): string | null {
+  if (!keysRequired()) return null;
+  const raw = process.env["DEMO_IP_SALT"];
+  if (!raw) return "DEMO_IP_SALT is not set. Generate one with: openssl rand -hex 32";
+  if (!/^[0-9a-fA-F]{64}$/.test(raw)) {
+    return "DEMO_IP_SALT must be exactly 64 hex characters (32 bytes).";
+  }
+  return null;
+}
+
 export async function admitDemo(ip: string): Promise<DemoAdmission> {
   if (!demoEnabled()) return { ok: false, status: 403, message: DEMO_COPY.disabled };
+  const saltProblem = productionSaltProblem();
+  if (saltProblem) {
+    console.error(`[demo] ${saltProblem}`);
+    return { ok: false, status: 503, message: DEMO_COPY.unavailable };
+  }
   if (!(await betaBudgetCanAfford(betaDefenseCents()))) {
     return { ok: false, status: 503, message: DEMO_COPY.budget };
   }

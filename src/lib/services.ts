@@ -1,6 +1,4 @@
 import { randomBytes } from "crypto";
-import { readFileSync } from "fs";
-import { join } from "path";
 import { isDemoRequestKind } from "./analytics";
 import { purgeOldAnalyticsEvents, track } from "./analytics-store";
 import type { User } from "./auth";
@@ -12,6 +10,7 @@ import {
   refundStaleDefenseHolds,
   reserveChallengeDefenseBudget,
 } from "./credits";
+import { demoSampleBundle } from "./demo-bundle";
 import { DEMO_COPY, DEMO_SAMPLES, demoRetentionHours, isDemoKind, type DemoSampleId } from "./demo-policy";
 import { getPublicKeyHex, sha256Hex } from "./crypto";
 import { dashboardWorkspaceHref } from "./dashboard-links";
@@ -346,70 +345,72 @@ export async function creatorIngest(opts: {
 }
 
 /**
- * No-login sample. The bundled file is the only document. The budget charge
- * and the pass commit together. Claim extraction runs under the consumer
- * cost cap for the sample principal, which cannot sign in.
+ * No-login sample. The bundled file is the only document. Claims and the
+ * interview questions are computed once from that fixed text, so opening a
+ * demo does not call a model. The budget charge and the pass commit together.
+ * The question prefetch is saved after that charge.
  */
 export async function createDemoDefense(sampleId: DemoSampleId) {
   const sample = DEMO_SAMPLES[sampleId];
-  const bytes = readFileSync(join(process.cwd(), "fixtures", "demo", sample.file));
+  const bundled = demoSampleBundle(sampleId);
+  const bytes = Buffer.from(bundled.text, "utf8");
+  const upload: PreparedUpload = {
+    fileName: sample.file,
+    mime: "text/markdown",
+    sha256: sha256Hex(bytes),
+    byteLength: bytes.length,
+    text: bundled.text,
+    claims: bundled.claims,
+    parseMs: 0,
+  };
   const user: User = {
     id: newId("usr"),
     email: `demo+${newId("dmo")}@demo.defendit.invalid`,
     display_name: null,
   };
   const passToken = randomBytes(32).toString("base64url");
-  return withLlmScope({ user }, async () => {
-    const upload = await prepareUpload(sample.file, bytes, "text/markdown");
-    const prefetchPromise = precomputeFirstQuestion({
-      claims: upload.claims,
+  const db = await getDb();
+  const now = new Date().toISOString();
+  const created = await db.transaction(async (tx) => {
+    await tx.run(
+      `INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, NULL, ?)`,
+      [user.id, user.email, now],
+    );
+    const request = await insertRequest(tx, {
+      owner: user,
+      kind: "demo",
       difficulty: "standard",
-      shape: "demo",
-    });
-    const db = await getDb();
-    const now = new Date().toISOString();
-    const created = await db.transaction(async (tx) => {
-      await tx.run(
-        `INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, NULL, ?)`,
-        [user.id, user.email, now],
-      );
-      const request = await insertRequest(tx, {
-        owner: user,
-        kind: "demo",
-        difficulty: "standard",
-        title: sample.title,
-      });
-      await insertDeliverable(tx, request.requestId, user, upload, { hours: demoRetentionHours() });
-      await tx.run(`UPDATE defense_requests SET status = 'uploaded' WHERE id = ?`, [request.requestId]);
-      await tx.run(
-        `INSERT INTO demo_passes (token_hash, user_id, request_id, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?)`,
-        [sha256Hex(passToken), user.id, request.requestId, hoursFromNow(demoRetentionHours()), now],
-      );
-      const charged = await chargeBetaDefenseBudget({
-        userId: user.id,
-        idempotencyKey: `demo-budget:${request.requestId}`,
-        refId: request.requestId,
-        db: tx,
-      });
-      if (!charged) throw new HttpError(503, DEMO_COPY.budget);
-      return request;
-    });
-    await rememberFirstQuestion({
-      requestId: created.requestId,
-      prefetch: prefetchPromise,
-      parseMs: upload.parseMs,
-    });
-    await flushLlmScope({ requestId: created.requestId });
-    return {
-      token: created.token,
-      requestId: created.requestId,
-      passToken,
       title: sample.title,
-      user,
-      questions: 3,
-    };
+    });
+    await insertDeliverable(tx, request.requestId, user, upload, { hours: demoRetentionHours() });
+    await tx.run(`UPDATE defense_requests SET status = 'uploaded' WHERE id = ?`, [request.requestId]);
+    await tx.run(
+      `INSERT INTO demo_passes (token_hash, user_id, request_id, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [sha256Hex(passToken), user.id, request.requestId, hoursFromNow(demoRetentionHours()), now],
+    );
+    const charged = await chargeBetaDefenseBudget({
+      userId: user.id,
+      idempotencyKey: `demo-budget:${request.requestId}`,
+      refId: request.requestId,
+      db: tx,
+    });
+    if (!charged) throw new HttpError(503, DEMO_COPY.budget);
+    return request;
   });
+  await rememberFirstQuestion({
+    requestId: created.requestId,
+    prefetch: Promise.resolve(bundled.prefetch),
+    parseMs: 0,
+  });
+  return {
+    token: created.token,
+    requestId: created.requestId,
+    passToken,
+    title: sample.title,
+    user,
+    questions: bundled.prefetch.plan.probes.length,
+  };
 }
 
 function displayTitle(fileName: string | null): string {

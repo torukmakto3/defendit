@@ -1,7 +1,8 @@
 import { mkdtempSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { generateMetadata } from "../src/app/r/[id]/layout";
 import { POST as startDemo } from "../src/app/api/demo/start/route";
 import { GET as dashboard } from "../src/app/api/dashboard/route";
 import { POST as ingest } from "../src/app/api/creator/ingest/route";
@@ -15,6 +16,8 @@ import { consumeMagicLink, requestMagicLink } from "../src/lib/auth";
 import { betaDefenseCents } from "../src/lib/credits";
 import { getDb } from "../src/lib/db";
 import { hashDemoIp } from "../src/lib/demo";
+import { resultCardCopy } from "../src/lib/share-card";
+import { DEMO_SAMPLE_TEXT, demoSampleBundle } from "../src/lib/demo-bundle";
 import { DEMO_COPY, demoDailyCap, demoEnabled, demoPerIpPerDay } from "../src/lib/demo-policy";
 import { buildInterviewPlan } from "../src/lib/probes";
 import { verifyReceipt } from "../src/lib/receipt";
@@ -35,7 +38,7 @@ beforeAll(() => {
   process.env.DEMO_PER_IP_PER_DAY = "5";
   process.env.DEMO_DAILY_CAP = "50";
   process.env.BETA_BUDGET_EUR = "150";
-  delete process.env.DEMO_ENABLED;
+  process.env.DEMO_ENABLED = "1";
   delete process.env.DATABASE_URL;
   delete process.env.VERCEL;
   delete process.env.BILLING_ENABLED;
@@ -71,10 +74,18 @@ describe("sample demo policy", () => {
     delete process.env.DEMO_ENABLED;
     delete process.env.DEMO_PER_IP_PER_DAY;
     delete process.env.DEMO_DAILY_CAP;
-    expect(demoEnabled()).toBe(true);
+    expect(demoEnabled()).toBe(false);
     expect(demoPerIpPerDay()).toBe(3);
     expect(demoDailyCap()).toBe(200);
+    process.env.DEMO_ENABLED = "1";
+    expect(demoEnabled()).toBe(true);
+    process.env.DEMO_ENABLED = "true";
+    expect(demoEnabled()).toBe(true);
     process.env.DEMO_ENABLED = "0";
+    expect(demoEnabled()).toBe(false);
+    process.env.DEMO_ENABLED = "false";
+    expect(demoEnabled()).toBe(false);
+    process.env.DEMO_ENABLED = "yes";
     expect(demoEnabled()).toBe(false);
     if (enabled === undefined) delete process.env.DEMO_ENABLED;
     else process.env.DEMO_ENABLED = enabled;
@@ -96,6 +107,14 @@ describe("sample demo policy", () => {
     expect(lane.toLowerCase()).toContain("assum");
     expect(harbor).not.toMatch(/lorem ipsum|copyright/i);
     expect(lane).not.toMatch(/lorem ipsum|copyright/i);
+    expect(DEMO_SAMPLE_TEXT["harbor-readme"]).toBe(harbor);
+    expect(DEMO_SAMPLE_TEXT["lane-memo"]).toBe(lane);
+    const bundled = demoSampleBundle("harbor-readme");
+    expect(bundled.claims.length).toBeGreaterThanOrEqual(3);
+    expect(bundled.prefetch.restPhrased).toBe(true);
+    expect(bundled.prefetch.plan.probes).toHaveLength(3);
+    expect(bundled.prefetch.plan.probes[0]?.question.length).toBeGreaterThan(10);
+    expect(demoSampleBundle("harbor-readme").prefetch.plan.probes[0]?.id).toBe(bundled.prefetch.plan.probes[0]?.id);
   });
 });
 
@@ -105,10 +124,33 @@ describe("sample demo admission", () => {
     const opened = await openDemo("203.0.113.10");
     expect(opened.status).toBe(403);
     expect(opened.json.error).toBe(DEMO_COPY.disabled);
-    delete process.env.DEMO_ENABLED;
+    process.env.DEMO_ENABLED = "1";
     const db = await getDb();
     const users = await db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM users WHERE email LIKE '%@demo.defendit.invalid'`);
     expect(Number(users?.n)).toBe(0);
+  });
+
+  it("returns 503 when production has no IP salt", async () => {
+    const salt = process.env.DEMO_IP_SALT;
+    process.env.VERCEL = "1";
+    process.env.DEMO_ENABLED = "1";
+    delete process.env.DEMO_IP_SALT;
+    const logged: unknown[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logged.push(args);
+    });
+    try {
+      const opened = await openDemo("203.0.113.90");
+      expect(opened.status).toBe(503);
+      expect(opened.json.error).toBe(DEMO_COPY.unavailable);
+      expect(JSON.stringify(logged)).toContain("DEMO_IP_SALT");
+      expect(JSON.stringify(opened.json)).not.toContain("openssl");
+    } finally {
+      spy.mockRestore();
+      delete process.env.VERCEL;
+      process.env.DEMO_IP_SALT = salt;
+      process.env.DEMO_ENABLED = "1";
+    }
   });
 
   it("refuses without spending the budget when the beta fund is exhausted", async () => {
@@ -168,6 +210,13 @@ describe("sample demo defense", () => {
     expect(await spent()).toBe(before + betaDefenseCents());
 
     const db = await getDb();
+    const openedCalls = await db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM llm_calls c
+       JOIN defense_requests r ON r.id = c.request_id
+       WHERE r.token = ?`,
+      [opened.json.token],
+    );
+    expect(Number(openedCalls?.n)).toBe(0);
     const planted = await db.get<{ id: string; user_id: string }>(
       `SELECT id, creator_user_id AS user_id FROM defense_requests WHERE token = ?`,
       [opened.json.token],
@@ -202,6 +251,11 @@ describe("sample demo defense", () => {
     expect(startJson.demo).toBe(true);
     expect(startJson.probes).toHaveLength(3);
     expect(JSON.stringify(startJson)).not.toContain("expectedFocus");
+    const startedCalls = await db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM llm_calls WHERE request_id = ?`,
+      [planted!.id],
+    );
+    expect(Number(startedCalls?.n)).toBe(0);
 
     for (const probe of startJson.probes as { id: string; type: string }[]) {
       const saved = await answer(
@@ -323,8 +377,24 @@ describe("sample demo defense", () => {
     );
     expect(steal.status).toBe(403);
 
+    const card = await resultCardCopy(payload.id);
+    expect(card.title).toBe("Sample demo · Not a credential");
+    expect(card.score).toBeNull();
+    expect(card.visibility).toBe("demo");
+    expect(`${card.title} ${card.subtitle} ${card.description} ${card.foot}`).not.toContain(String(payload.score));
+    const meta = await generateMetadata({ params: Promise.resolve({ id: payload.id }) });
+    expect(meta.title).toBe("Sample demo · Not a credential · DefendIT");
+    expect(meta.robots).toEqual({ index: false, follow: false });
+    expect(String(meta.description)).not.toMatch(/\d/);
+
     await db.run(`UPDATE receipts SET purge_after = ? WHERE id = ?`, ["2000-01-01T00:00:00.000Z", payload.id]);
     expect(await getReceipt(payload.id)).toBeNull();
+    const expired = await resultCardCopy(payload.id);
+    expect(expired.score).toBeNull();
+    expect(expired.visibility).not.toBe("demo");
+    expect(expired.title).toBe("Understanding receipt");
+    const expiredMeta = await generateMetadata({ params: Promise.resolve({ id: payload.id }) });
+    expect(expiredMeta.robots).toBeUndefined();
   });
 
   it("will not send a sign-in link to a sample principal", async () => {
