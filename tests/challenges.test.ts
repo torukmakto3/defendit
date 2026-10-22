@@ -39,6 +39,8 @@ import {
   refundCredit,
 } from "../src/lib/credits";
 import { getDb } from "../src/lib/db";
+import { ipHash } from "../src/lib/ip-hash";
+import { ipRateKey } from "../src/lib/ratelimit";
 import { HttpError } from "../src/lib/errors";
 import {
   completeDefendSession,
@@ -93,6 +95,7 @@ beforeAll(() => {
   process.env.CHALLENGE_GLOBAL_DAILY_CAP = "100";
   process.env.BETA_BUDGET_EUR = "1000";
   process.env.CHALLENGE_MIN_ACCOUNT_AGE_HOURS = "0";
+  process.env.IP_HASH_SALT = "ab".repeat(32);
   process.env.CHALLENGE_CREATE_LIMIT = "30";
   process.env.CHALLENGE_CLAIM_LIMIT = "30";
   process.env.CHALLENGE_CLAIM_IP_LIMIT = "50";
@@ -406,6 +409,10 @@ describe("challenge links", () => {
     await expect(claimChallenge({ slug: linkB.slug, user: claimerB, ip, adultConfirmed: true })).rejects.toMatchObject({
       status: 429,
     });
+    const keys = await (await getDb()).all<{ bucket_key: string }>(`SELECT bucket_key FROM rate_limits`);
+    const stored = keys.map((row) => row.bucket_key);
+    expect(stored).toContain(ipRateKey("challenge-claim", ip));
+    expect(stored.some((key) => key.includes(ip))).toBe(false);
   });
 
   it("shows expired and revoked states and refunds a held paid credit", async () => {
@@ -516,10 +523,31 @@ describe("challenge links", () => {
     const names = (await challengeEvents(published.created.slug)).map((row) => row.event);
     expect(names).toEqual(expect.arrayContaining(["created", "viewed", "accepted", "defended", "published"]));
     expect(names).not.toContain("share_clicked");
-    await recordResultView(published.receipt.payload.id, null, "203.0.113.10");
-    await recordResultView(published.receipt.payload.id, null, "203.0.113.10");
-    const after = (await challengeEvents(published.created.slug)).map((row) => row.event);
-    expect(after.filter((name) => name === "result_viewed")).toHaveLength(1);
+    const viewIp = "203.0.113.10";
+    await recordResultView(published.receipt.payload.id, null, viewIp);
+    await recordResultView(published.receipt.payload.id, null, viewIp);
+    const viewRows = await challengeEvents(published.created.slug);
+    const viewed = viewRows.filter((row) => row.event === "result_viewed");
+    expect(viewed).toHaveLength(1);
+    expect(viewed[0]?.meta).toContain(ipHash(viewIp));
+    expect(viewed[0]?.meta).not.toContain(viewIp);
+    const savedSalt = process.env.IP_HASH_SALT;
+    const savedDemo = process.env.DEMO_IP_SALT;
+    delete process.env.IP_HASH_SALT;
+    delete process.env.DEMO_IP_SALT;
+    const unsaltedIp = "198.51.100.77";
+    await recordResultView(published.receipt.payload.id, null, unsaltedIp);
+    const unsigned = (await challengeEvents(published.created.slug)).filter((row) => row.event === "result_viewed");
+    expect(unsigned).toHaveLength(1);
+    expect(JSON.stringify(unsigned)).not.toContain(unsaltedIp);
+    await recordResultView(published.receipt.payload.id, published.creator, unsaltedIp);
+    const signedIn = (await challengeEvents(published.created.slug)).filter((row) => row.event === "result_viewed");
+    expect(signedIn).toHaveLength(2);
+    expect(JSON.stringify(signedIn)).not.toContain(unsaltedIp);
+    if (savedSalt === undefined) delete process.env.IP_HASH_SALT;
+    else process.env.IP_HASH_SALT = savedSalt;
+    if (savedDemo === undefined) delete process.env.DEMO_IP_SALT;
+    else process.env.DEMO_IP_SALT = savedDemo;
     expect((await ledgerForSlug(published.created.slug)).map((row) => row.action).sort()).toEqual([
       "consume",
       "grant",
@@ -1060,6 +1088,10 @@ describe("challenge links", () => {
     const ip = "203.0.113.44";
     expect((await send(ip)).status).toBe(200);
     expect((await send(ip)).status).toBe(429);
+    const keys = await (await getDb()).all<{ bucket_key: string }>(
+      `SELECT bucket_key FROM rate_limits WHERE bucket_key LIKE 'challenge-share:%'`,
+    );
+    expect(keys.map((row) => row.bucket_key)).toEqual([ipRateKey("challenge-share", ip)]);
   });
 });
 

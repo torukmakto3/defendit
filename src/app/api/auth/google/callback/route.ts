@@ -9,7 +9,7 @@ import {
   requestOrigin,
   resolveGoogleCallback,
 } from "@/lib/google-auth";
-import { clientIp, limitOr429 } from "@/lib/http";
+import { ipLimitKey, limitOr429 } from "@/lib/http";
 import { LIMITS } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
@@ -23,8 +23,6 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const stored = decodeOAuthTxn(readRequestCookie(req, GOOGLE_OAUTH_COOKIE));
   const next = stored?.nextPath ?? "/";
-  const limited = await limitOr429(`verify:ip:${clientIp(req)}`, LIMITS.loginPerIp);
-  if (limited) return limited;
 
   const fail = (code: string) => {
     const res = NextResponse.redirect(new URL(pathWithAuthError(next, code), requestOrigin(req)));
@@ -34,6 +32,8 @@ export async function GET(req: Request) {
   };
 
   try {
+    const limited = await limitOr429(ipLimitKey("verify", req), LIMITS.loginPerIp);
+    if (limited) return limited;
     const result = await resolveGoogleCallback({
       stored,
       returnedState: url.searchParams.get("state"),

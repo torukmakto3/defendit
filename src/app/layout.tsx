@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { JetBrains_Mono, Public_Sans, Sora } from "next/font/google";
 import Link from "next/link";
 import { AccountMenu } from "@/components/auth";
+import { SiteFooter } from "@/components/site-footer";
 import { ThemeToggle, themeBootScript } from "@/components/theme";
 import { challengesEnabled } from "@/lib/challenge-tier";
 import "./globals.css";
@@ -26,7 +27,7 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
       </head>
-      <body className={`${display.variable} ${body.variable} ${mono.variable} antialiased`}>
+      <body className={`${display.variable} ${body.variable} ${mono.variable} flex min-h-screen flex-col antialiased`}>
         <header className="border-b-[1.5px] border-[var(--ink)] bg-[var(--card)]">
           <div className="shell flex flex-wrap items-center justify-between gap-3 py-3">
             <Link href="/" className="flex items-baseline gap-2">
@@ -55,7 +56,8 @@ export default function RootLayout({
             </nav>
           </div>
         </header>
-        <main>{children}</main>
+        <main className="flex-1">{children}</main>
+        <SiteFooter />
       </body>
     </html>
   );
