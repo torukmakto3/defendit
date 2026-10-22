@@ -2,12 +2,15 @@ import { mkdtempSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { beforeAll, describe, expect, it } from "vitest";
+import { GET as defendState } from "../src/app/api/sessions/defend/state/route";
+import { POST as startDefend } from "../src/app/api/sessions/start/route";
 import {
   consumeMagicLink,
   getUserFromRequest,
   requestMagicLink,
   type User,
 } from "../src/lib/auth";
+import { claimChallenge, createChallenge } from "../src/lib/challenges";
 import { sha256Hex, verifySignature } from "../src/lib/crypto";
 import { getDb } from "../src/lib/db";
 import { rateLimit } from "../src/lib/ratelimit";
@@ -24,6 +27,7 @@ import {
   listDashboard,
   publicProbes,
   purgeExpired,
+  getDefendInterviewState,
   recordDefendAnswer,
   recordVoiceAnswer,
   voicePlan,
@@ -312,6 +316,149 @@ describe("interview integrity", () => {
     const ingest = await creatorIngest({ user, fileName: "e.md", buffer: memo });
     const s1 = await startSession({ token: ingest.token, user, mode: "defend", accommodation: true });
     await expect(completeDefendSession({ sessionId: s1.sessionId, user })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("reloads onto the open defend session without minting another", async () => {
+    const { user } = await signIn("resume@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "r.md", buffer: memo, difficulty: "standard" });
+    const started = await startSession({ token: ingest.token, user, mode: "defend" });
+    await recordDefendAnswer({
+      sessionId: started.sessionId,
+      user,
+      probeId: started.plan.probes[0].id,
+      answer: "Because churn near 1.2% still supports the round.",
+    });
+    const state = await getDefendInterviewState(ingest.token, user);
+    expect(state.sessionId).toBe(started.sessionId);
+    expect(state).toMatchObject({ status: "in_progress", answered: 1, channel: "text" });
+    expect(state.total).toBe(started.plan.probes.length);
+    expect(state.probes[1]?.question).toBe(started.plan.probes[1].question);
+    expect(JSON.stringify(state.probes)).not.toContain("expectedFocus");
+    // A second start still mints its own session. The page resumes; callers that
+    // want a parallel defense are unchanged.
+    const again = await startSession({ token: ingest.token, user, mode: "defend" });
+    expect(again.sessionId).not.toBe(started.sessionId);
+  });
+
+  it("returns only this account's session for this request and its current file", async () => {
+    const owner = await signIn("state-owner@fund.example");
+    const other = await signIn("state-other@fund.example");
+    const own = await creatorIngest({ user: owner.user, fileName: "own.md", buffer: memo, difficulty: "standard" });
+    const started = await startSession({ token: own.token, user: owner.user, mode: "defend" });
+    await recordDefendAnswer({
+      sessionId: started.sessionId,
+      user: owner.user,
+      probeId: started.plan.probes[0].id,
+      answer: "Because churn near 1.2% still supports the round.",
+    });
+
+    const state = await getDefendInterviewState(own.token, owner.user);
+    expect(state.sessionId).toBe(started.sessionId);
+
+    await expect(getDefendInterviewState(own.token, other.user)).rejects.toMatchObject({ status: 403 });
+
+    const elsewhere = await creatorIngest({
+      user: owner.user,
+      fileName: "elsewhere.md",
+      buffer: memo,
+      difficulty: "standard",
+    });
+    await expect(getDefendInterviewState(elsewhere.token, owner.user)).rejects.toMatchObject({ status: 404 });
+
+    const previousChallenges = process.env.CHALLENGES_ENABLED;
+    process.env.CHALLENGES_ENABLED = "1";
+    try {
+      const challenger = await signIn("state-challenger@fund.example");
+      const defenderA = await signIn("state-defender-a@fund.example");
+      const defenderB = await signIn("state-defender-b@fund.example");
+      const linkA = await createChallenge({
+        user: challenger.user,
+        subject: "Defend the first memo's unit economics.",
+        difficulty: "standard",
+      });
+      const linkB = await createChallenge({
+        user: challenger.user,
+        subject: "Defend the second memo's unit economics.",
+        difficulty: "standard",
+      });
+      const claimA = await claimChallenge({
+        slug: linkA.slug,
+        user: defenderA.user,
+        ip: "203.0.113.10",
+        adultConfirmed: true,
+      });
+      const claimB = await claimChallenge({
+        slug: linkB.slug,
+        user: defenderB.user,
+        ip: "203.0.113.11",
+        adultConfirmed: true,
+      });
+      await ingestDeliverable({ token: claimA.token, user: defenderA.user, fileName: "a.md", buffer: memo });
+      const challengeSession = await startSession({ token: claimA.token, user: defenderA.user, mode: "defend" });
+      await expect(getDefendInterviewState(claimB.token, defenderA.user)).rejects.toMatchObject({ status: 403 });
+      await expect(getDefendInterviewState(claimA.token, defenderB.user)).rejects.toMatchObject({ status: 403 });
+      expect((await getDefendInterviewState(claimA.token, defenderA.user)).sessionId).toBe(challengeSession.sessionId);
+    } finally {
+      if (previousChallenges === undefined) delete process.env.CHALLENGES_ENABLED;
+      else process.env.CHALLENGES_ENABLED = previousChallenges;
+    }
+
+    await ingestDeliverable({ token: own.token, user: owner.user, fileName: "replacement.md", buffer: memo });
+    await expect(getDefendInterviewState(own.token, owner.user)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("a resume read does not take a second defense credit hold", async () => {
+    const { user, cookie } = await signIn("resume-credit@fund.example");
+    const ingest = await creatorIngest({
+      user,
+      fileName: "credit.md",
+      buffer: memo,
+      difficulty: "standard",
+    });
+    const started = await startDefend(
+      new Request("http://localhost/api/sessions/start", {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ token: ingest.token, mode: "defend", accommodation: true }),
+      }),
+    );
+    expect(started.status).toBe(200);
+    const db = await getDb();
+    const holdIds = async () =>
+      (
+        await db.all<{ id: string }>(
+          `SELECT id FROM credit_ledger
+           WHERE user_id = ? AND reason = 'hold' AND purpose = 'defense' AND amount < 0
+           ORDER BY id`,
+          [user.id],
+        )
+      ).map((row) => row.id);
+    const before = await holdIds();
+    expect(before).toHaveLength(1);
+    const sessionsBefore = await db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM sessions WHERE user_id = ? AND mode = 'defend'`,
+      [user.id],
+    );
+
+    const resumed = await defendState(
+      new Request(`http://localhost/api/sessions/defend/state?token=${encodeURIComponent(ingest.token)}`, {
+        headers: { cookie },
+      }),
+    );
+    expect(resumed.status).toBe(200);
+    const body = (await resumed.json()) as { sessionId?: string };
+    expect(body.sessionId).toMatch(/^ses_/);
+    expect(await holdIds()).toEqual(before);
+    const sessionsAfter = await db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM sessions WHERE user_id = ? AND mode = 'defend'`,
+      [user.id],
+    );
+    expect(Number(sessionsAfter?.n)).toBe(Number(sessionsBefore?.n));
+    const refunds = await db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM credit_ledger WHERE user_id = ? AND reason = 'refund'`,
+      [user.id],
+    );
+    expect(Number(refunds?.n)).toBe(0);
   });
 });
 

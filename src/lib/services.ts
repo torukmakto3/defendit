@@ -931,7 +931,61 @@ export async function getDefendGradingProgress(sessionId: string, user: User) {
   return {
     status: session.status,
     progress: readGradingProgress(session.grading_progress),
+    receiptId: session.status === "completed" ? await receiptIdForSession(session.id) : null,
   };
+}
+
+export interface DefendInterviewState {
+  sessionId: string;
+  channel: Channel;
+  status: string;
+  answered: number;
+  total: number;
+  probes: ReturnType<typeof publicProbes>;
+  progress: GradingProgress | null;
+  receiptId: string | null;
+}
+
+/**
+ * The defend session a reload should continue. This is a read: it does not
+ * start a session, so it does not take a credit or a budget hold. The row
+ * has to belong to this account and to the current file on this request.
+ * Another challenge, another deliverable, or another account is not resumed.
+ */
+export async function getDefendInterviewState(token: string, user: User): Promise<DefendInterviewState> {
+  maybePurge();
+  const request = await requireRequest(token);
+  assertCreator(request, user);
+  const deliverable = await getLatestDeliverable(request.id);
+  if (!deliverable) throw new HttpError(404, "No interview in progress");
+  const db = await getDb();
+  const session = await db.get<SessionRow>(
+    `SELECT * FROM sessions
+     WHERE request_id = ? AND user_id = ? AND deliverable_id = ? AND mode = 'defend'
+       AND status IN ('in_progress', 'grading', 'completed')
+     ORDER BY started_at DESC LIMIT 1`,
+    [request.id, user.id, deliverable.id],
+  );
+  if (!session || isPast(session.purge_after)) throw new HttpError(404, "No interview in progress");
+  const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
+  if (!plan) throw new HttpError(410, "This session has expired.");
+  const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
+  return {
+    sessionId: session.id,
+    channel: session.channel,
+    status: session.status,
+    answered: turns.length,
+    total: plan.probes.length,
+    probes: publicProbes(plan),
+    progress: readGradingProgress(session.grading_progress),
+    receiptId: session.status === "completed" ? await receiptIdForSession(session.id) : null,
+  };
+}
+
+async function receiptIdForSession(sessionId: string): Promise<string | null> {
+  const db = await getDb();
+  const row = await db.get<{ id: string }>(`SELECT id FROM receipts WHERE session_id = ?`, [sessionId]);
+  return row?.id ?? null;
 }
 
 export async function completeDefendSession(opts: {
