@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { appUrl } from "@/lib/config";
-import { resultCardCopy } from "@/lib/challenges";
+import { resultCardCopy } from "@/lib/share-card";
 import { shareMetadata, toNextMetadata } from "@/lib/result-card";
 
 export const dynamic = "force-dynamic";

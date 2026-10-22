@@ -166,6 +166,19 @@ export interface ReceiptPayload {
   creator?: { displayName: string; nameSelfReported: true };
   attempt: number;
   assuranceLevel: "L1";
+  /**
+   * Present only on a no-login sample defense. Covered by the signature.
+   * `credential` is false: the receipt shows what a defense looks like and
+   * does not attest to the visitor.
+   */
+  demo?: {
+    sample: true;
+    credential: false;
+    /** Bundled sample title. Not document text and not a visitor's file name. */
+    file: string;
+    /** ISO time after which the receipt is no longer served. */
+    expiresAt: string;
+  };
 }
 
 export interface SignedReceipt {

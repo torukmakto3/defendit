@@ -12,14 +12,6 @@ import {
 } from "./credits";
 import { appUrl } from "./config";
 import { getDb, type Db } from "./db";
-import {
-  buildResultCard,
-  cardFromReceipt,
-  publicLabel,
-  unknownResultCard,
-  withCardCopy,
-  type ResultCardCopy,
-} from "./result-card";
 import { HttpError } from "./errors";
 import { newId, newToken } from "./ids";
 import { rateLimit } from "./ratelimit";
@@ -1162,100 +1154,6 @@ export async function challengeCardCopy(slug: string): Promise<{
         ? "Free in beta, sponsored by DefendIT"
         : "You choose what is public.",
   };
-}
-
-function receiptCardHost(): string {
-  try {
-    return new URL(appUrl()).host;
-  } catch {
-    return "defendit.me";
-  }
-}
-
-async function signedReceipt(receiptId: string): Promise<SignedReceipt | null> {
-  const db = await getDb();
-  const receipt = await db.get<{ payload_json: string }>(`SELECT payload_json FROM receipts WHERE id = ?`, [
-    receiptId,
-  ]);
-  if (!receipt) return null;
-  return JSON.parse(receipt.payload_json) as SignedReceipt;
-}
-
-/**
- * OG copy for a receipt. Challenge results follow the visibility the defender
- * stored: a public result shows the tier and the score, a score-hidden result
- * shows the tier and not the number, and a private result is a generic card.
- * The lines are the receipt artwork. Landing cards stay on `challengeCardCopy`.
- */
-export async function resultCardCopy(receiptId: string): Promise<ResultCardCopy> {
-  const gate = await receiptGate(receiptId, null);
-  const host = receiptCardHost();
-  if (gate.result && gate.result.audience === "public") {
-    const show = gate.result.showScore && gate.result.score != null;
-    const signed = await signedReceipt(receiptId);
-    const card = signed
-      ? cardFromReceipt({
-          payload: signed.payload,
-          visibility: show ? "public" : "score_hidden",
-          fileLabel: gate.result.subject,
-          host,
-        })
-      : buildResultCard({
-          visibility: show ? "public" : "score_hidden",
-          score: gate.result.score ?? 0,
-          difficulty: "standard",
-          questionCount: 0,
-          sha256: "",
-          createdAt: "",
-          receiptId,
-          host,
-        });
-    return withCardCopy(card, {
-      kicker: gate.result.sponsorLabel,
-      title: publicTierTitle(gate.result.tier),
-      subtitle: publicLabel(gate.result.subject, 80) ?? "",
-      foot: show ? "Signed receipt" : "Score not shown",
-      score: show ? String(gate.result.score) : null,
-    });
-  }
-  if (gate.mode === "challenge") {
-    const card = buildResultCard({
-      visibility: "private",
-      score: 0,
-      difficulty: "standard",
-      questionCount: 0,
-      sha256: "",
-      createdAt: "",
-      receiptId,
-      host,
-    });
-    return withCardCopy(card, {
-      kicker: "Defend It",
-      title: "Defend It",
-      subtitle: "Understanding receipt",
-      foot: "",
-      score: null,
-    });
-  }
-  const signed = await signedReceipt(receiptId);
-  if (!signed) {
-    return withCardCopy(unknownResultCard(), {
-      kicker: "Defend It",
-      title: "Understanding receipt",
-      subtitle: "",
-      foot: "",
-      score: null,
-    });
-  }
-  const card = cardFromReceipt({ payload: signed.payload, visibility: "public", host });
-  const tier = tierForScore(signed.payload.score);
-  return withCardCopy(card, {
-    kicker: "Understanding receipt",
-    title: publicTierTitle(tier),
-    subtitle: tier,
-    foot: "Defend It",
-    score: String(signed.payload.score),
-  });
 }
 
 export async function assertChallengeAllowsWork(requestId: string): Promise<void> {

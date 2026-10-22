@@ -4,6 +4,7 @@ import {
   buildResultCard,
   cacheControlForImage,
   cardFromReceipt,
+  demoSampleCard,
   CARD_HEIGHT,
   CARD_WIDTH,
   fileFingerprint,
@@ -238,6 +239,54 @@ describe("result card copy", () => {
     expect(blob(card)).toContain("@handle defended a file");
     expect(blob(card)).not.toContain("Challenged by");
     expect(card.alt).toContain("defended a file on 19 October 2026");
+  });
+});
+
+describe("sample demo cards", () => {
+  it("shows the sample line and no score, even when the payload scored in the top band", () => {
+    const payload: ReceiptPayload = {
+      id: "rcpt_demoreceipt00001",
+      version: "defend-it-receipt-v2",
+      createdAt: "2026-10-19T12:00:00.000Z",
+      difficulty: "expert",
+      score: 96,
+      outcome: "Defended",
+      bands: { strong: 3, partial: 0, weak: 0 },
+      deliverable: { sha256: HASH_A, byteLength: 120 },
+      rubricVersion: "defend-it-rubric-v0.4",
+      modelVersions: ["mock:one"],
+      integrity: { status: "Concerns" },
+      attempt: 1,
+      assuranceLevel: "L1",
+      creator: { displayName: "Ada Lovelace", nameSelfReported: true },
+      demo: {
+        sample: true,
+        credential: false,
+        file: "Harbor README",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      },
+    };
+    const card = cardFromReceipt({
+      payload,
+      visibility: "public",
+      fileLabel: "secret-launch.md",
+      challengerName: "@challenger",
+      host: "defendit.me",
+    });
+    expect(card).toEqual(demoSampleCard());
+    expect(card.title).toBe("Sample demo · Not a credential");
+    expect(card.headline).toBe("Sample demo · Not a credential");
+    expect(card.imageId).toBe("v1-demo");
+    const text = blob(card);
+    expect(text).not.toContain("96");
+    expect(text).not.toContain("secret-launch.md");
+    expect(text).not.toContain("Harbor");
+    expect(text).not.toContain("Ada");
+    expect(text).not.toContain("Strong");
+    expect(text).not.toContain("Expert");
+    expect(text).not.toContain("Concerns");
+    expect(text).not.toContain(HASH_A);
+    expect(text).toContain("Not a credential");
   });
 });
 

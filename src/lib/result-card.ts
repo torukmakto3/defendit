@@ -9,7 +9,7 @@ import type { Difficulty, ReceiptPayload } from "./types";
  */
 export type ReceiptVisibility = "public" | "score_hidden" | "private";
 
-export type CardVariant = "A" | "B" | "C" | "private" | "unknown";
+export type CardVariant = "A" | "B" | "C" | "private" | "unknown" | "demo";
 
 /** Bumped when the card artwork changes, so cached images miss. */
 export const RESULT_CARD_VERSION = "v1";
@@ -30,7 +30,7 @@ export interface CardLine {
 
 export interface ResultCard {
   variant: CardVariant;
-  visibility: ReceiptVisibility | "unknown";
+  visibility: ReceiptVisibility | "unknown" | "demo";
   tier: ResultTier | null;
   /** Path segment. Includes the visibility so a change busts the image cache. */
   imageId: string;
@@ -57,7 +57,7 @@ export interface ShareMetadata {
 
 const EMAIL = /[^\s@]+@[^\s@]+\.[^\s@]+/;
 
-export function resultCardImageId(visibility: ReceiptVisibility | "unknown"): string {
+export function resultCardImageId(visibility: ReceiptVisibility | "unknown" | "demo"): string {
   return `${RESULT_CARD_VERSION}-${visibility}`;
 }
 
@@ -234,6 +234,31 @@ export function buildResultCard(input: CardInput): ResultCard {
   };
 }
 
+/** A sample demo is not a credential. The card has no score and no file name. */
+export function demoSampleCard(): ResultCard {
+  return {
+    variant: "demo",
+    visibility: "demo",
+    tier: null,
+    imageId: resultCardImageId("demo"),
+    title: "Sample demo · Not a credential",
+    description: "Sample demo. Not a credential.",
+    alt: "DefendIT receipt card. Sample demo. Not a credential. No score is shown.",
+    kicker: "DEFEND IT",
+    headline: "Sample demo · Not a credential",
+    lines: [
+      { text: "Sample demo.", tone: "body" },
+      { text: "Not a credential.", tone: "body" },
+      { text: "No score on this card.", tone: "meta" },
+    ],
+    actions: [],
+  };
+}
+
+export function isDemoSample(payload: ReceiptPayload): boolean {
+  return payload.demo?.sample === true;
+}
+
 export function cardFromReceipt(opts: {
   payload: ReceiptPayload;
   visibility?: ReceiptVisibility;
@@ -244,6 +269,7 @@ export function cardFromReceipt(opts: {
   host?: string;
   questionCount?: number;
 }): ResultCard {
+  if (isDemoSample(opts.payload)) return demoSampleCard();
   const name = opts.payload.creator?.displayName ?? null;
   return buildResultCard({
     visibility: opts.visibility ?? "public",
@@ -297,7 +323,7 @@ export interface ResultCardCopy {
   lines: CardLine[];
   actions: string[];
   tier: ResultTier | null;
-  visibility: ReceiptVisibility | "unknown";
+  visibility: ReceiptVisibility | "unknown" | "demo";
 }
 
 /**

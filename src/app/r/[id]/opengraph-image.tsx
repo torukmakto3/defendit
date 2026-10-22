@@ -1,5 +1,5 @@
 import { renderOgCard } from "@/components/challenge/og";
-import { resultCardCopy } from "@/lib/challenges";
+import { resultCardCopy } from "@/lib/share-card";
 import { cacheControlForImage, CARD_HEIGHT, CARD_WIDTH } from "@/lib/result-card";
 
 export const alt = "DefendIT receipt card";
@@ -17,9 +17,16 @@ export const runtime = "nodejs";
 export async function generateImageMetadata({
   params,
 }: {
-  params: Promise<{ id: string }> | { id: string };
+  params?: Promise<{ id?: string }> | { id?: string };
 }) {
-  const { id } = await params;
+  // Next calls this from the generated `generateStaticParams` while it is
+  // collecting the build. There is no receipt id then. Skip the database so
+  // a preview build does not open Postgres.
+  const resolved = params ? await params : undefined;
+  const id = resolved?.id;
+  if (!id) {
+    return [{ id: "v1-unknown", alt, size, contentType }];
+  }
   const card = await resultCardCopy(id);
   return [
     {
