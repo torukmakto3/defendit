@@ -1,16 +1,21 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { resultCardCopy } from "@/lib/challenges";
+import { appUrl } from "@/lib/config";
+import { resultCardCopy } from "@/lib/share-card";
+import { shareMetadata, toNextMetadata } from "@/lib/result-card";
 
 export const dynamic = "force-dynamic";
 
-export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}): Promise<Metadata> {
   const { id } = await params;
   const card = await resultCardCopy(id);
-  const description = card.score ? `${card.subtitle}. Score ${card.score} out of 100.` : card.subtitle;
   return {
-    title: card.title,
-    description: [card.kicker, description].filter(Boolean).join(" · "),
+    metadataBase: new URL(appUrl()),
+    ...toNextMetadata(shareMetadata(card, id), `/r/${id}`),
   };
 }
 

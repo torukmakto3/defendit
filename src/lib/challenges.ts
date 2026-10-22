@@ -1156,45 +1156,6 @@ export async function challengeCardCopy(slug: string): Promise<{
   };
 }
 
-/** OG copy for a receipt. Challenge results follow visibility. No document text. */
-export async function resultCardCopy(receiptId: string): Promise<{
-  kicker: string;
-  title: string;
-  subtitle: string;
-  foot: string;
-  score: string | null;
-}> {
-  const gate = await receiptGate(receiptId, null);
-  if (gate.result && gate.result.audience === "public") {
-    const show = gate.result.showScore && gate.result.score != null;
-    return {
-      kicker: gate.result.sponsorLabel,
-      title: publicTierTitle(gate.result.tier),
-      subtitle: gate.result.subject.slice(0, 80),
-      foot: show ? "Signed receipt" : "Score not shown",
-      score: show ? String(gate.result.score) : null,
-    };
-  }
-  if (gate.mode === "challenge") {
-    return { kicker: "Defend It", title: "Defend It", subtitle: "Understanding receipt", foot: "", score: null };
-  }
-  const db = await getDb();
-  const receipt = await db.get<{ payload_json: string }>(`SELECT payload_json FROM receipts WHERE id = ?`, [
-    receiptId,
-  ]);
-  if (!receipt) {
-    return { kicker: "Defend It", title: "Understanding receipt", subtitle: "", foot: "", score: null };
-  }
-  const signed = JSON.parse(receipt.payload_json) as SignedReceipt;
-  return {
-    kicker: "Understanding receipt",
-    title: signed.payload.outcome,
-    subtitle: tierForScore(signed.payload.score),
-    foot: "Defend It",
-    score: String(signed.payload.score),
-  };
-}
-
 export async function assertChallengeAllowsWork(requestId: string): Promise<void> {
   const db = await getDb();
   await expireDueChallenges(db);

@@ -7,6 +7,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { PublicChallengeResult } from "../src/components/challenge/PublicResult";
 import { consumeMagicLink, requestMagicLink, type User } from "../src/lib/auth";
 import { publicTierTitle, tierForScore } from "../src/lib/challenge-tier";
+import { resultCardCopy } from "../src/lib/share-card";
 import { billingEnabled } from "../src/lib/billing";
 import { BETA_GRANT, billingEnabled as plansBillingEnabled } from "../src/lib/plans";
 import {
@@ -25,7 +26,6 @@ import {
   publicResultLines,
   receiptGate,
   recordResultView,
-  resultCardCopy,
   revokeChallenge,
   setOptOut,
 } from "../src/lib/challenges";

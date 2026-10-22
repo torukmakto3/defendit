@@ -39,6 +39,10 @@ const nextConfig: NextConfig = {
       "./node_modules/@resvg/**/*",
       "./assets/fonts/**/*",
     ],
+    // Receipt and challenge cards read these fonts from disk on the node runtime.
+    // The path is built at request time, so the tracer does not see the files.
+    "/r/**/*": ["./assets/fonts/**/*"],
+    "/c/**/*": ["./assets/fonts/**/*"],
   },
   async headers() {
     return [
