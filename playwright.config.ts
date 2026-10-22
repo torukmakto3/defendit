@@ -39,6 +39,8 @@ export default defineConfig({
       AUTH_DEV_LINKS: "1",
       DEFEND_IT_SIGNING_SEED: "33".repeat(32),
       DATA_ENCRYPTION_KEY: "22".repeat(32),
+      // Production refuses to boot without a 64-hex HMAC key for IP hashes.
+      IP_HASH_SALT: "11".repeat(32),
       DATABASE_URL: "",
       // Challenge pages 404 unless this is on. One free defense per account
       // makes the out-of-credits screen a second start, after the first receipt.
