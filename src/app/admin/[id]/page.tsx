@@ -29,6 +29,12 @@ interface Detail {
     promptTokens: number;
     completionTokens: number;
     costUsd: number;
+    llmUsd: number;
+    voiceUsd: number;
+    totalUsd: number;
+    voice: { agentSeconds: number; sttSeconds: number; ttsSeconds: number };
+    tier: string;
+    capped: boolean;
     overBudget: boolean;
     budgetUsd: number;
     calls: {
@@ -153,19 +159,32 @@ export default function AdminDetailPage() {
 
       <div className="mt-8 panel p-5">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-xl">Model usage</h2>
+          <h2 className="text-xl">Cost</h2>
+          <span className="text-sm text-[var(--ink-2)]">
+            {detail.usage.tier} cap {formatUsd(detail.usage.budgetUsd)}
+            {detail.usage.capped ? " · capped" : ""}
+          </span>
           {detail.usage.overBudget && (
             <span className="text-sm text-danger">Over {formatUsd(detail.usage.budgetUsd)} budget</span>
           )}
         </div>
         <p className="mt-2 text-sm">
-          <strong>{formatUsd(detail.usage.costUsd)}</strong>
+          <strong>{formatUsd(detail.usage.totalUsd)}</strong>
+          {" total · LLM "}
+          {formatUsd(detail.usage.llmUsd)}
+          {" · voice "}
+          {formatUsd(detail.usage.voiceUsd)}
           {" · "}
           {detail.usage.promptTokens.toLocaleString()} prompt tokens
           {" · "}
           {detail.usage.completionTokens.toLocaleString()} completion tokens
+        </p>
+        <p className="mt-1 text-xs text-[var(--ink-2)]">
+          Voice {Math.round(detail.usage.voice.agentSeconds)}s session
           {" · "}
-          budget {formatUsd(detail.usage.budgetUsd)}
+          {Math.round(detail.usage.voice.sttSeconds)}s speech-to-text
+          {" · "}
+          {Math.round(detail.usage.voice.ttsSeconds)}s speech
         </p>
         {detail.usage.calls.length > 0 && (
           <div className="mt-4 overflow-x-auto">

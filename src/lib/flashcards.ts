@@ -12,13 +12,13 @@ import {
   getPrimaryLlm,
   guardRetention,
   isMockLlm,
+  trackedComplete,
   withLlmScope,
   type LlmProvider,
   type LlmRequest,
-  type LlmResponse,
 } from "./llm";
 import { createGroqProvider, createLiquidProvider, createOpenRouterProvider } from "./llm/openai-compat";
-import { estimateTokens, recordLlmCall } from "./llm/usage";
+import { estimateTokens } from "./llm/usage";
 import { extractText, guessMimeType } from "./parse";
 import { MAX_UPLOAD_BYTES } from "./services";
 import { studyFileMissingMessage } from "./study-file";
@@ -93,16 +93,7 @@ export function flashcardModelId(): string {
 function track(provider: LlmProvider): LlmProvider {
   return {
     ...provider,
-    async complete(req: LlmRequest): Promise<LlmResponse> {
-      const res = await provider.complete(req);
-      await recordLlmCall({
-        purpose: req.purpose,
-        provider: res.provider,
-        modelId: res.modelId,
-        usage: res.usage,
-      });
-      return res;
-    },
+    complete: (req: LlmRequest) => trackedComplete(provider, req),
   };
 }
 
@@ -709,7 +700,8 @@ async function runGeneration(
     const purgeAfter = cardPurgeAfter(source.purgeAfter);
     let loggedFirst = false;
     let firstCardMs = 0;
-    const drafts = await withLlmScope({ requestId: source.requestId }, () =>
+    const owner = await db.get<{ email: string }>(`SELECT email FROM users WHERE id = ?`, [userId]);
+    const drafts = await withLlmScope({ requestId: source.requestId, user: owner }, () =>
       writeCardsBatched(source.claims ?? [], source.fileName, source.text, async (batch) => {
         const stored = await insertDrafts({
           userId,

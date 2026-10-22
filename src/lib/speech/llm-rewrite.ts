@@ -1,7 +1,6 @@
-import { getPrimaryLlm, guardRetention, isMockLlm } from "../llm";
+import { getPrimaryLlm, guardRetention, isMockLlm, trackedComplete } from "../llm";
 import { createLiquidProvider } from "../llm/openai-compat";
 import type { LlmProvider } from "../llm/types";
-import { recordLlmCall } from "../llm/usage";
 import { toSpeakable, type SpeakableResult, type SpeakableRewrite } from "./speakable";
 
 const SYSTEM = [
@@ -31,23 +30,18 @@ export function speechLlmRewrite(): SpeakableRewrite | undefined {
     liquidKey && model ? guardRetention(createLiquidProvider(liquidKey, model)) : getPrimaryLlm();
 
   return async (text, signal) => {
-    const res = await provider.complete({
+    const req = {
       purpose: "speakable_rewrite",
       temperature: 0,
       signal,
       messages: [
-        { role: "system", content: SYSTEM },
-        { role: "user", content: text },
+        { role: "system" as const, content: SYSTEM },
+        { role: "user" as const, content: text },
       ],
-    });
-    if (customLiquid) {
-      await recordLlmCall({
-        purpose: "speakable_rewrite",
-        provider: res.provider,
-        modelId: res.modelId,
-        usage: res.usage,
-      });
-    }
+    };
+    // The primary model is already gated. A pinned Liquid model is raw, so the
+    // cap has to run here or a rewrite can spend after the defense is full.
+    const res = customLiquid ? await trackedComplete(provider, req) : await provider.complete(req);
     return res.content.trim();
   };
 }

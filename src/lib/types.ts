@@ -93,6 +93,8 @@ export interface ModelGrade {
   temperature?: number;
   /** Seed sent with this grader's call. */
   seed?: number;
+  /** True when the cap replaced the requested council model with the cheap model. */
+  budgetFallback?: true;
 }
 
 export interface IntegritySignals {
@@ -114,6 +116,12 @@ export interface ReceiptGrader {
   model: string;
   temperature: number;
   seed: number;
+  /**
+   * Set when this grader is the cheap model used because the defense was over
+   * its cap. Absent on a normal council grade and on receipts minted before
+   * the mark existed.
+   */
+  budgetFallback?: true;
 }
 
 /**

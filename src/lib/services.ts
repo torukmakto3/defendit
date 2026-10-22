@@ -9,7 +9,28 @@ import { HttpError } from "./http";
 import { newId, newToken } from "./ids";
 import { computeIntegrity } from "./integrity";
 import { nextLearnTurn, type GapItem } from "./learn";
-import { describeGradingCouncil, flushLlmScope, llmModeLabel, refreshRequestUsage, sessionBudgetUsd, withLlmScope } from "./llm";
+import {
+  budgetUsdForTier,
+  budgetUsdForUser,
+  costReportLimit,
+  getCostTier,
+  parseCostTier,
+  secondRoundFits,
+  summarizeCosts,
+  voiceCostUsd,
+  type CostTier,
+} from "./cost";
+import {
+  defenseCapState,
+  describeGradingCouncil,
+  flushLlmScope,
+  getGradingCouncil,
+  llmModeLabel,
+  markDefenseCapped,
+  refreshRequestUsage,
+  scopeWasCapped,
+  withLlmScope,
+} from "./llm";
 import { extractText, guessMimeType } from "./parse";
 import { buildInterviewPlan, buildLearnPlan, makeFollowUpProbe } from "./probes";
 import { loadQuestionPrefetch, precomputeFirstQuestion, rememberFirstQuestion } from "./question-prefetch";
@@ -261,7 +282,7 @@ export async function creatorIngest(opts: {
   maybePurge();
   // Claim extraction runs before the request row exists. Hold those calls,
   // then attach them once the id is known.
-  return withLlmScope({}, async () => {
+  return withLlmScope({ user: opts.user }, async () => {
     const upload = await prepareUpload(opts.fileName, opts.buffer, opts.mimeType);
     const difficulty = opts.difficulty || "hard";
     // Phrase the first question while the deliverable row is written.
@@ -399,7 +420,7 @@ export async function ingestDeliverable(opts: {
     throw new HttpError(409, "This deliverable has already been defended.");
   }
 
-  const { upload, deliverableId } = await withLlmScope({ requestId: request.id }, async () => {
+  const { upload, deliverableId } = await withLlmScope({ requestId: request.id, user: opts.user }, async () => {
     const upload = await prepareUpload(opts.fileName, opts.buffer, opts.mimeType);
     const pinnedClaimIds = request.pinned_claims
       ? request.pinned_claims.split(",").map((s) => s.trim()).filter(Boolean)
@@ -494,6 +515,7 @@ export async function startSession(opts: {
   let seed: string;
   let plan: InterviewPlan;
   let phraseRest = false;
+  let cappedDuringPhrase = false;
 
   if (opts.mode === "learn") {
     seed = newId("seed");
@@ -513,9 +535,12 @@ export async function startSession(opts: {
         pinnedClaimIds: pinned,
       });
       const started = Date.now();
-      plan = await withLlmScope({ sessionId, requestId: request.id }, () =>
-        phraseQuestions(plan, claims, { indexes: [0] }),
-      );
+      let phrasingCapped = false;
+      plan = await withLlmScope({ sessionId, requestId: request.id, user: opts.user }, async () => {
+        const phrased = await phraseQuestions(plan, claims, { indexes: [0] });
+        phrasingCapped = scopeWasCapped();
+        return phrased;
+      });
       await recordStageTiming({
         requestId: request.id,
         sessionId,
@@ -523,6 +548,7 @@ export async function startSession(opts: {
         durationMs: Date.now() - started,
       });
       phraseRest = plan.probes.length > 1;
+      cappedDuringPhrase = phrasingCapped;
     }
   }
 
@@ -536,6 +562,8 @@ export async function startSession(opts: {
     seed,
     plan,
     channel,
+    user: opts.user,
+    budgetCapped: cappedDuringPhrase,
   });
 
   // The row exists, so the client can render question 1 while the rest are phrased.
@@ -556,7 +584,7 @@ export async function startSession(opts: {
 
   if (phraseRest) {
     const rest = plan.probes.map((_, index) => index).filter((index) => index !== 0);
-    plan = await withLlmScope({ sessionId, requestId: request.id }, () =>
+    plan = await withLlmScope({ sessionId, requestId: request.id, user: opts.user }, () =>
       phraseQuestions(plan, claims, { indexes: rest }),
     );
     await db.run(`UPDATE sessions SET plan_enc = ? WHERE id = ?`, [
@@ -581,12 +609,15 @@ async function insertSessionRow(
     seed: string;
     plan: InterviewPlan;
     channel: Channel;
+    user: User;
+    budgetCapped: boolean;
   },
 ) {
+  const tier = getCostTier(row.user);
   await db.run(
     `INSERT INTO sessions
-      (id, request_id, deliverable_id, user_id, mode, seed, plan_enc, transcript_enc, gap_map_enc, status, started_at, purge_after, channel)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?)`,
+      (id, request_id, deliverable_id, user_id, mode, seed, plan_enc, transcript_enc, gap_map_enc, status, started_at, purge_after, channel, cost_tier, budget_usd, budget_capped)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?, ?, ?)`,
     [
       row.sessionId,
       row.requestId,
@@ -600,6 +631,9 @@ async function insertSessionRow(
       new Date().toISOString(),
       hoursFromNow(retentionDays() * 24),
       row.channel,
+      tier,
+      budgetUsdForUser(row.user),
+      row.budgetCapped ? 1 : 0,
     ],
   );
 }
@@ -644,7 +678,7 @@ export async function learnCoachTurn(opts: { sessionId: string; user: User; answ
 
   if (opts.answer) history.push({ role: "creator", content: opts.answer.slice(0, 4000) });
 
-  const result = await withLlmScope({ sessionId: session.id, requestId: session.request_id }, () =>
+  const result = await withLlmScope({ sessionId: session.id, requestId: session.request_id, user: opts.user }, () =>
     nextLearnTurn({
       documentExcerpt: text,
       claims,
@@ -729,6 +763,45 @@ export async function recordVoiceAnswer(opts: {
     // Answering before the question finished counts as zero latency.
     latencyMs: Math.max(0, t[1] - t[0]),
   });
+}
+
+/**
+ * LiveKit agent session time, plus STT/TTS seconds when the agent measured them.
+ * Dollars are seconds times the env rates. A later report replaces the earlier one.
+ */
+export async function recordSessionVoiceUsage(input: {
+  sessionId: string;
+  agentSeconds: number;
+  sttSeconds?: number;
+  ttsSeconds?: number;
+}): Promise<{ voiceCostUsd: number }> {
+  const db = await getDb();
+  const session = await db.get<{ id: string; mode: string }>(`SELECT id, mode FROM sessions WHERE id = ?`, [
+    input.sessionId,
+  ]);
+  if (!session || session.mode !== "defend") throw new HttpError(404, "Voice session not found");
+  const agentSeconds = clampSeconds(input.agentSeconds);
+  const sttSeconds = clampSeconds(input.sttSeconds ?? 0);
+  const ttsSeconds = clampSeconds(input.ttsSeconds ?? 0);
+  const cost = voiceCostUsd({ agentSeconds, sttSeconds, ttsSeconds });
+  await db.run(
+    `UPDATE sessions SET voice_agent_sec = ?, voice_stt_sec = ?, voice_tts_sec = ?, voice_cost_usd = ? WHERE id = ?`,
+    [agentSeconds, sttSeconds, ttsSeconds, cost, session.id],
+  );
+  return { voiceCostUsd: cost };
+}
+
+function clampSeconds(value: number): number {
+  if (!Number.isFinite(value) || value < 0) return 0;
+  return Math.min(value, 3 * 60 * 60);
+}
+
+function csvCell(value: unknown): string {
+  let text = String(value ?? "");
+  // Spreadsheets treat a leading = + - @, tab, or CR as a formula.
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  if (/[",\n]/.test(text)) return `"${text.replaceAll('"', '""')}"`;
+  return text;
 }
 
 /** Questions for the voice interviewer: what it may say, in order, and progress. */
@@ -913,7 +986,7 @@ export async function completeDefendSession(opts: {
     // call overlaps the council. The receipt route does not wait for the cards.
     await rememberStudyDeck(deliverable.id, false);
     // Graders see each claim and the answer, not the raw file.
-    grades = await withLlmScope({ sessionId: session.id, requestId: session.request_id }, () =>
+    grades = await withLlmScope({ sessionId: session.id, requestId: session.request_id, user: opts.user }, () =>
       gradeSession(
         { difficulty: request.difficulty, claims, plan, turns },
         {
@@ -941,7 +1014,14 @@ export async function completeDefendSession(opts: {
       stage: "aggregation",
       durationMs: Date.now() - aggregatedAt,
     });
-    if (disputed.length > 0 && !plan.probes.some((p) => p.followUpOf)) {
+    const cap = await defenseCapState(session.request_id, session.id);
+    const councilSize = councilMemberCount();
+    const skipSecondRound =
+      disputed.length > 0 && !secondRoundFits(cap.spentUsd, cap.budgetUsd, councilSize);
+    if (skipSecondRound) {
+      await markDefenseCapped(session.request_id, session.id, "grade_followup");
+    }
+    if (disputed.length > 0 && !plan.probes.some((p) => p.followUpOf) && !skipSecondRound) {
       const source = plan.probes.find((p) => p.id === disputed[0]) ?? plan.probes[0];
       const claim = claims.find((c) => c.id === source.claimId) ?? claims[0];
       const extra = makeFollowUpProbe(claim, source);
@@ -1047,6 +1127,14 @@ export async function completeDefendSession(opts: {
   };
 }
 
+function councilMemberCount(): number {
+  try {
+    return getGradingCouncil().length;
+  } catch {
+    return 2;
+  }
+}
+
 function gradingClaimIsStale(claimedAt: string | null | undefined): boolean {
   if (!claimedAt) return true;
   const taken = Date.parse(claimedAt);
@@ -1145,7 +1233,6 @@ export async function listDashboard(user: User) {
 
 export async function listAdminSessions() {
   const db = await getDb();
-  const budgetUsd = sessionBudgetUsd();
   const rows = await db.all<{
     id: string;
     mode: string;
@@ -1160,10 +1247,15 @@ export async function listAdminSessions() {
     completion_tokens: number | null;
     cost_usd: number | null;
     over_budget: number | null;
+    budget_usd: number | null;
+    cost_tier: string | null;
+    budget_capped: number | null;
+    voice_cost_usd: number | null;
   }>(
     `SELECT s.id, s.mode, u.email AS creator_email, s.status, s.completed_at,
             r.title, r.difficulty, rc.id AS receipt_id, hg.overall_score AS human_score,
-            s.prompt_tokens, s.completion_tokens, s.cost_usd, s.over_budget
+            s.prompt_tokens, s.completion_tokens, s.cost_usd, s.over_budget,
+            s.budget_usd, s.cost_tier, s.budget_capped, s.voice_cost_usd
      FROM sessions s
      JOIN defense_requests r ON r.id = s.request_id
      JOIN users u ON u.id = s.user_id
@@ -1173,17 +1265,85 @@ export async function listAdminSessions() {
      ORDER BY s.started_at DESC
      LIMIT 200`,
   );
-  return rows.map((row) => {
-    const costUsd = Number(row.cost_usd ?? 0);
+  const sessions = rows.map((row) => {
+    const llmUsd = Number(row.cost_usd ?? 0);
+    const voiceUsd = Number(row.voice_cost_usd ?? 0);
+    const totalUsd = llmUsd + voiceUsd;
+    const tier = parseCostTier(row.cost_tier);
+    const budgetUsd = row.budget_usd != null ? Number(row.budget_usd) : budgetUsdForTier(tier);
+    const capped = Number(row.budget_capped ?? 0) === 1;
     return {
       ...row,
       prompt_tokens: Number(row.prompt_tokens ?? 0),
       completion_tokens: Number(row.completion_tokens ?? 0),
-      cost_usd: costUsd,
-      over_budget: costUsd > budgetUsd ? 1 : 0,
+      cost_usd: llmUsd,
+      llm_cost_usd: llmUsd,
+      voice_cost_usd: voiceUsd,
+      total_cost_usd: totalUsd,
+      over_budget: totalUsd > budgetUsd ? 1 : 0,
       budget_usd: budgetUsd,
+      cost_tier: tier,
+      budget_capped: capped ? 1 : 0,
     };
   });
+  const recent = sessions.filter((session) => session.status === "completed" || session.receipt_id).slice(0, costReportLimit());
+  const summary = summarizeCosts(
+    recent.map((session) => ({
+      totalUsd: session.total_cost_usd,
+      llmUsd: session.llm_cost_usd,
+      voiceUsd: session.voice_cost_usd,
+      capped: session.budget_capped === 1,
+    })),
+  );
+  return { sessions, summary };
+}
+
+export function adminSessionsCsv(
+  sessions: {
+    id: string;
+    title: string;
+    creator_email: string;
+    difficulty: string;
+    status: string;
+    cost_tier: CostTier;
+    budget_usd: number;
+    llm_cost_usd: number;
+    voice_cost_usd: number;
+    total_cost_usd: number;
+    budget_capped: number;
+  }[],
+): string {
+  const header = [
+    "id",
+    "title",
+    "creator",
+    "difficulty",
+    "status",
+    "tier",
+    "budget_usd",
+    "llm_usd",
+    "voice_usd",
+    "total_usd",
+    "capped",
+  ];
+  const lines = sessions.map((session) =>
+    [
+      session.id,
+      session.title,
+      session.creator_email,
+      session.difficulty,
+      session.status,
+      session.cost_tier,
+      session.budget_usd,
+      session.llm_cost_usd,
+      session.voice_cost_usd,
+      session.total_cost_usd,
+      session.budget_capped,
+    ]
+      .map(csvCell)
+      .join(","),
+  );
+  return [header.join(","), ...lines].join("\n");
 }
 
 export async function getAdminSessionDetail(sessionId: string) {
@@ -1195,6 +1355,13 @@ export async function getAdminSessionDetail(sessionId: string) {
       prompt_tokens: number | null;
       completion_tokens: number | null;
       cost_usd: number | null;
+      budget_usd: number | null;
+      cost_tier: string | null;
+      budget_capped: number | null;
+      voice_cost_usd: number | null;
+      voice_agent_sec: number | null;
+      voice_stt_sec: number | null;
+      voice_tts_sec: number | null;
     }
   >(
     `SELECT s.*, u.email AS creator_email, u.display_name FROM sessions s
@@ -1202,8 +1369,15 @@ export async function getAdminSessionDetail(sessionId: string) {
     [sessionId],
   );
   if (!session) return null;
-  const budgetUsd = sessionBudgetUsd();
-  const costUsd = Number(session.cost_usd ?? 0);
+  const tier = parseCostTier(session.cost_tier);
+  const budgetUsd =
+    session.budget_usd != null && Number.isFinite(Number(session.budget_usd))
+      ? Number(session.budget_usd)
+      : budgetUsdForTier(tier);
+  const llmUsd = Number(session.cost_usd ?? 0);
+  const voiceUsd = Number(session.voice_cost_usd ?? 0);
+  const totalUsd = llmUsd + voiceUsd;
+  const capped = Number(session.budget_capped ?? 0) === 1;
   const calls = await db.all<{
     id: string;
     purpose: string | null;
@@ -1251,8 +1425,18 @@ export async function getAdminSessionDetail(sessionId: string) {
     usage: {
       promptTokens: Number(session.prompt_tokens ?? 0),
       completionTokens: Number(session.completion_tokens ?? 0),
-      costUsd,
-      overBudget: costUsd > budgetUsd,
+      costUsd: llmUsd,
+      llmUsd,
+      voiceUsd,
+      totalUsd,
+      voice: {
+        agentSeconds: Number(session.voice_agent_sec ?? 0),
+        sttSeconds: Number(session.voice_stt_sec ?? 0),
+        ttsSeconds: Number(session.voice_tts_sec ?? 0),
+      },
+      tier,
+      capped,
+      overBudget: totalUsd > budgetUsd,
       budgetUsd,
       calls: calls.map((call) => ({
         id: call.id,

@@ -1,6 +1,14 @@
 import { z } from "zod";
 import type { GradingProgress } from "./grading-progress";
-import { completeJson, getGradingCouncil, GRADING_TEMPERATURE, gradingSeed } from "./llm";
+import {
+  completeJson,
+  forceNextGrade,
+  getGradingCouncil,
+  getTrackedCheapestLlm,
+  GRADING_TEMPERATURE,
+  gradingSeed,
+  LlmBudgetError,
+} from "./llm";
 import { detectNonAnswer } from "./non-answer";
 import { RUBRIC_VERSION, rubricPrompt } from "./rubric";
 import {
@@ -94,10 +102,10 @@ export async function gradeSession(
           done: settledCount,
           total: council.length,
           stage: "grading",
-          modelId: model.id,
+          modelId: grade.modelId,
           durationMs: Date.now() - started,
         });
-        return grade;
+        return { grade, budget: false };
       } catch (error) {
         settledCount += 1;
         report({
@@ -107,20 +115,43 @@ export async function gradeSession(
           modelId: model.id,
           durationMs: Date.now() - started,
         });
+        if (error instanceof LlmBudgetError) return { grade: null, budget: true };
         throw error;
       }
     }),
   );
   await progressChain;
   const grades = settled
-    .filter((r): r is PromiseFulfilledResult<ModelGrade> => r.status === "fulfilled")
-    .map((r) => r.value);
+    .filter((r): r is PromiseFulfilledResult<{ grade: ModelGrade | null; budget: boolean }> => r.status === "fulfilled")
+    .map((r) => r.value.grade)
+    .filter((grade): grade is ModelGrade => grade !== null);
+  const budgetSkips = settled.filter(
+    (r) => r.status === "fulfilled" && r.value.budget,
+  ).length;
   const needed = Math.floor(council.length / 2) + 1;
-  if (grades.length < needed) {
-    const first = settled.find((r): r is PromiseRejectedResult => r.status === "rejected");
-    throw first?.reason instanceof Error ? first.reason : new Error("Grading failed");
+  if (grades.length >= needed) return grades;
+  // The cap dropped members. Finish with the grades that fit, or one cheap grader
+  // when nothing has been scored yet, so the defense still gets a receipt.
+  if (grades.length >= 1 && budgetSkips > 0) return grades;
+  if (grades.length === 0 && budgetSkips > 0) {
+    forceNextGrade();
+    const started = Date.now();
+    const model = getTrackedCheapestLlm();
+    try {
+      return [await gradeWithTimeout(model, opts, transcript, timeout)];
+    } catch (error) {
+      report({
+        done: council.length,
+        total: council.length,
+        stage: "grading",
+        modelId: model.id,
+        durationMs: Date.now() - started,
+      });
+      throw error;
+    }
   }
-  return grades;
+  const first = settled.find((r): r is PromiseRejectedResult => r.status === "rejected");
+  throw first?.reason instanceof Error ? first.reason : new Error("Grading failed");
 }
 
 async function notify(
@@ -278,7 +309,7 @@ async function gradeOne(
   let last = "Grader skipped a question";
   for (let attempt = 0; attempt < 2; attempt++) {
     if (signal?.aborted) throw new Error(`Grader ${model.id} timed out after ${graderTimeoutMs()}ms`);
-    const { data } = await completeJson(model, {
+    const { data, raw } = await completeJson(model, {
       purpose: "grade",
       temperature,
       seed,
@@ -296,10 +327,11 @@ async function gradeOne(
     const covered = new Set(claimGrades.map((grade) => grade.probeId));
     if (answered.every((probe) => covered.has(probe.id))) {
       const grade: ModelGrade = {
-        modelId: model.id,
-        provider: model.provider,
+        modelId: raw.modelId,
+        provider: raw.provider,
         temperature,
         seed,
+        ...(raw.budgetFallback ? { budgetFallback: true as const } : {}),
         claimGrades,
         overallScore: 0,
       };

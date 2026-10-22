@@ -99,6 +99,29 @@ describe("signed receipt graders", () => {
     );
   });
 
+  it("records the cheap model and marks that grade as a budget fallback", () => {
+    const receipt = mint([{ budgetFallback: true }, {}]);
+    expect(receipt.payload.modelVersions[0]).toBe("mock:gpt-oss-120b");
+    expect(receipt.payload.graders?.[0]).toEqual({
+      model: "mock:gpt-oss-120b",
+      temperature: 0,
+      seed: 0,
+      budgetFallback: true,
+    });
+    expect(receipt.payload.graders?.[1]).toEqual({
+      model: "mock:deepseek-v3.2",
+      temperature: 0,
+      seed: 7,
+    });
+    expect(receipt.payload.graders?.[1]?.budgetFallback).toBeUndefined();
+    expect(verifyReceipt(receipt)).toBe(true);
+    expect(gradedWithLine(receipt.payload)).toContain(
+      "mock:gpt-oss-120b (temperature 0, seed 0, budget fallback)",
+    );
+    expect(gradedWithLine(receipt.payload)).toContain("mock:deepseek-v3.2 (temperature 0, seed 7)");
+    expect(gradedWithLine(receipt.payload)).not.toContain("deepseek-v3.2 (temperature 0, seed 7, budget fallback)");
+  });
+
   it("fails verification when temperature or seed is changed", () => {
     const receipt = mint();
     expect(verifyReceipt(receipt)).toBe(true);

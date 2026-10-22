@@ -13,7 +13,7 @@ import { HttpError } from "../errors";
 import { isDeployed } from "../secrets";
 import type { ZodType } from "zod";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./types";
-import { recordLlmCall } from "./usage";
+import { beginBudget, recordLlmCall, releaseBudget, settleBudget, LlmBudgetError } from "./usage";
 
 export { DEFAULT_LIQUID_COUNCIL_MODELS };
 
@@ -26,9 +26,15 @@ export type {
   RetentionClass,
 } from "./types";
 export {
+  defenseCapState,
   estimateCostUsd,
+  estimateUpcomingCallUsd,
   flushLlmScope,
+  forceNextGrade,
+  LlmBudgetError,
+  markDefenseCapped,
   refreshRequestUsage,
+  scopeWasCapped,
   sessionBudgetUsd,
   usageFromProviderBody,
   withLlmScope,
@@ -126,24 +132,98 @@ function selectPrimary(): LlmProvider {
 }
 
 /**
- * Record token usage when the call runs inside a defense scope.
- * The write is queued and flushed once when the scope ends. Awaiting it here
- * used to hold each council grader on a session-total update (#23).
+ * The small model already used for flashcards. A capped defense falls back to it.
+ * `CHEAP_LLM_MODEL` overrides; otherwise `FLASHCARD_MODEL`, then this pin.
  */
+export function cheapModelId(): string {
+  return (
+    process.env.CHEAP_LLM_MODEL?.trim() ||
+    process.env.FLASHCARD_MODEL?.trim() ||
+    "llama-3.1-8b-instruct"
+  );
+}
+
+let warnedCompatPrimary = "";
+
+/**
+ * On an OpenAI-compatible server the cheap call is `OPENAI_COMPAT_CHEAP_MODEL`
+ * when that is set. Otherwise it stays on the primary compat model
+ * (`OPENAI_COMPAT_MODEL`). That one-model fallback is deliberate until there
+ * is a product decision to switch it; the warning makes the choice visible.
+ */
+function cheapestCompatProvider(): LlmProvider {
+  const cheap = process.env.OPENAI_COMPAT_CHEAP_MODEL?.trim();
+  if (cheap) return createCompatProviderFromEnv(cheap);
+  const primary = process.env.OPENAI_COMPAT_MODEL?.trim() || "local-model";
+  if (warnedCompatPrimary !== primary) {
+    warnedCompatPrimary = primary;
+    console.warn(
+      `[llm] OPENAI_COMPAT_CHEAP_MODEL is unset; a capped defense uses the primary compat model (${primary}).`,
+    );
+  }
+  return createCompatProviderFromEnv();
+}
+
+/** Cheapest configured model, untracked. Mock mode is the offline stand-in for that pin. */
+export function getCheapestLlm(): LlmProvider {
+  if (isMockLlm()) return createMockProvider(cheapModelId());
+  const env = process.env;
+  const model = cheapModelId();
+  if (env.OLLAMA_BASE_URL || preferProvider() === "ollama") return createOllamaProvider(env.OLLAMA_MODEL || model);
+  if (env.OPENAI_COMPAT_BASE_URL) return cheapestCompatProvider();
+  if (env.LIQUID_API_KEY) return guardRetention(createLiquidProvider(env.LIQUID_API_KEY, model));
+  if (env.GROQ_API_KEY) return guardRetention(createGroqProvider(env.GROQ_API_KEY, model));
+  if (env.OPENROUTER_API_KEY) return guardRetention(createOpenRouterProvider(env.OPENROUTER_API_KEY, model));
+  return selectPrimary();
+}
+
+/**
+ * Reserve the cap, send the call, and queue the actual usage.
+ * The write is flushed once when the scope ends. Awaiting it here used to
+ * hold each council grader on a session-total update (#23).
+ */
+export async function trackedComplete(provider: LlmProvider, req: LlmRequest): Promise<LlmResponse> {
+  const decision = await beginBudget({
+    purpose: req.purpose,
+    modelId: provider.id,
+    promptText: req.messages.map((message) => message.content).join("\n"),
+  });
+  if (!decision.allow) throw new LlmBudgetError(req.purpose || "model");
+  const active = decision.useCheap ? getCheapestLlm() : provider;
+  try {
+    const res = await active.complete(req);
+    const answered: LlmResponse = decision.useCheap ? { ...res, budgetFallback: true } : res;
+    if (decision.reservationId) {
+      settleBudget(decision.reservationId, {
+        provider: answered.provider,
+        modelId: answered.modelId,
+        usage: answered.usage,
+      });
+    } else {
+      await recordLlmCall({
+        purpose: req.purpose,
+        provider: answered.provider,
+        modelId: answered.modelId,
+        usage: answered.usage,
+      });
+    }
+    return answered;
+  } catch (error) {
+    await releaseBudget(decision.reservationId);
+    throw error;
+  }
+}
+
 function trackLlm(provider: LlmProvider): LlmProvider {
   return {
     ...provider,
-    async complete(req: LlmRequest): Promise<LlmResponse> {
-      const res = await provider.complete(req);
-      await recordLlmCall({
-        purpose: req.purpose,
-        provider: res.provider,
-        modelId: res.modelId,
-        usage: res.usage,
-      });
-      return res;
-    },
+    complete: (req: LlmRequest) => trackedComplete(provider, req),
   };
+}
+
+/** Cheap model with the same cap gate as the council. */
+export function getTrackedCheapestLlm(): LlmProvider {
+  return trackLlm(getCheapestLlm());
 }
 
 /** Primary model for claim extraction, coaching, and follow-ups. */
@@ -212,6 +292,9 @@ export function gradingCouncilProblem(members: { id: string }[]): string | null 
  * Grading council: several models when configured. A live council is never
  * padded with mock models, because their scores would land in real receipts.
  * A deployment refuses a router (`*.auto`) or a council of fewer than 2.
+ * An over-cap defense may still be graded by one cheap model. That call is
+ * not a one-member council: the receipt names the model and marks it as a
+ * budget fallback.
  */
 export function getGradingCouncil(): LlmProvider[] {
   if (isMockLlm()) {

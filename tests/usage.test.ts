@@ -209,13 +209,27 @@ describe("session totals", () => {
       const db = await getDb();
       const cols = await db.all<{ name: string }>("PRAGMA table_info(sessions)");
       expect(cols.map((col) => col.name)).toEqual(
-        expect.arrayContaining(["prompt_tokens", "completion_tokens", "cost_usd", "over_budget"]),
+        expect.arrayContaining([
+          "prompt_tokens",
+          "completion_tokens",
+          "cost_usd",
+          "over_budget",
+          "budget_usd",
+          "budget_capped",
+          "reserved_usd",
+          "reserved_grades",
+          "voice_cost_usd",
+        ]),
       );
       const row = await db.get<{ cost_usd: number; over_budget: number; prompt_tokens: number }>(
         `SELECT cost_usd, over_budget, prompt_tokens FROM sessions WHERE id = ?`,
         ["ses_old"],
       );
       expect(row).toMatchObject({ cost_usd: 0, over_budget: 0, prompt_tokens: 0 });
+      const holds = await db.get<{ name: string }>(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'budget_holds'`,
+      );
+      expect(holds?.name).toBe("budget_holds");
       await db.run(
         `INSERT INTO llm_calls
           (id, session_id, request_id, purpose, provider, model_id, prompt_tokens, completion_tokens, cost_usd, cost_source, created_at)
@@ -297,10 +311,12 @@ describe("session totals", () => {
     expect(learnRow?.over_budget).toBe(0);
 
     const listed = await listAdminSessions();
-    const row = listed.find((session) => session.id === defend.sessionId);
+    const row = listed.sessions.find((session) => session.id === defend.sessionId);
     expect(row?.cost_usd).toBeCloseTo(defenseCost);
     expect(row?.over_budget).toBe(0);
-    expect(row?.budget_usd).toBe(3);
+    expect(row?.budget_usd).toBe(0.75);
+    expect(row?.cost_tier).toBe("consumer");
+    expect(row?.total_cost_usd).toBeCloseTo(defenseCost);
 
     const detail = await getAdminSessionDetail(defend.sessionId);
     expect(detail?.usage.overBudget).toBe(false);
@@ -350,7 +366,8 @@ describe("session totals", () => {
     });
     const after = await getAdminSessionDetail(defend.sessionId);
     expect(after?.usage.overBudget).toBe(true);
-    expect(after?.usage.budgetUsd).toBe(3);
+    expect(after?.usage.budgetUsd).toBe(0.75);
+    expect(after?.usage.tier).toBe("consumer");
 
     process.env.MOCK_LLM = "1";
     delete process.env.LIQUID_API_KEY;
