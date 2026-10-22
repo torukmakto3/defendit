@@ -1,8 +1,8 @@
 import { readFileSync } from "fs";
 import { join } from "path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { completeJson, DEFEND_ROUTE_BUDGET_MS, graderCallBudgetMs, graderTimeoutMs } from "../src/lib/llm";
+import { completeJson, DEFEND_ROUTE_BUDGET_MS, graderCallBudgetMs, graderTimeoutMs, maxGraderTimeoutMs } from "../src/lib/llm";
 import type { LlmProvider, LlmRequest, LlmResponse } from "../src/lib/llm";
 
 const schema = z.object({ ok: z.literal(true), n: z.number() });
@@ -19,6 +19,7 @@ function provider(complete: LlmProvider["complete"]): LlmProvider {
 
 afterEach(() => {
   delete process.env.LLM_TIMEOUT_MS;
+  delete process.env.GRADER_TIMEOUT_MS;
 });
 
 describe("structured model output", () => {
@@ -85,6 +86,16 @@ describe("structured model output", () => {
     const repair = graderCallBudgetMs(first, "grade");
     expect(first).toBe(55_000);
     expect(first + repair).toBeLessThan(DEFEND_ROUTE_BUDGET_MS);
+  });
+
+  it("clamps GRADER_TIMEOUT_MS to the grading cap and warns", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.GRADER_TIMEOUT_MS = "120000";
+    const cap = maxGraderTimeoutMs();
+    expect(cap).toBe(59_999);
+    expect(graderTimeoutMs()).toBe(cap);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("GRADER_TIMEOUT_MS=120000"));
+    warn.mockRestore();
   });
 
   it("times out a provider that ignores the abort signal", async () => {

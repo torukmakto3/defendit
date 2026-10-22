@@ -24,6 +24,19 @@ import type { Claim, ClaimGrade, Difficulty, DimensionScores, InterviewPlan, Mod
 
 export { RUBRIC_VERSION };
 export { graderTimeoutMs };
+
+/** Leave this much of the defend route after a late cheap grader, for signing. */
+export const BUDGET_FALLBACK_MARGIN_MS = 10_000;
+
+/**
+ * The budget-fallback grader does not get a fresh full timeout. It stops
+ * this far before `deadlineMs`, and never longer than the normal grader timeout.
+ */
+export function budgetFallbackTimeoutMs(deadlineMs: number, now = Date.now()): number {
+  const remain = deadlineMs - now - BUDGET_FALLBACK_MARGIN_MS;
+  return Math.max(0, Math.min(graderTimeoutMs(), Math.floor(remain)));
+}
+
 export { legacyAggregateScore, scoreDefense, type DefenseScore };
 
 const level = z.coerce.number();
@@ -67,6 +80,8 @@ export async function gradeSession(
     claims: Claim[];
     plan: InterviewPlan;
     turns: TurnRecord[];
+    /** Absolute time the defend route must finish. Caps only the budget-fallback grader. */
+    deadlineMs?: number;
   },
   hooks?: {
     onProgress?: (progress: GraderProgress) => void | Promise<void>;
@@ -81,9 +96,9 @@ export async function gradeSession(
     progressChain = progressChain.then(() => notify(hooks, progress));
   };
 
-  const skipped = gradesForAllNonAnswers(council, opts);
+  const skipped = gradesForAllNonAnswers(opts);
   if (skipped) {
-    report({ done: council.length, total: council.length, stage: "grading" });
+    report({ done: 1, total: 1, stage: "grading", modelId: skipped[0].modelId });
     await progressChain;
     return skipped;
   }
@@ -136,8 +151,13 @@ export async function gradeSession(
     forceNextGrade();
     const started = Date.now();
     const model = getTrackedCheapestLlm();
+    const fallbackTimeout =
+      opts.deadlineMs === undefined ? timeout : budgetFallbackTimeoutMs(opts.deadlineMs);
     try {
-      return [await gradeWithTimeout(model, opts, transcript, timeout)];
+      if (fallbackTimeout <= 0) {
+        throw new Error(`Grader ${model.id} timed out after ${fallbackTimeout}ms`);
+      }
+      return [await gradeWithTimeout(model, opts, transcript, fallbackTimeout)];
     } catch (error) {
       report({
         done: council.length,
@@ -236,12 +256,13 @@ function nonAnswerReason(kind: string): string {
 
 /**
  * When every recorded answer is a non-answer, the council is not called.
- * The returned grades match a council that scored each probe at zero.
+ * One rule grade scores each probe at zero. It is not labeled as a model.
  */
-function gradesForAllNonAnswers(
-  council: ReturnType<typeof getGradingCouncil>,
-  opts: { claims: Claim[]; plan: InterviewPlan; turns: TurnRecord[] },
-): ModelGrade[] | null {
+function gradesForAllNonAnswers(opts: {
+  claims: Claim[];
+  plan: InterviewPlan;
+  turns: TurnRecord[];
+}): ModelGrade[] | null {
   if (opts.turns.length === 0 || opts.plan.probes.length === 0) return null;
   if (opts.turns.some((turn) => !opts.plan.probes.some((probe) => probe.id === turn.probeId))) return null;
   const rows: ClaimGrade[] = [];
@@ -268,20 +289,14 @@ function gradesForAllNonAnswers(
       reason: nonAnswerReason(nonAnswer.kind),
     });
   }
-  const temperature = GRADING_TEMPERATURE;
-  const seed = gradingSeed();
-  return council.map((model) => {
-    const grade: ModelGrade = {
-      modelId: model.id,
-      provider: model.provider,
-      temperature,
-      seed,
-      claimGrades: rows.map((row) => ({ ...row, scores: { ...row.scores } })),
-      overallScore: 0,
-    };
-    grade.overallScore = graderScore(grade, opts.plan);
-    return grade;
-  });
+  const grade: ModelGrade = {
+    modelId: "rule:non-answer",
+    provider: "rule",
+    claimGrades: rows,
+    overallScore: 0,
+  };
+  grade.overallScore = graderScore(grade, opts.plan);
+  return [grade];
 }
 
 function alignGrades(

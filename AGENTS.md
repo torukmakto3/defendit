@@ -6,7 +6,7 @@ Shared brief for coding agents on this repo: Cursor, Claude Code, and Grok Bot. 
 
 Defend It lets a creator prove they understand an AI-assisted deliverable. They drop in a file, optionally use a private Socratic **Learn** coach, then take a **Defend** interview. The receiver gets an Ed25519-signed Understanding Receipt bound to the SHA-256 of those exact bytes.
 
-`main` is the beta: secure foundation, the titleblock UI, interview scoring on rubric `defend-it-rubric-v0.4`, and CI. Mock models are the default, so the full flow runs with no API keys. The product is creator-first: drag-and-drop, then stamp and send. Receiver “Request a defense” links stay for teams that want to require a defense. Sign-in is an email magic link.
+`main` is the beta: secure foundation, the titleblock UI, interview scoring on rubric `defend-it-rubric-v0.5`, and CI. Mock models are the default, so the full flow runs with no API keys. The product is creator-first: drag-and-drop, then stamp and send. Receiver “Request a defense” links stay for teams that want to require a defense. Sign-in is an email magic link.
 
 These are guidance, not a line-by-line spec:
 

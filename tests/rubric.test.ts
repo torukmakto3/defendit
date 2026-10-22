@@ -8,6 +8,6 @@ describe("rubric prompt", () => {
       "Accuracy is judged on whether the answer's content is correct, not on whether it repeats the source wording.",
     );
     expect(prompt).toContain("The numeric score must match the stated reason.");
-    expect(prompt).toContain("defend-it-rubric-v0.4");
+    expect(prompt).toContain("defend-it-rubric-v0.5");
   });
 });

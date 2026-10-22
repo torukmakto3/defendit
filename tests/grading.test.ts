@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { graderRetryDelayMs, gradeSession, isRetryableGraderError } from "../src/lib/grading";
+import {
+  BUDGET_FALLBACK_MARGIN_MS,
+  budgetFallbackTimeoutMs,
+  graderRetryDelayMs,
+  gradeSession,
+  isRetryableGraderError,
+} from "../src/lib/grading";
 import * as llm from "../src/lib/llm";
 import * as usage from "../src/lib/llm/usage";
 import { groundEvidence, legacyAggregateScore, scoreDefense, simulateScoreVariance } from "../src/lib/score";
@@ -254,6 +260,64 @@ describe("analytic score", () => {
     expect(lenientReservations).toBe(2);
     expect(grades.map((grade) => grade.modelId)).not.toContain("mock-council-lenient");
     expect(grades.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("caps the budget-fallback grader at the time left in the route", async () => {
+    delete process.env.GRADER_TIMEOUT_MS;
+    const now = 1_000_000;
+    expect(budgetFallbackTimeoutMs(now + 55_000 + BUDGET_FALLBACK_MARGIN_MS, now)).toBe(55_000);
+    expect(budgetFallbackTimeoutMs(now + 20_000, now)).toBe(10_000);
+    expect(budgetFallbackTimeoutMs(now + 5_000, now)).toBe(0);
+
+    process.env.MOCK_LLM = "1";
+    vi.spyOn(llm, "completeJson").mockImplementation((provider, req) => {
+      if (provider.id.includes("council")) return Promise.reject(new llm.LlmBudgetError("grade"));
+      const pending = new Promise<never>((_resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("fallback ran too long")), 8_000);
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(new Error("aborted"));
+        };
+        if (req.signal?.aborted) onAbort();
+        else req.signal?.addEventListener("abort", onAbort, { once: true });
+      });
+      pending.catch(() => {});
+      return pending;
+    });
+    const claims: Claim[] = [
+      { id: "c1", text: "Monthly logo churn is 1.2%.", section: "Unit economics", sourceSpan: "1.2%", stakes: "high" },
+    ];
+    const local: InterviewPlan = {
+      seed: "fallback-deadline",
+      difficulty: "standard",
+      probes: [
+        { id: "p1", claimId: "c1", type: "explain_back", difficulty: 2, question: "Why does 1.2% hold?", expectedFocus: "1.2%", sourceSpan: "1.2%" },
+      ],
+    };
+    const turns: TurnRecord[] = [
+      {
+        id: "t0",
+        probeId: "p1",
+        question: local.probes[0].question,
+        answer: "Because churn near 1.2% is the figure I would recheck if it doubled.",
+        startedAt: new Date(0).toISOString(),
+        endedAt: new Date(1000).toISOString(),
+        latencyMs: 1000,
+        followUpIndex: 0,
+      },
+    ];
+    const started = Date.now();
+    const deadlineMs = started + BUDGET_FALLBACK_MARGIN_MS + 800;
+    let message = "";
+    try {
+      await gradeSession({ difficulty: "standard", claims, plan: local, turns, deadlineMs });
+    } catch (error) {
+      message = error instanceof Error ? error.message : "";
+    }
+    const waited = Number(message.match(/timed out after (\d+)ms/)?.[1]);
+    expect(waited).toBeGreaterThan(0);
+    expect(waited).toBeLessThan(2_000);
+    expect(Date.now() - started).toBeLessThan(4_000);
   });
 
   it("recognises only the transient grader errors, and jitters the backoff", () => {

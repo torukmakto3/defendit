@@ -373,14 +373,35 @@ export const DEFEND_ROUTE_BUDGET_MS = 120_000;
 /**
  * One grader, including one transient retry, may not hold the council longer than this.
  * Live p90 was past the old 20s. 55s still finishes inside the 120s defend route.
+ * A larger `GRADER_TIMEOUT_MS` is clamped to about half that route (~59s).
  */
+const GRADER_TIMEOUT_DEFAULT_MS = 55_000;
+
+/** Longest a grader may wait. The other half of the route stays free for repair and signing. */
+export function maxGraderTimeoutMs(): number {
+  return Math.floor((DEFEND_ROUTE_BUDGET_MS - 1) / 2);
+}
+
+let warnedGraderTimeout: number | undefined;
+
 export function graderTimeoutMs(): number {
   const raw = process.env.GRADER_TIMEOUT_MS;
+  let configured = GRADER_TIMEOUT_DEFAULT_MS;
   if (raw !== undefined && raw.trim() !== "") {
     const n = Number(raw);
-    if (Number.isFinite(n) && n > 0) return n;
+    if (Number.isFinite(n) && n > 0) configured = n;
   }
-  return 55_000;
+  const cap = maxGraderTimeoutMs();
+  if (configured > cap) {
+    if (warnedGraderTimeout !== configured) {
+      warnedGraderTimeout = configured;
+      console.warn(
+        `[llm] GRADER_TIMEOUT_MS=${configured} is above the ${cap}ms grading cap for the ${DEFEND_ROUTE_BUDGET_MS}ms defend route. Using ${cap}ms.`,
+      );
+    }
+    return cap;
+  }
+  return configured;
 }
 
 function timeoutMs(): number {

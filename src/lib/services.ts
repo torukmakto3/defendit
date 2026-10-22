@@ -1063,6 +1063,8 @@ export async function completeDefendSession(opts: {
    * Callers that need the cards stored before this returns omit the flag.
    */
   waitForStudyDeck?: boolean;
+  /** Absolute time the defend route must finish. The budget-fallback grader stops short of it. */
+  deadlineMs?: number;
 }) {
   const session = await requireOwnSession(opts.sessionId, opts.user, "defend");
   if (session.status === "abandoned") {
@@ -1148,7 +1150,7 @@ export async function completeDefendSession(opts: {
     // Graders see each claim and the answer, not the raw file.
     grades = await withLlmScope({ sessionId: session.id, requestId: session.request_id, user: opts.user }, () =>
       gradeSession(
-        { difficulty: request.difficulty, claims, plan, turns },
+        { difficulty: request.difficulty, claims, plan, turns, deadlineMs: opts.deadlineMs },
         {
           onProgress: async (progress) => {
             await writeGradingProgress(session.id, progress);

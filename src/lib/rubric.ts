@@ -1,6 +1,6 @@
 import type { Difficulty } from "./types";
 
-export const RUBRIC_VERSION = "defend-it-rubric-v0.4";
+export const RUBRIC_VERSION = "defend-it-rubric-v0.5";
 
 export const DIMENSIONS = ["accuracy", "reasoning", "transfer", "errorDetection", "ownership"] as const;
 
