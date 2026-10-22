@@ -34,9 +34,9 @@ import {
   isCheckoutSku,
   liveStripeRefused,
   paymentsEnabled,
-  stripePriceId,
   stripeSecretKey,
 } from "./stripe-config";
+import { checkoutLookupKey, resolveCheckoutPrice } from "./stripe-prices";
 
 export { billingEnabled, paymentsEnabled };
 
@@ -56,7 +56,7 @@ const metaSchema = z
   .object({
     sku: z.string().optional(),
     user_id: z.string().optional(),
-    price_id: z.string().optional(),
+    lookup_key: z.string().optional(),
   })
   .nullish();
 
@@ -187,15 +187,17 @@ export async function createCheckout(input: {
   if (!paymentsEnabled()) throw new HttpError(404, "Not found");
   if (liveStripeRefused()) throw new HttpError(403, "Live Stripe keys are refused.");
   const sku = assertSkuForSale(input.sku);
-  const priceId = stripePriceId(sku);
-  if (!stripeSecretKey() || !priceId) throw new HttpError(501, "Stripe is not configured");
-  const mode = planForSku(sku) ? "subscription" : "payment";
+  if (!stripeSecretKey()) throw new HttpError(501, "Stripe is not configured");
+  const price = await resolveCheckoutPrice(sku);
+  if (price.currency.toLowerCase() !== "eur" || price.unitAmount !== skuPriceCents(sku)) {
+    throw new HttpError(502, `Stripe price for ${price.lookupKey} does not match the plan.`);
+  }
   const session = await stripeCheckoutApi().createSession({
     userId: input.userId,
     email: input.email ?? null,
     sku,
-    priceId,
-    mode,
+    priceId: price.priceId,
+    lookupKey: price.lookupKey,
     successUrl: `${appUrl("/billing/success")}?session_id={CHECKOUT_SESSION_ID}`,
     cancelUrl: appUrl("/billing/cancel"),
   });
@@ -271,7 +273,7 @@ async function applyCheckout(event: z.infer<typeof checkoutEventSchema>): Promis
   const skuRaw = session.metadata?.sku;
   if (!skuRaw || !isSku(skuRaw)) throw new HttpError(400, "Checkout is missing a price.");
   const sku = skuRaw;
-  assertConfiguredPrice(sku, session.metadata?.price_id);
+  assertLookupKey(sku, session.metadata?.lookup_key);
   if (session.currency == null || session.amount_total == null) {
     throw new HttpError(400, "Checkout is missing a price.");
   }
@@ -325,7 +327,6 @@ async function applyInvoice(event: z.infer<typeof invoiceEventSchema>): Promise<
   const sku = resolved.sku;
   const plan = planForSku(sku);
   if (!plan) throw new HttpError(400, "Invoice is not a subscription.");
-  assertConfiguredPrice(sku, resolved.priceId);
   assertPrice(invoice.currency, invoice.amount_paid, sku);
   await requireUser(resolved.userId);
   await rememberCustomer(resolved.userId, stripeId(invoice.customer));
@@ -453,13 +454,12 @@ async function applySubscription(event: z.infer<typeof subscriptionEventSchema>)
 function resolveInvoiceIdentity(invoice: z.infer<typeof invoiceEventSchema>["data"]["object"]): {
   sku: string;
   userId: string;
-  priceId?: string;
 } {
   const metas = [invoice.metadata, invoice.subscription_details?.metadata, invoice.parent?.subscription_details?.metadata];
   for (const meta of metas) {
     const sku = meta?.sku?.trim() ?? "";
     const userId = meta?.user_id?.trim() ?? "";
-    if (sku && userId) return { sku, userId, priceId: meta?.price_id };
+    if (sku && userId) return { sku, userId };
   }
   throw new HttpError(400, "Invoice is missing an account.");
 }
@@ -475,11 +475,11 @@ function accountId(ref: string | null | undefined, meta: string | undefined): st
   return userId;
 }
 
-function assertConfiguredPrice(sku: Sku, priceId: string | undefined): void {
+function assertLookupKey(sku: Sku, lookupKey: string | undefined): void {
   if (!isCheckoutSku(sku)) return;
-  const expected = stripePriceId(sku);
-  if (!expected || !priceId) return;
-  if (expected !== priceId) throw new HttpError(400, "Price does not match the plan.");
+  const expected = checkoutLookupKey(sku);
+  if (!lookupKey) return;
+  if (lookupKey !== expected) throw new HttpError(400, `Stripe lookup key does not match ${expected}.`);
 }
 
 function assertPrice(currency: string, amountCents: number, sku: Sku): void {

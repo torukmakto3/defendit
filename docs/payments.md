@@ -22,17 +22,18 @@ The two flags are independent on purpose. The ledger tests turn the wallet gate 
 
 Prices are EUR and include VAT. A defense and a challenge each cost 1 credit.
 
-| Product | Price | Ledger |
-|---|---|---|
-| One defense | €4 | 1 defense credit (`source: purchase`) |
-| One challenge for someone else | €3 | 1 challenge credit (`source: purchase`) |
-| 3-credit pack | €10 | 3 flexible credits, usable for a defense or a challenge |
-| 8-credit pack | €20 | 8 flexible credits, same |
-| Subscription | €11/month or €99/year | `renewPlan`: 10 defenses and 5 challenge credits per month, 10 active Learn projects. A year grants twelve months at once. Unused subscription challenges do not roll over. |
+| Product | Lookup key | Price | Ledger |
+|---|---|---|---|
+| One defense | `dit_defense_payg` | €4 | 1 defense credit (`source: purchase`) |
+| One challenge for someone else | `dit_challenge_payg` | €3 | 1 challenge credit (`source: purchase`) |
+| 3-credit pack | `dit_pack_3` | €10 | 3 flexible credits, usable for a defense or a challenge |
+| 8-credit pack | `dit_pack_8` | €20 | 8 flexible credits, same |
 
-Pack credits are the ledger's `flex` kind, so they pay for either action. Team and enterprise stay on the simulate path; they are not Stripe Checkout products.
+Checkout asks Stripe for those four lookup keys (`prices.list`, expanding `data.product`) and caches the result for five minutes. A missing key, two prices for one key, or an amount that is not the EUR price above fails the request and is not cached. There is no `STRIPE_PRICE_*` variable.
 
-Checkout is created on the server for a signed-in user. `client_reference_id` and `metadata` (`user_id`, `sku`, `price_id`) tie the session to that account. Success and cancel pages are `/billing/success` and `/billing/cancel`. The success page does not grant credits.
+Pack credits are the ledger's `flex` kind, so they pay for either action. `dit_pro_monthly`, `dit_pro_yearly`, `dit_team_monthly`, `dit_enterprise_base`, and the `defense_overage` meter are reserved in `src/lib/stripe-prices.ts`. Checkout does not sell them yet.
+
+Checkout is created on the server for a signed-in user, in `payment` mode only. `client_reference_id` and `metadata` (`user_id`, `sku`, `lookup_key`) tie the session to that account. The line item uses the price id Stripe returned for that lookup key. Success and cancel pages are `/billing/success` and `/billing/cancel`. The success page does not grant credits.
 
 ## Webhook
 
@@ -54,12 +55,6 @@ Checkout is created on the server for a signed-in user. `client_reference_id` an
 | `STRIPE_SECRET_KEY` | Secret key. Use a test key (`sk_test_…`). |
 | `STRIPE_WEBHOOK_SECRET` | Signing secret from `stripe listen` or the dashboard endpoint. |
 | `STRIPE_ALLOW_LIVE` | Must be exactly `true` or the process refuses to start when payments are on and the key is live, or `STRIPE_MODE=live`. |
-| `STRIPE_PRICE_DEFENSE` | Price id for €4. |
-| `STRIPE_PRICE_CHALLENGE` | Price id for €3. |
-| `STRIPE_PRICE_PACK3` | Price id for €10. |
-| `STRIPE_PRICE_PACK8` | Price id for €20. |
-| `STRIPE_PRICE_SUBSCRIPTION_MONTH` | Price id for €11/month. |
-| `STRIPE_PRICE_SUBSCRIPTION_YEAR` | Price id for €99/year. |
 
 `APP_URL` (already used for other links) is the absolute origin of the success and cancel URLs.
 
@@ -70,7 +65,7 @@ The server refuses to start when `PAYMENTS_ENABLED` is on and `STRIPE_SECRET_KEY
 Do this after Luis has a test account. No live mode.
 
 1. Install the [Stripe CLI](https://docs.stripe.com/stripe-cli) and `stripe login` against the test account.
-2. In the Dashboard (test mode), create six EUR prices at the amounts above. Copy each price id into `STRIPE_PRICE_*`.
+2. In the test-mode catalog, the one-time prices already use the lookup keys in the table above. Checkout reads them at runtime. Do not copy price ids into the environment.
 3. Put the test secret key in `STRIPE_SECRET_KEY`. Leave `STRIPE_MODE=test`.
 4. Set `PAYMENTS_ENABLED=true`. Set `BILLING_ENABLED=true` as well if the wallet gate should apply while you click through.
 5. `npm run dev`, then in another terminal:

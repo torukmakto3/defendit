@@ -21,6 +21,15 @@ import { getDb } from "../src/lib/db";
 import { billingEnabled } from "../src/lib/plans";
 import { checkoutSessionParams, setStripeCheckoutApiForTests, type StripeCheckoutRequest } from "../src/lib/stripe-checkout";
 import { assertStripeReady, checkoutCatalog, paymentsEnabled } from "../src/lib/stripe-config";
+import {
+  checkoutLookupKey,
+  expireStripePriceCacheForTests,
+  resolvePrices,
+  setStripePriceClientForTests,
+  ONE_TIME_LOOKUP_KEYS,
+  STRIPE_LOOKUP_KEYS,
+  type StripePriceClient,
+} from "../src/lib/stripe-prices";
 
 const SECRET = "whsec_test_secret";
 const calls: string[] = [];
@@ -61,12 +70,7 @@ afterEach(() => {
   delete process.env.STRIPE_WEBHOOK_SECRET;
   delete process.env.STRIPE_ALLOW_LIVE;
   delete process.env.STRIPE_MODE;
-  delete process.env.STRIPE_PRICE_DEFENSE;
-  delete process.env.STRIPE_PRICE_CHALLENGE;
-  delete process.env.STRIPE_PRICE_PACK3;
-  delete process.env.STRIPE_PRICE_PACK8;
-  delete process.env.STRIPE_PRICE_SUBSCRIPTION_MONTH;
-  delete process.env.STRIPE_PRICE_SUBSCRIPTION_YEAR;
+  setStripePriceClientForTests(null);
 });
 
 async function signIn(email: string): Promise<{ user: User; cookie: string }> {
@@ -106,7 +110,7 @@ function checkoutEvent(input: {
   amount: number;
   paymentIntent: string;
   mode?: "payment" | "subscription";
-  priceId?: string;
+  lookupKey?: string;
 }) {
   return {
     id: input.id,
@@ -123,7 +127,7 @@ function checkoutEvent(input: {
         metadata: {
           sku: input.sku,
           user_id: input.userId,
-          ...(input.priceId ? { price_id: input.priceId } : {}),
+          ...(input.lookupKey ? { lookup_key: input.lookupKey } : {}),
         },
       },
     },
@@ -494,23 +498,42 @@ describe("webhook", () => {
     ).rejects.toMatchObject({ status: 403 });
   });
 
-  it("rejects a checkout whose price id does not match the configured price", async () => {
-    process.env.STRIPE_PRICE_PACK3 = "price_pack3_expected";
+  it("rejects a checkout whose lookup key does not match the product", async () => {
     const { user } = await signIn("bad-price@pay.example");
     const res = await postWebhook(
       checkoutEvent({
-        id: "evt_bad_price_id",
+        id: "evt_bad_lookup",
         userId: user.id,
         sku: "pack3",
         amount: 1000,
-        paymentIntent: "pi_bad_price_id",
-        priceId: "price_pack3_other",
+        paymentIntent: "pi_bad_lookup",
+        lookupKey: "dit_pack_8",
       }),
     );
     expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Stripe lookup key does not match dit_pack_3." });
     expect((await getBalance(user.id)).flex).toBe(0);
   });
 });
+
+function catalogClient(missing: string[] = []): { client: StripePriceClient; calls: string[][] } {
+  const calls: string[][] = [];
+  const client: StripePriceClient = {
+    async list(lookupKeys) {
+      calls.push([...lookupKeys]);
+      return Object.entries(STRIPE_LOOKUP_KEYS)
+        .filter(([, key]) => lookupKeys.includes(key) && !missing.includes(key))
+        .map(([, key]) => ({
+          id: `price_${key}`,
+          lookup_key: key,
+          currency: "eur",
+          unit_amount: key === "dit_defense_payg" ? 400 : key === "dit_challenge_payg" ? 300 : key === "dit_pack_3" ? 1000 : 2000,
+          product: { id: `prod_${key}`, name: key },
+        }));
+    },
+  };
+  return { client, calls };
+}
 
 describe("checkout session", () => {
   it("builds a signed-in session tied to the user and does not call Stripe when mocked", async () => {
@@ -523,7 +546,8 @@ describe("checkout session", () => {
     });
     process.env.PAYMENTS_ENABLED = "true";
     process.env.STRIPE_SECRET_KEY = "sk_test_dummy";
-    process.env.STRIPE_PRICE_DEFENSE = "price_defense_test";
+    const prices = catalogClient();
+    setStripePriceClientForTests(prices.client);
     const { user, cookie } = await signIn("checkout-mock@pay.example");
     const anon = await checkout(
       new Request("http://localhost/api/billing/checkout", {
@@ -549,19 +573,19 @@ describe("checkout session", () => {
     expect(seen[0]).toMatchObject({
       userId: user.id,
       sku: "defense",
-      priceId: "price_defense_test",
-      mode: "payment",
+      priceId: "price_dit_defense_payg",
+      lookupKey: "dit_defense_payg",
     });
+    expect(prices.calls).toEqual([Object.values(ONE_TIME_LOOKUP_KEYS)]);
     expect(seen[0].successUrl).toContain("/billing/success?session_id={CHECKOUT_SESSION_ID}");
     expect(seen[0].cancelUrl).toContain("/billing/cancel");
     const params = checkoutSessionParams(seen[0]);
+    expect(params.mode).toBe("payment");
     expect(params.client_reference_id).toBe(user.id);
-    expect(params.metadata).toMatchObject({ user_id: user.id, sku: "defense", price_id: "price_defense_test" });
+    expect(params.metadata).toMatchObject({ user_id: user.id, sku: "defense", lookup_key: "dit_defense_payg" });
+    expect(params.line_items).toEqual([{ price: "price_dit_defense_payg", quantity: 1 }]);
     expect(params.payment_intent_data?.metadata).toMatchObject({ user_id: user.id, sku: "defense" });
     expect(params.subscription_data).toBeUndefined();
-    const sub = checkoutSessionParams({ ...seen[0], mode: "subscription", sku: "subscription_month" });
-    expect(sub.subscription_data?.metadata).toMatchObject({ user_id: user.id, sku: "subscription_month" });
-    expect(sub.payment_intent_data).toBeUndefined();
 
     process.env.STRIPE_SECRET_KEY = "sk_live_disabled";
     const refused = await checkout(
@@ -575,19 +599,53 @@ describe("checkout session", () => {
     expect(seen).toHaveLength(1);
   });
 
-  it("lists the six consumer products only while payments are on", () => {
+  it("lists the one-time products only while payments are on", () => {
     expect(checkoutCatalog()).toBeNull();
     process.env.PAYMENTS_ENABLED = "1";
     const catalog = checkoutCatalog();
-    expect(catalog?.map((product) => product.sku)).toEqual([
-      "defense",
-      "challenge",
-      "pack3",
-      "pack8",
-      "subscription_month",
-      "subscription_year",
-    ]);
+    expect(catalog?.map((product) => product.sku)).toEqual(["defense", "challenge", "pack3", "pack8"]);
     expect(catalog?.find((product) => product.sku === "pack8")?.detail).toMatch(/defense or a challenge/);
-    expect(catalog?.find((product) => product.sku === "subscription_month")?.detail).toMatch(/don't roll over/);
+  });
+
+  it("does not start Checkout for a subscription", async () => {
+    process.env.PAYMENTS_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_dummy";
+    const prices = catalogClient();
+    setStripePriceClientForTests(prices.client);
+    const { cookie } = await signIn("no-sub@pay.example");
+    const res = await checkout(
+      new Request("http://localhost/api/billing/checkout", {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ sku: "subscription_month" }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "That price is not for sale." });
+    expect(prices.calls).toEqual([]);
+  });
+
+  it("fails closed when a lookup key is missing and caches a complete catalog", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_dummy";
+    const missing = catalogClient(["dit_pack_3"]);
+    setStripePriceClientForTests(missing.client);
+    await expect(resolvePrices(["dit_defense_payg", "dit_pack_3"])).rejects.toMatchObject({
+      status: 502,
+      message: "Stripe catalog is missing lookup key dit_pack_3.",
+    });
+    expect(missing.calls).toHaveLength(1);
+
+    const prices = catalogClient();
+    setStripePriceClientForTests(prices.client);
+    const first = await resolvePrices(["dit_pack_8", "dit_defense_payg"]);
+    const second = await resolvePrices(["dit_defense_payg", "dit_pack_8"]);
+    expect(second.get("dit_defense_payg")?.priceId).toBe("price_dit_defense_payg");
+    expect(first.get("dit_pack_8")?.unitAmount).toBe(2000);
+    expect(first.get("dit_defense_payg")?.productName).toBe("dit_defense_payg");
+    expect(prices.calls).toHaveLength(1);
+    expect(checkoutLookupKey("defense")).toBe("dit_defense_payg");
+    expireStripePriceCacheForTests();
+    await resolvePrices(["dit_defense_payg", "dit_pack_8"]);
+    expect(prices.calls).toHaveLength(2);
   });
 });

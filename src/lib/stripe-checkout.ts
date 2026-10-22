@@ -11,7 +11,7 @@ export interface StripeCheckoutRequest {
   email: string | null;
   sku: string;
   priceId: string;
-  mode: "payment" | "subscription";
+  lookupKey: string;
   successUrl: string;
   cancelUrl: string;
 }
@@ -25,29 +25,18 @@ export function checkoutSessionParams(input: StripeCheckoutRequest): Stripe.Chec
   const metadata: Record<string, string> = {
     user_id: input.userId,
     sku: input.sku,
-    price_id: input.priceId,
+    lookup_key: input.lookupKey,
   };
   const params: Stripe.Checkout.SessionCreateParams = {
-    mode: input.mode,
+    mode: "payment",
     client_reference_id: input.userId,
     line_items: [{ price: input.priceId, quantity: 1 }],
     success_url: input.successUrl,
     cancel_url: input.cancelUrl,
     metadata,
+    payment_intent_data: { metadata: { user_id: input.userId, sku: input.sku, lookup_key: input.lookupKey } },
   };
   if (input.email && input.email.includes("@")) params.customer_email = input.email;
-  switch (input.mode) {
-    case "subscription":
-      params.subscription_data = { metadata: { user_id: input.userId, sku: input.sku } };
-      break;
-    case "payment":
-      params.payment_intent_data = { metadata: { user_id: input.userId, sku: input.sku } };
-      break;
-    default: {
-      const unknown: never = input.mode;
-      throw new Error(`Unknown checkout mode: ${String(unknown)}`);
-    }
-  }
   return params;
 }
 

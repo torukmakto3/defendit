@@ -11,15 +11,7 @@
 
 import { createHmac, timingSafeEqual } from "crypto";
 import { HttpError } from "./errors";
-import {
-  formatEur,
-  getPlan,
-  isSku,
-  PACKS,
-  PAYG_CENTS,
-  periodsForInterval,
-  type Sku,
-} from "./plans";
+import { formatEur, isSku, PACKS, PAYG_CENTS, type Sku } from "./plans";
 
 const LIVE_KEY_PREFIX = "sk_live_";
 
@@ -48,35 +40,20 @@ export function assertStripeReady(): void {
   );
 }
 
-const CHECKOUT_SKUS = [
-  "defense",
-  "challenge",
-  "pack3",
-  "pack8",
-  "subscription_month",
-  "subscription_year",
-] as const;
+const CHECKOUT_SKUS = ["defense", "challenge", "pack3", "pack8"] as const;
 
 export type CheckoutSku = (typeof CHECKOUT_SKUS)[number];
 
-const PRICE_ENV: Record<CheckoutSku, string> = {
-  defense: "STRIPE_PRICE_DEFENSE",
-  challenge: "STRIPE_PRICE_CHALLENGE",
-  pack3: "STRIPE_PRICE_PACK3",
-  pack8: "STRIPE_PRICE_PACK8",
-  subscription_month: "STRIPE_PRICE_SUBSCRIPTION_MONTH",
-  subscription_year: "STRIPE_PRICE_SUBSCRIPTION_YEAR",
-};
-
+/** One-time Checkout only. Plans stay on the ledger until the integration plan lands. */
 export function isCheckoutSku(sku: Sku): sku is CheckoutSku {
   switch (sku) {
     case "defense":
     case "challenge":
     case "pack3":
     case "pack8":
+      return CHECKOUT_SKUS.includes(sku);
     case "subscription_month":
     case "subscription_year":
-      return CHECKOUT_SKUS.includes(sku);
     case "team_month":
     case "enterprise_month":
       return false;
@@ -85,11 +62,6 @@ export function isCheckoutSku(sku: Sku): sku is CheckoutSku {
       return unknown;
     }
   }
-}
-
-export function stripePriceId(sku: CheckoutSku): string | null {
-  const value = process.env[PRICE_ENV[sku]]?.trim() ?? "";
-  return value || null;
 }
 
 export function stripeSecretKey(): string | null {
@@ -112,11 +84,6 @@ export interface CheckoutProduct {
 /** Null while payments are off, so the pricing page and dashboard hide checkout. */
 export function checkoutCatalog(): CheckoutProduct[] | null {
   if (!paymentsEnabled()) return null;
-  const sub = getPlan("subscription");
-  const yearPeriods = periodsForInterval("year");
-  const defenses = sub.defensesPerPeriod;
-  const challenges = sub.challengesPerPeriod;
-  const learn = sub.learnSlots ?? 0;
   return [
     {
       sku: "defense",
@@ -141,18 +108,6 @@ export function checkoutCatalog(): CheckoutProduct[] | null {
       name: "8-credit pack",
       priceLabel: formatEur(PACKS.pack8.priceCents),
       detail: `${PACKS.pack8.credits} credits, usable for a defense or a challenge.`,
-    },
-    {
-      sku: "subscription_month",
-      name: "Monthly",
-      priceLabel: `${formatEur(sub.priceCents.month ?? 0)}/month`,
-      detail: `${learn} active Learn projects, ${defenses} defenses, and ${challenges} challenge credits each month. Unused challenges don't roll over.`,
-    },
-    {
-      sku: "subscription_year",
-      name: "Yearly",
-      priceLabel: `${formatEur(sub.priceCents.year ?? 0)}/year`,
-      detail: `A year grants ${yearPeriods} months at once (${defenses * yearPeriods} defenses and ${challenges * yearPeriods} challenge credits) and ${learn} active Learn projects. Unused challenges expire at the next renewal.`,
     },
   ];
 }
