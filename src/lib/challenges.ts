@@ -1273,16 +1273,32 @@ export async function noteChallengeDefended(
   );
   if (!row) return;
   if (row.status !== "claimed" && row.status !== "defended") return;
-  // Consume on a retry too. The consume key is idempotent, so a second
-  // call after a finished defense does not charge the challenger twice.
-  await consumeChallengeHold(db, row);
-  await db.run(
-    `UPDATE challenges
-     SET status = 'defended', session_id = ?, deliverable_id = ?, receipt_id = ?
-     WHERE request_id = ? AND status IN ('claimed', 'defended')`,
-    [ids.sessionId, ids.deliverableId, ids.receiptId, requestId],
-  );
-  if (row.status === "claimed") await recordEvent(db, row.id, "defended", row.claimed_by_user_id);
+  // The status change and the consume commit together. An expiry at the
+  // deadline updates the same row only while it is still claimed, so it
+  // cannot refund a credit this transaction has already used. A retry finds
+  // the row defended and consumes again; that key does not charge twice.
+  await db.transaction(async (tx) => {
+    const won = await tx.run(
+      `UPDATE challenges
+       SET status = 'defended', session_id = ?, deliverable_id = ?, receipt_id = ?
+       WHERE id = ? AND status = 'claimed'`,
+      [ids.sessionId, ids.deliverableId, ids.receiptId, row.id],
+    );
+    if (won.changes === 1) {
+      await consumeChallengeHold(tx, row);
+      await recordEvent(tx, row.id, "defended", row.claimed_by_user_id);
+      return;
+    }
+    const current = await tx.get<{ status: string }>(`SELECT status FROM challenges WHERE id = ?`, [row.id]);
+    if (current?.status !== "defended") return;
+    await tx.run(
+      `UPDATE challenges
+       SET session_id = ?, deliverable_id = ?, receipt_id = ?
+       WHERE id = ? AND status = 'defended'`,
+      [ids.sessionId, ids.deliverableId, ids.receiptId, row.id],
+    );
+    await consumeChallengeHold(tx, row);
+  });
   // The onward challenge credit is grantCredits inside finishDefenseCredit,
   // once this defense is linked. Sharing is not an input.
 }

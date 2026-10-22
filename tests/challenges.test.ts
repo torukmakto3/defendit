@@ -969,6 +969,79 @@ describe("challenge links", () => {
     expect(reserved).toBeTruthy();
   });
 
+  it("does not refund a credit that a defense consumes at the deadline", async () => {
+    const creator = await signIn(nextEmail("deadline-c"));
+    await fund(creator, 1);
+    const defender = await signIn(nextEmail("deadline-d"));
+    const created = await createChallenge({
+      user: creator,
+      subject: "Deadline race",
+      difficulty: "standard",
+    });
+    const claimed = await claimChallenge({
+      slug: created.slug,
+      user: defender,
+      ip: nextIp(),
+      adultConfirmed: true,
+    });
+    const uploaded = await ingestDeliverable({
+      token: claimed.token,
+      user: defender,
+      fileName: "memo.md",
+      buffer: doc,
+    });
+    const session = await startSession({ token: claimed.token, user: defender, mode: "defend" });
+    const db = await getDb();
+    const challenge = await db.get<{ id: string; request_id: string }>(
+      `SELECT id, request_id FROM challenges WHERE slug = ?`,
+      [created.slug],
+    );
+    if (!challenge) throw new Error("missing challenge");
+    await db.run(`UPDATE challenges SET finish_by = ? WHERE id = ?`, [
+      new Date(Date.now() - 1000).toISOString(),
+      challenge.id,
+    ]);
+    const before = await db.get<{ spent_cents: number | string | null }>(
+      `SELECT spent_cents FROM credit_budget WHERE id = 'beta'`,
+    );
+    await Promise.all([
+      noteChallengeDefended(challenge.request_id, {
+        sessionId: session.sessionId,
+        deliverableId: uploaded.deliverableId,
+        receiptId: "rcpt_deadline_race",
+      }),
+      expireDueChallenges(),
+    ]);
+    const status = await db.get<{ status: string }>(`SELECT status FROM challenges WHERE id = ?`, [challenge.id]);
+    const consumed = await db.get<{ n: number | string }>(
+      `SELECT COUNT(*) AS n FROM credit_ledger WHERE idempotency_key = ?`,
+      [`consume:challenge:${challenge.id}`],
+    );
+    const refunded = await db.get<{ n: number | string }>(
+      `SELECT COUNT(*) AS n FROM credit_ledger WHERE idempotency_key = ?`,
+      [`refund:challenge:${challenge.id}`],
+    );
+    const spent = await db.get<{ spent_cents: number | string | null }>(
+      `SELECT spent_cents FROM credit_budget WHERE id = 'beta'`,
+    );
+    const release = await db.get<{ id: string }>(`SELECT id FROM credit_ledger WHERE idempotency_key = ?`, [
+      `budget-release:challenge-defense:${challenge.id}`,
+    ]);
+    expect(Number(consumed?.n) + Number(refunded?.n)).toBe(1);
+    if (status?.status === "defended") {
+      expect(Number(consumed?.n)).toBe(1);
+      expect(Number(refunded?.n)).toBe(0);
+      expect(release).toBeUndefined();
+      expect(Number(spent?.spent_cents ?? 0)).toBe(Number(before?.spent_cents ?? 0));
+      return;
+    }
+    expect(status?.status).toBe("expired");
+    expect(Number(refunded?.n)).toBe(1);
+    expect(Number(consumed?.n)).toBe(0);
+    expect(release).toBeTruthy();
+    expect(Number(spent?.spent_cents ?? 0)).toBe(Number(before?.spent_cents ?? 0) - betaDefenseCents());
+  });
+
   it("rate limits public share clicks", async () => {
     process.env.CHALLENGE_SHARE_LIMIT = "1";
     const creator = await signIn(nextEmail("share-cap"));
