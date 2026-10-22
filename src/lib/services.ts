@@ -13,7 +13,7 @@ import { aggregateScore, claimScores, gradeSession, scoreDefense, shouldFlagForH
 import { readGradingProgress, type GradingProgress } from "./grading-progress";
 import { HttpError } from "./http";
 import { newId, newToken } from "./ids";
-import { computeIntegrity } from "./integrity";
+import { clampIntegrityCount, computeIntegrity } from "./integrity";
 import { nextLearnTurn, type GapItem } from "./learn";
 import {
   budgetUsdForTier,
@@ -172,6 +172,8 @@ interface SessionRow {
   channel: Channel;
   grading_claimed_at?: string | null;
   grading_progress?: string | null;
+  paste_events?: number | null;
+  focus_blur_events?: number | null;
 }
 
 /** A grading claim older than the complete route's 120s limit is abandoned. */
@@ -496,6 +498,7 @@ export interface FirstQuestionInfo {
   total: number;
   question: string;
   probe: ReturnType<typeof publicProbes>[number];
+  startedAt: string;
 }
 
 export async function startSession(opts: {
@@ -577,7 +580,7 @@ export async function startSession(opts: {
   }
 
   const db = await getDb();
-  await insertSessionRow(db, {
+  const startedAt = await insertSessionRow(db, {
     sessionId,
     requestId: request.id,
     deliverableId: deliverable.id,
@@ -602,6 +605,7 @@ export async function startSession(opts: {
             total: plan.probes.length,
             question: firstProbe.question,
             probe: firstProbe,
+            startedAt,
           }),
         )
       : null;
@@ -620,7 +624,7 @@ export async function startSession(opts: {
   if (shown) await shown;
   await refreshRequestUsage(request.id);
   if (opts.mode === "defend") await noteChallengeSession(request.id, sessionId);
-  return { sessionId, plan, channel };
+  return { sessionId, plan, channel, startedAt };
 }
 
 async function insertSessionRow(
@@ -639,6 +643,7 @@ async function insertSessionRow(
   },
 ) {
   const tier = getCostTier(row.user);
+  const startedAt = new Date().toISOString();
   await db.run(
     `INSERT INTO sessions
       (id, request_id, deliverable_id, user_id, mode, seed, plan_enc, transcript_enc, gap_map_enc, status, started_at, purge_after, channel, cost_tier, budget_usd, budget_capped)
@@ -653,7 +658,7 @@ async function insertSessionRow(
       encryptJson(row.plan, ctx.plan(row.sessionId)),
       encryptJson([], ctx.transcript(row.sessionId)),
       encryptJson([], ctx.gapMap(row.sessionId)),
-      new Date().toISOString(),
+      startedAt,
       hoursFromNow(retentionDays() * 24),
       row.channel,
       tier,
@@ -661,6 +666,7 @@ async function insertSessionRow(
       row.budgetCapped ? 1 : 0,
     ],
   );
+  return startedAt;
 }
 
 /** Strip what the creator must not see before answering (expected answers). */
@@ -738,8 +744,18 @@ export async function recordDefendAnswer(opts: {
   user: User;
   probeId: string;
   answer: string;
+  pasteEvents?: number;
+  focusBlurEvents?: number;
 }) {
   const session = await requireOwnSession(opts.sessionId, opts.user, "defend");
+  if (opts.pasteEvents !== undefined || opts.focusBlurEvents !== undefined) {
+    await recordIntegritySignals({
+      sessionId: opts.sessionId,
+      user: opts.user,
+      pasteEvents: opts.pasteEvents,
+      focusBlurEvents: opts.focusBlurEvents,
+    });
+  }
   if (session.channel === "voice") {
     const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
     const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
@@ -944,6 +960,48 @@ export interface DefendInterviewState {
   probes: ReturnType<typeof publicProbes>;
   progress: GradingProgress | null;
   receiptId: string | null;
+  /** Server clock for this session. The interview restores it after a reload. */
+  startedAt: string;
+  pasteEvents: number;
+  focusBlurEvents: number;
+}
+
+/**
+ * Raise the session's paste and focus-loss totals. A repeat or a stale tab
+ * cannot lower them. Counts are ignored once the defense is no longer open.
+ */
+export async function recordIntegritySignals(opts: {
+  sessionId: string;
+  user: User;
+  pasteEvents?: number;
+  focusBlurEvents?: number;
+}): Promise<{ pasteEvents: number; focusBlurEvents: number }> {
+  const session = await requireOwnSession(opts.sessionId, opts.user, "defend");
+  const pasteEvents = clampIntegrityCount(opts.pasteEvents);
+  const focusBlurEvents = clampIntegrityCount(opts.focusBlurEvents);
+  const db = await getDb();
+  if (session.status === "in_progress" || session.status === "grading") {
+    await db.run(
+      `UPDATE sessions
+       SET paste_events = CASE WHEN paste_events > ? THEN paste_events ELSE ? END,
+           focus_blur_events = CASE WHEN focus_blur_events > ? THEN focus_blur_events ELSE ? END
+       WHERE id = ? AND status IN ('in_progress', 'grading')`,
+      [pasteEvents, pasteEvents, focusBlurEvents, focusBlurEvents, session.id],
+    );
+  }
+  return readIntegrityCounts(session.id);
+}
+
+async function readIntegrityCounts(sessionId: string): Promise<{ pasteEvents: number; focusBlurEvents: number }> {
+  const db = await getDb();
+  const row = await db.get<{ paste_events: number | null; focus_blur_events: number | null }>(
+    `SELECT paste_events, focus_blur_events FROM sessions WHERE id = ?`,
+    [sessionId],
+  );
+  return {
+    pasteEvents: clampIntegrityCount(row?.paste_events ?? 0),
+    focusBlurEvents: clampIntegrityCount(row?.focus_blur_events ?? 0),
+  };
 }
 
 /**
@@ -970,6 +1028,7 @@ export async function getDefendInterviewState(token: string, user: User): Promis
   const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
   if (!plan) throw new HttpError(410, "This session has expired.");
   const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
+  const signals = await readIntegrityCounts(session.id);
   return {
     sessionId: session.id,
     channel: session.channel,
@@ -979,6 +1038,9 @@ export async function getDefendInterviewState(token: string, user: User): Promis
     probes: publicProbes(plan),
     progress: readGradingProgress(session.grading_progress),
     receiptId: session.status === "completed" ? await receiptIdForSession(session.id) : null,
+    startedAt: session.started_at,
+    pasteEvents: signals.pasteEvents,
+    focusBlurEvents: signals.focusBlurEvents,
   };
 }
 
@@ -1005,6 +1067,14 @@ export async function completeDefendSession(opts: {
   const session = await requireOwnSession(opts.sessionId, opts.user, "defend");
   if (session.status === "abandoned") {
     throw new HttpError(402, "This defense ended before grading. The credit was returned.");
+  }
+  if (session.status === "in_progress" || session.status === "grading") {
+    await recordIntegritySignals({
+      sessionId: session.id,
+      user: opts.user,
+      pasteEvents: opts.pasteEvents,
+      focusBlurEvents: opts.focusBlurEvents,
+    });
   }
   const db = await getDb();
 
@@ -1135,10 +1205,11 @@ export async function completeDefendSession(opts: {
         },
       };
     }
+    const signals = await readIntegrityCounts(session.id);
     integrity = computeIntegrity({
       turns,
-      pasteEvents: opts.pasteEvents,
-      focusBlurEvents: opts.focusBlurEvents,
+      pasteEvents: signals.pasteEvents,
+      focusBlurEvents: signals.focusBlurEvents,
     });
     if (opts.waitForStudyDeck !== false) await rememberStudyDeck(deliverable.id, true);
     await writeGradingProgress(session.id, { done: grades.length, total: grades.length, stage: "signing" });
@@ -1170,8 +1241,8 @@ export async function completeDefendSession(opts: {
       );
       if (won.changes !== 1) throw new HttpError(409, "This deliverable has already been defended.");
       await tx.run(
-        `UPDATE sessions SET integrity_json = ?, status = 'completed', completed_at = ?, grading_progress = NULL WHERE id = ?`,
-        [JSON.stringify(integrity), nowIso, session.id],
+        `UPDATE sessions SET integrity_json = ?, status = 'completed', completed_at = ?, grading_progress = NULL, paste_events = ?, focus_blur_events = ? WHERE id = ?`,
+        [JSON.stringify(integrity), nowIso, integrity.pasteEvents, integrity.focusBlurEvents, session.id],
       );
       for (const g of grades) {
         const gradeId = newId("grd");

@@ -29,6 +29,7 @@ import {
   purgeExpired,
   getDefendInterviewState,
   recordDefendAnswer,
+  recordIntegritySignals,
   recordVoiceAnswer,
   voicePlan,
   startSession,
@@ -459,6 +460,145 @@ describe("interview integrity", () => {
       [user.id],
     );
     expect(Number(refunds?.n)).toBe(0);
+  });
+});
+
+describe("integrity signals survive a reload", () => {
+  it("keeps the higher paste and focus totals and returns them with the server start time", async () => {
+    const { user, cookie } = await signIn("signals@fund.example");
+    const other = await signIn("signals-other@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "signals.md", buffer: memo, difficulty: "standard" });
+    const session = await startSession({ token: ingest.token, user, mode: "defend" });
+    const probeId = session.plan.probes[0].id;
+    const answer =
+      "Because the unit economics section shows churn near 1.2% and LTV/CAC above 3; if churn doubles the recommendation weakens first.";
+
+    await recordDefendAnswer({
+      sessionId: session.sessionId,
+      user,
+      probeId,
+      answer,
+      pasteEvents: 1,
+      focusBlurEvents: 2,
+    });
+    const again = await recordDefendAnswer({
+      sessionId: session.sessionId,
+      user,
+      probeId,
+      answer,
+      pasteEvents: 1,
+      focusBlurEvents: 0,
+    });
+    expect(again.idempotent).toBe(true);
+
+    const raised = await recordIntegritySignals({
+      sessionId: session.sessionId,
+      user,
+      pasteEvents: 3,
+      focusBlurEvents: 2,
+    });
+    expect(raised).toEqual({ pasteEvents: 3, focusBlurEvents: 2 });
+    const stale = await recordIntegritySignals({
+      sessionId: session.sessionId,
+      user,
+      pasteEvents: 1,
+      focusBlurEvents: 0,
+    });
+    expect(stale).toEqual({ pasteEvents: 3, focusBlurEvents: 2 });
+    await expect(
+      recordIntegritySignals({ sessionId: session.sessionId, user: other.user, pasteEvents: 9 }),
+    ).rejects.toMatchObject({ status: 404 });
+
+    const db = await getDb();
+    const row = await db.get<{ started_at: string; paste_events: number; focus_blur_events: number }>(
+      `SELECT started_at, paste_events, focus_blur_events FROM sessions WHERE id = ?`,
+      [session.sessionId],
+    );
+    const resumed = await defendState(
+      new Request(`http://localhost/api/sessions/defend/state?token=${encodeURIComponent(ingest.token)}`, {
+        headers: { cookie },
+      }),
+    );
+    expect(resumed.headers.get("cache-control")).toBe("no-store");
+    expect(resumed.status).toBe(200);
+    const body = (await resumed.json()) as {
+      startedAt: string;
+      pasteEvents: number;
+      focusBlurEvents: number;
+    };
+    expect(body.startedAt).toBe(row?.started_at);
+    expect(body.pasteEvents).toBe(3);
+    expect(body.focusBlurEvents).toBe(2);
+
+    const missing = await defendState(new Request("http://localhost/api/sessions/defend/state"));
+    expect(missing.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("signs the stored paste total when completion reports zeros", async () => {
+    const { user } = await signIn("signals-receipt@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "signals-receipt.md", buffer: memo, difficulty: "standard" });
+    const session = await startSession({ token: ingest.token, user, mode: "defend" });
+    await recordIntegritySignals({ sessionId: session.sessionId, user, pasteEvents: 1, focusBlurEvents: 1 });
+    await answerAll(session, user);
+    const done = await completeDefendSession({
+      sessionId: session.sessionId,
+      user,
+      pasteEvents: 0,
+      focusBlurEvents: 0,
+    });
+    expect(done.receipt?.payload.integrity).toMatchObject({ status: "Concerns", pasteEvents: 1 });
+    expect(done.receipt && verifySignature(done.receipt.payload, done.receipt.signature, done.receipt.publicKey)).toBe(
+      true,
+    );
+  });
+
+  it("returns 404 when the session belongs to someone else", async () => {
+    const { user } = await signIn("signals-owner@fund.example");
+    const other = await signIn("signals-stranger@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "signals-owner.md", buffer: memo, difficulty: "standard" });
+    const session = await startSession({ token: ingest.token, user, mode: "defend" });
+    await recordIntegritySignals({ sessionId: session.sessionId, user, pasteEvents: 2, focusBlurEvents: 1 });
+    await expect(
+      recordIntegritySignals({ sessionId: session.sessionId, user: other.user, pasteEvents: 9, focusBlurEvents: 9 }),
+    ).rejects.toMatchObject({ status: 404 });
+    const db = await getDb();
+    const row = await db.get<{ paste_events: number; focus_blur_events: number }>(
+      `SELECT paste_events, focus_blur_events FROM sessions WHERE id = ?`,
+      [session.sessionId],
+    );
+    expect(Number(row?.paste_events)).toBe(2);
+    expect(Number(row?.focus_blur_events)).toBe(1);
+  });
+
+  it("does not change the totals once the session is completed", async () => {
+    const { user } = await signIn("signals-closed@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "signals-closed.md", buffer: memo, difficulty: "standard" });
+    const session = await startSession({ token: ingest.token, user, mode: "defend" });
+    await recordIntegritySignals({ sessionId: session.sessionId, user, pasteEvents: 2, focusBlurEvents: 1 });
+    await answerAll(session, user);
+    await completeDefendSession({ sessionId: session.sessionId, user, pasteEvents: 2, focusBlurEvents: 1 });
+    const db = await getDb();
+    const before = await db.get<{ status: string; paste_events: number; focus_blur_events: number }>(
+      `SELECT status, paste_events, focus_blur_events FROM sessions WHERE id = ?`,
+      [session.sessionId],
+    );
+    expect(before?.status).toBe("completed");
+    const reported = await recordIntegritySignals({
+      sessionId: session.sessionId,
+      user,
+      pasteEvents: 9,
+      focusBlurEvents: 8,
+    });
+    expect(reported).toEqual({
+      pasteEvents: Number(before?.paste_events),
+      focusBlurEvents: Number(before?.focus_blur_events),
+    });
+    const after = await db.get<{ paste_events: number; focus_blur_events: number }>(
+      `SELECT paste_events, focus_blur_events FROM sessions WHERE id = ?`,
+      [session.sessionId],
+    );
+    expect(Number(after?.paste_events)).toBe(Number(before?.paste_events));
+    expect(Number(after?.focus_blur_events)).toBe(Number(before?.focus_blur_events));
   });
 });
 

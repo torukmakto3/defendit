@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { gradedWithLine } from "../src/components/receipt/metrics";
 import { signPayload } from "../src/lib/crypto";
+import { integritySummary } from "../src/lib/integrity";
 import { buildSignedReceipt, verifyReceipt } from "../src/lib/receipt";
 import type { IntegritySignals, ModelGrade, ReceiptPayload } from "../src/lib/types";
 
@@ -120,6 +121,20 @@ describe("signed receipt graders", () => {
     );
     expect(gradedWithLine(receipt.payload)).toContain("mock:deepseek-v3.2 (temperature 0, seed 7)");
     expect(gradedWithLine(receipt.payload)).not.toContain("deepseek-v3.2 (temperature 0, seed 7, budget fallback)");
+  });
+
+  it("signs non-zero paste and focus totals and omits zeros", () => {
+    const receipt = buildSignedReceipt({
+      difficulty: "standard",
+      sha256: "ab".repeat(32),
+      byteLength: 42,
+      grades,
+      integrity: { ...integrity, status: "Concerns", pasteEvents: 1, focusBlurEvents: 4 },
+    });
+    expect(receipt.payload.integrity).toEqual({ status: "Concerns", pasteEvents: 1, focusBlurEvents: 4 });
+    expect(integritySummary(receipt.payload.integrity)).toBe("Concerns · 1 paste · 4 focus losses");
+    expect(verifyReceipt(receipt)).toBe(true);
+    expect(mint().payload.integrity).toEqual({ status: "Clear" });
   });
 
   it("fails verification when temperature or seed is changed", () => {

@@ -3,6 +3,7 @@ import { degrees, PDFDocument, rgb, StandardFonts, type PDFFont, type PDFPage } 
 import QRCode from "qrcode";
 import { appUrl } from "./config";
 import { fontBytes } from "./fonts";
+import { integritySummary } from "./integrity";
 import type { ReceiptPayload, SignedReceipt } from "./types";
 
 /**
@@ -92,7 +93,7 @@ export async function renderReceiptPdf(receipt: SignedReceipt, signatureValid: b
     ["STRONG / PARTIAL / WEAK", `${p.bands.strong} / ${p.bands.partial} / ${p.bands.weak}`],
   ]);
   y = titleBlockRow(page, f, M, y, W - 2 * M, [
-    ["INTEGRITY (REPORTED SEPARATELY)", p.integrity.status],
+    ["INTEGRITY (REPORTED SEPARATELY)", integritySummary(p.integrity)],
     ["ASSURANCE", p.assuranceLevel],
   ]);
   y = titleBlockRow(page, f, M, y, W - 2 * M, [

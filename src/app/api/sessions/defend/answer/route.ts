@@ -10,6 +10,8 @@ const schema = z.object({
   sessionId: z.string().min(1).max(64),
   probeId: z.string().min(1).max(64),
   answer: z.string().min(1).max(4000),
+  pasteEvents: z.number().int().min(0).max(10_000).optional(),
+  focusBlurEvents: z.number().int().min(0).max(10_000).optional(),
 });
 
 export async function POST(req: Request) {

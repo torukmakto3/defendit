@@ -59,6 +59,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       sessionId: session.sessionId,
+      startedAt: session.startedAt,
       mode: body.mode,
       channel: session.channel,
       plan: body.mode === "defend" ? { ...session.plan, probes } : { probeCount: session.plan.probes.length },
@@ -114,6 +115,7 @@ function streamDefendStart(body: z.infer<typeof schema>, user: User, creditKey: 
               sessionId: info.sessionId,
               channel: info.channel,
               total: info.total,
+              startedAt: info.startedAt,
               text: info.question,
               probe: info.probe,
             });
@@ -143,6 +145,7 @@ function streamDefendStart(body: z.infer<typeof schema>, user: User, creditKey: 
         send({
           type: "ready",
           sessionId: session.sessionId,
+          startedAt: session.startedAt,
           mode: body.mode,
           channel: session.channel,
           plan: { ...session.plan, probes },

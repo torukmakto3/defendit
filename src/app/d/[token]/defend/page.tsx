@@ -25,6 +25,9 @@ interface DefendState {
   probes: Probe[];
   progress: GradingProgress | null;
   receiptId: string | null;
+  startedAt: string;
+  pasteEvents: number;
+  focusBlurEvents: number;
 }
 
 export default function DefendPage() {
@@ -38,8 +41,6 @@ export default function DefendPage() {
   const [answer, setAnswer] = useState("");
   const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [pasteEvents, setPasteEvents] = useState(0);
-  const [focusBlurEvents, setFocusBlurEvents] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const tickRef = useRef<number | null>(null);
   const startedRef = useRef(false);
@@ -53,19 +54,43 @@ export default function DefendPage() {
   const [showName, setShowName] = useState(false);
   const [gradeProgress, setGradeProgress] = useState<GradingProgress | null>(null);
   useEffect(() => {
-    pasteRef.current = pasteEvents;
-    focusRef.current = focusBlurEvents;
     showNameRef.current = showName;
-  }, [pasteEvents, focusBlurEvents, showName]);
+  }, [showName]);
   useEffect(() => {
     if (me?.displayName) setShowName(true);
   }, [me]);
 
+  const flushSignals = useCallback(() => {
+    const id = sessionIdRef.current;
+    if (!id) return;
+    void fetch("/api/sessions/defend/signals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: id,
+        pasteEvents: pasteRef.current,
+        focusBlurEvents: focusRef.current,
+      }),
+    }).catch(() => {
+      // The next answer and the completion send the same totals.
+    });
+  }, []);
+
+  const notePaste = useCallback(() => {
+    pasteRef.current += 1;
+    flushSignals();
+  }, [flushSignals]);
+
+  const noteFocus = useCallback(() => {
+    focusRef.current += 1;
+    flushSignals();
+  }, [flushSignals]);
+
   useEffect(() => {
-    const onBlur = () => setFocusBlurEvents((n) => n + 1);
+    const onBlur = () => noteFocus();
     window.addEventListener("blur", onBlur);
     return () => window.removeEventListener("blur", onBlur);
-  }, []);
+  }, [noteFocus]);
 
   const dispatch = useCallback((event: Parameters<typeof interviewReducer>[1]) => {
     const next = interviewReducer(interviewRef.current, event);
@@ -87,6 +112,8 @@ export default function DefendPage() {
       setProbes([]);
       setChannel(null);
       rememberSession(null);
+      pasteRef.current = 0;
+      focusRef.current = 0;
       try {
         const res = await fetch("/api/sessions/start", {
           method: "POST",
@@ -104,6 +131,7 @@ export default function DefendPage() {
             probes?: Probe[];
             sessionId?: string;
             channel?: "text" | "voice" | "text_accommodation";
+            startedAt?: string;
           };
           if (start.error) throw new Error(start.error);
           const nextProbes = start.probes || [];
@@ -111,7 +139,8 @@ export default function DefendPage() {
           setChannel(readChannel(start.channel));
           setProbes(nextProbes);
           dispatch({ type: "start_ok", total: nextProbes.length });
-          setSessionStartedAt(new Date().toISOString());
+          const started = readStartedAt(start.startedAt);
+          if (started) setSessionStartedAt(started);
           return;
         }
         await readNdjson(res.body, (event) => {
@@ -125,7 +154,8 @@ export default function DefendPage() {
             setProbes((prev) => (switched || prev.length <= 1 ? [probe] : prev));
             if (switched || interviewRef.current.phase === "starting") {
               dispatch({ type: "start_ok", total: typeof event.total === "number" ? event.total : 1 });
-              setSessionStartedAt(new Date().toISOString());
+              const started = readStartedAt(event.startedAt);
+              if (started) setSessionStartedAt(started);
             }
           }
           if (event.type === "text" && typeof event.text === "string") {
@@ -142,7 +172,8 @@ export default function DefendPage() {
             });
             if (interviewRef.current.phase === "starting") {
               dispatch({ type: "start_ok", total: nextProbes.length });
-              setSessionStartedAt(new Date().toISOString());
+              const started = readStartedAt(event.startedAt);
+              if (started) setSessionStartedAt(started);
             }
           }
         });
@@ -201,7 +232,9 @@ export default function DefendPage() {
       rememberSession(state.sessionId);
       setChannel(readChannel(state.channel));
       setProbes(state.probes);
-      setSessionStartedAt(new Date().toISOString());
+      pasteRef.current = positiveCount(state.pasteEvents);
+      focusRef.current = positiveCount(state.focusBlurEvents);
+      if (state.startedAt) setSessionStartedAt(state.startedAt);
       setError(null);
       setAnswer("");
       if (state.progress) setGradeProgress(state.progress);
@@ -313,7 +346,13 @@ export default function DefendPage() {
       const saved = await fetch("/api/sessions/defend/answer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, probeId: current.id, answer }),
+        body: JSON.stringify({
+          sessionId,
+          probeId: current.id,
+          answer,
+          pasteEvents: pasteRef.current,
+          focusBlurEvents: focusRef.current,
+        }),
       }).then((r) => r.json());
       if (saved.error) throw new Error(saved.error);
       setAnswer("");
@@ -484,7 +523,7 @@ export default function DefendPage() {
             className="field min-h-36"
             value={answer}
             onChange={(e) => setAnswer(e.target.value)}
-            onPaste={() => setPasteEvents((n) => n + 1)}
+            onPaste={notePaste}
             placeholder="Answer in your own words. Timing is recorded as a separate integrity signal."
             required
             disabled={busy}
@@ -528,9 +567,18 @@ interface StartEvent {
   sessionId?: unknown;
   channel?: unknown;
   total?: unknown;
+  startedAt?: unknown;
   text?: unknown;
   probe?: unknown;
   probes?: unknown;
+}
+
+function readStartedAt(value: unknown): string | null {
+  return typeof value === "string" && value ? value : null;
+}
+
+function positiveCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.min(10_000, Math.floor(value)) : 0;
 }
 
 /** Read a newline-delimited JSON response, handing each object to the caller as it arrives. */
