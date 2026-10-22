@@ -35,6 +35,7 @@ The test-mode catalog (account `acct_1UNDfOBIumCL91iA`, all `livemode: false`) i
 - `tax_id_collection` is on.
 - An existing `cus_…` is reused. Otherwise payment mode sets `customer_email` and `customer_creation: always`.
 - Success URL is `/dashboard?checkout={CHECKOUT_SESSION_ID}`. Cancel is `/billing/cancel`.
+- Pricing and the wallet checkout link to `/terms` with `<a href="/terms">`. This repo does not define that page.
 
 `POST /api/billing/portal` opens the Customer Portal for the stored customer. Return URL is `/dashboard`. Set `STRIPE_PORTAL_CONFIGURATION_ID` to pin a configuration. The sandbox default `bpc_1UTNuQBIumCL91iAG7sGZYLQ` is not hard-coded. The portal can show invoices, update the payment method, email, address, and tax id, cancel at period end, and switch Pro monthly and yearly. Team and Enterprise are not switchable there.
 

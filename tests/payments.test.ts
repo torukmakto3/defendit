@@ -1,5 +1,5 @@
 import { createHmac } from "crypto";
-import { mkdtempSync, readFileSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -727,6 +727,16 @@ describe("checkout session", () => {
     );
     expect(catalog?.find((product) => product.sku === "subscription_year")?.detail).toMatch(/do not roll over/);
     expect(catalog?.some((product) => product.sku === "team_month")).toBe(true);
+  });
+
+  it("links checkout to /terms and does not ship that page", () => {
+    const pricing = readFileSync("src/app/pricing/page.tsx", "utf8");
+    const dashboard = readFileSync("src/app/dashboard/page.tsx", "utf8");
+    const footer = readFileSync("src/components/site-footer.tsx", "utf8");
+    expect(pricing).toMatch(/<a href="\/terms"/);
+    expect(dashboard).toMatch(/<a href="\/terms"/);
+    expect(footer).toMatch(/<a href="\/terms"/);
+    expect(existsSync("src/app/terms/page.tsx")).toBe(false);
   });
 
   it("starts a Pro subscription checkout and refuses Enterprise", async () => {

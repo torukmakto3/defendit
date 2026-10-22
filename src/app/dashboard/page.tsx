@@ -167,6 +167,10 @@ function WalletPanel({ wallet }: { wallet: Wallet }) {
             <Link href="/pricing" className="text-[var(--moss)] underline">
               Pricing
             </Link>
+            {" · "}
+            <a href="/terms" className="text-[var(--moss)] underline">
+              Terms
+            </a>
           </p>
           <ul className="mt-3 grid gap-3 sm:grid-cols-2">
             {wallet.products.map((product) => (

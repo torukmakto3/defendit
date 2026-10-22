@@ -30,6 +30,11 @@ export default async function PricingPage() {
           </li>
         ))}
       </ul>
+      <p className="mt-6 text-sm text-[var(--ink-2)]">
+        <a href="/terms" className="underline hover:text-[var(--blueprint)]">
+          Terms
+        </a>
+      </p>
     </div>
   );
 }
