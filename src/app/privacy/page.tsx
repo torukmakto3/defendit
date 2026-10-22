@@ -1,3 +1,4 @@
+// Draft, last updated 2026-10-22
 import type { Metadata } from "next";
 import { PRIVACY_UPDATED } from "@/lib/privacy";
 
@@ -7,14 +8,19 @@ export const metadata: Metadata = {
 };
 
 export default function PrivacyPage() {
+  // TODO(legal review): placeholder contact
+  const contactName = "Luis Nunez";
+  const contactEmail = "tramuntanabtc@gmail.com";
+
   return (
     <div className="shell grid max-w-3xl gap-8">
       <header className="grid gap-3">
         <span className="eyebrow">Sheet 00 · Privacy</span>
         <h1 className="text-3xl font-bold sm:text-4xl">Privacy and retention</h1>
         <p className="text-[var(--ink-2)]">
-          What the app stores, who else sees the text, and how long each piece is kept. This page
-          describes the software as it runs today.
+          What the app stores, why, who else sees the text, how long each piece is kept, and how to
+          use your rights. This page describes the software as it runs today. The person responsible
+          for that data is {contactName}.
         </p>
         <p className="text-sm text-[var(--ink-2)]">
           Last updated <time dateTime="2026-10-22">{PRIVACY_UPDATED}</time>.
@@ -79,12 +85,17 @@ export default function PrivacyPage() {
 
         <h3 className="text-lg font-bold">The file, the answers, and the scores</h3>
         <p>
+          The raw uploaded file is not kept after a defense. Those bytes are parsed in memory and are
+          not written to disk or to the database. The extracted text is deleted when the defense is
+          finished. If you only practise and never defend, that text is deleted after 72 hours
+          (<span className="mono">DOCUMENT_TTL_HOURS</span>). Your answers are a different clock, described
+          next.
+        </p>
+        <p>
           Extracted text, the claim list, the file name, the question plan, your Learn and Defend
           answers, and the Learn gap map are encrypted with AES-256-GCM before they are stored. The
-          extracted text is deleted when the defense is finished. If you only practise and never
-          defend, that text is deleted after 72 hours. The file name and the claims stay until the
-          30-day retention window, then the purge clears them. The SHA-256, the byte length, and the
-          file type stay on the deliverable row.
+          file name and the claims stay until the 30-day retention window, then the purge clears them.
+          The SHA-256, the byte length, and the file type stay on the deliverable row.
         </p>
         <p>
           Your answers are not deleted at that moment. They stay encrypted until the session&apos;s
@@ -170,6 +181,14 @@ export default function PrivacyPage() {
           attempt number, and assurance level L1. Your display name is on the receipt only if you tick
           the box to show it.
         </p>
+        <p>
+          A share image for that link can repeat the tier, the score, the difficulty, the question
+          count, the date, and the display name when the receipt includes one. The file hash on the
+          image is only the first and last four characters. A name that looks like an email is left
+          off. A challenge can also put its subject on the image, and a public challenge without the
+          score leaves the number off. A private challenge image is a generic card. The image may be
+          cached for one day. It does not include your email, the file, or your answers.
+        </p>
 
         <h3 className="text-lg font-bold">Model call logs and cost</h3>
         <p>
@@ -194,6 +213,30 @@ export default function PrivacyPage() {
       </section>
 
       <section className="grid gap-3">
+        <h2 className="text-xl font-bold">Why we keep it</h2>
+        <p>
+          Two bases in the GDPR cover this processing.
+        </p>
+        <p>
+          Providing the defense you start, and the receipt you ask us to sign, is the service. For
+          that we use your sign-in email, display name, the extracted text, the claims, your answers,
+          the scores, the model-call log (purpose, provider, model, token counts, and cost, not the
+          prompt), and the receipt. The lawful basis is that this processing is needed to perform the
+          service you requested (Article 6(1)(b)).
+        </p>
+        <p>
+          The keyed IP hash on abuse limits, and the timing, paste, and focus observations, are kept
+          so the service can refuse bursts of requests and so those signals stay out of the
+          understanding score. The lawful basis is our legitimate interest in running the service
+          securely (Article 6(1)(f)). You can object to that processing. How to object is below.
+        </p>
+        <p>
+          We do not ask for a separate consent tick, and we do not treat consent as the basis for the
+          defense. Signing in and starting a defense is the request for the service.
+        </p>
+      </section>
+
+      <section className="grid gap-3">
         <h2 className="text-xl font-bold">Who sees the text</h2>
         <p>
           The configured language-model provider receives the text for that step: an excerpt of the
@@ -208,15 +251,24 @@ export default function PrivacyPage() {
             <span className="mono">retention_policy: none</span> and requires the provider claim{" "}
             <span className="mono">zero_retention</span> unless <span className="mono">LIQUID_REQUIRE_CLAIMS</span>{" "}
             is changed. A request no matching provider can serve fails instead of running somewhere else.
+            The repository names this gateway, not the operator that then runs the model.
           </li>
           <li>
-            OpenRouter is restricted to zero-data-retention endpoints (<span className="mono">provider.zdr</span>{" "}
-            and <span className="mono">data_collection: deny</span>).
+            OpenRouter (<span className="mono">openrouter.ai</span>) is restricted to zero-data-retention
+            endpoints (<span className="mono">provider.zdr</span> and{" "}
+            <span className="mono">data_collection: deny</span>). The repository names this gateway, not
+            the operator that then runs the model.
           </li>
-          <li>Ollama, or another compatible server on localhost, is treated as local.</li>
           <li>
-            Groq, OpenAI, and Anthropic cannot enforce zero retention in this app. They are refused
-            unless the operator sets <span className="mono">LLM_ALLOW_UNVERIFIED_RETENTION=1</span>.
+            Ollama, or another compatible server on localhost, is treated as local. A non-local address
+            in <span className="mono">OLLAMA_BASE_URL</span> or <span className="mono">OPENAI_COMPAT_BASE_URL</span>{" "}
+            is refused unless the operator sets the same unverified-retention switch as Groq.
+          </li>
+          <li>
+            Groq (<span className="mono">api.groq.com</span>), OpenAI (<span className="mono">api.openai.com</span>
+            ), and Anthropic (<span className="mono">api.anthropic.com</span>) cannot enforce zero retention
+            in this app. They are refused unless the operator sets{" "}
+            <span className="mono">LLM_ALLOW_UNVERIFIED_RETENTION=1</span>.
           </li>
           <li>
             With no provider keys, or with <span className="mono">MOCK_LLM=1</span>, scoring stays on
@@ -231,11 +283,66 @@ export default function PrivacyPage() {
         <p>
           Typed answers are the web default (<span className="mono">VOICE_PROVIDER</span> defaults to
           text). Hard and Expert defenses are marked as a voice channel unless you choose to type. A
-          spoken interview starts only when LiveKit is configured. Audio then goes to LiveKit. With a
-          Deepgram key, speech-to-text and the Deepgram voice send <span className="mono">mipOptOut</span>{" "}
-          so Deepgram is asked not to use the audio to improve its models. Without that key, speech
-          uses LiveKit Inference. The spoken answer is stored as text, the same way a typed answer is.
-          The ElevenLabs and OpenAI Realtime adapters in the web app are not implemented.
+          spoken interview starts only when LiveKit is configured (
+          <span className="mono">LIVEKIT_URL</span>, <span className="mono">LIVEKIT_API_KEY</span>, and{" "}
+          <span className="mono">LIVEKIT_API_SECRET</span>). The browser then connects to that LiveKit
+          server. The app allows connections to <span className="mono">*.livekit.cloud</span>. LiveKit
+          receives the live audio and the scripted questions. The voice agent does not call a language
+          model of its own. That agent turns recording off and keeps logs at error level so answers are
+          not written to its log storage. The code does not say that LiveKit deletes the audio, and
+          this page does not claim LiveKit zero retention.
+        </p>
+        <p>
+          Speech-to-text is Deepgram model <span className="mono">nova-3</span> when{" "}
+          <span className="mono">DEEPGRAM_API_KEY</span> is set, and that request sends{" "}
+          <span className="mono">mipOptOut</span> so Deepgram is asked not to use the audio to improve
+          its models. Without that key, speech-to-text is the LiveKit Inference name{" "}
+          <span className="mono">deepgram/nova-3</span>.
+        </p>
+        <p>
+          The spoken voice defaults to Deepgram. With the Deepgram key it is Aura-2 Thalia through the
+          Deepgram plugin, also with <span className="mono">mipOptOut</span>. Without the key it is
+          LiveKit Inference <span className="mono">deepgram/aura-2</span>. Setting{" "}
+          <span className="mono">TTS_PROVIDER</span> to <span className="mono">xai</span> speaks with
+          xAI Grok TTS through LiveKit Inference (<span className="mono">xai/tts-1</span>). That path
+          does not use an xAI key of our own. The words sent are the questions already written for the
+          interview. The document is not sent to xAI as a separate language-model call. The spoken
+          answer is stored as text, the same way a typed answer is.
+        </p>
+        <p>
+          The ElevenLabs and OpenAI Realtime adapters in the web app are stubs. They do not open a
+          session. An optional Jev helper (<span className="mono">api.typesafe.ai</span>) is in the
+          code and is not called, so it does not receive interview content.
+        </p>
+        <h3 className="text-lg font-bold">Hosting</h3>
+        <p>
+          Vercel hosts the website in region <span className="mono">iad1</span> and therefore sees the
+          HTTP request. Postgres, when <span className="mono">DATABASE_URL</span> is set, holds the
+          account and defense rows. The sample environment names Neon, Vercel Postgres, or Supabase.
+          The code does not record which of those hosts production uses. Resend (
+          <span className="mono">api.resend.com</span>) receives the sign-in email and the one-time
+          link only when email sign-in is configured. Google (
+          <span className="mono">accounts.google.com</span> and{" "}
+          <span className="mono">oauth2.googleapis.com</span>) receives the sign-in and returns the
+          verified email. Neither Resend nor Google receives the file or the answers.
+        </p>
+      </section>
+
+      <section className="grid gap-3">
+        <h2 className="text-xl font-bold">International transfers</h2>
+        <p>
+          The website is configured to run in the United States (Vercel region{" "}
+          <span className="mono">iad1</span>, US East). If you use it from Portugal or elsewhere in the
+          European Economic Area, the data described on this page is processed there.
+        </p>
+        <p>
+          The code does not record the country of the database, or the country of Liquid, OpenRouter,
+          Groq, OpenAI, Anthropic, LiveKit, Deepgram, xAI, Resend, or Google. Liquid and OpenRouter are
+          gateways: the repository names the gateway hostname, not the operator that then runs the
+          model. LiveKit&apos;s region is whatever <span className="mono">LIVEKIT_URL</span> points at,
+          and that value is not in the repository. The code also does not record a transfer safeguard,
+          such as standard contractual clauses. Ask {contactName} for the list that a given deployment
+          actually uses.
         </p>
       </section>
 
@@ -249,14 +356,34 @@ export default function PrivacyPage() {
       </section>
 
       <section className="grid gap-3">
-        <h2 className="text-xl font-bold">Deleting your data</h2>
+        <h2 className="text-xl font-bold">Your rights</h2>
         <p>
-          There is no delete button. Signing out ends the session cookie on this browser. It does not
-          delete the account, the file text, the answers, or the receipt. This site does not publish a
-          contact address in the app. To ask for the account for your sign-in email to be removed,
-          contact the operator and include that email. Say so if you also want a receipt link taken
-          down: the retention job does not delete receipts, and a receipt someone already copied still
-          verifies.
+          If the GDPR applies to you, you can ask {contactName} for access to the personal data held
+          for your sign-in email, for correction, for deletion, for a copy of what is still held
+          (portability), and to object to processing that relies on legitimate interests. You can also
+          complain to the Portuguese supervisory authority, the Comissão Nacional de Proteção de Dados
+          (CNPD), at <a href="https://www.cnpd.pt/">cnpd.pt</a>, Av. D. Carlos I, 134, 1º, 1200-651
+          Lisboa, or <a href="mailto:geral@cnpd.pt">geral@cnpd.pt</a>.
+        </p>
+        <p>
+          There is no delete button and no export button. Signing out ends the session cookie on this
+          browser. It does not delete the account, the file text, the answers, or the receipt. While
+          you are signed in, you can change the display name on the home page. That is the only
+          correction the app offers on screen (the “Name on receipts” field). Other corrections, a
+          copy of what we still hold, an objection, and deletion are by email to{" "}
+          <a href={`mailto:${contactEmail}`}>{contactEmail}</a>. Write from the sign-in address, or
+          name that address in the message.
+        </p>
+        <p>
+          An objection applies to the legitimate-interest processing: the keyed IP hash used for abuse
+          limits, and the timing, paste, and focus observations. Deletion of the account and of stored
+          defense text is a separate request. The retention job does not delete receipts, users, or
+          challenge rows. Say so if you also want a receipt link taken down. A receipt someone already
+          copied still verifies. After the retention window, the answers and the extracted text are
+          already gone, so a copy from that point cannot include them.
+        </p>
+        <p>
+          Contact: {contactName}, <a href={`mailto:${contactEmail}`}>{contactEmail}</a>.
         </p>
       </section>
     </div>

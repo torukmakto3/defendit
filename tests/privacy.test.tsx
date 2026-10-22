@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -37,6 +38,9 @@ describe("privacy page", () => {
     expect(html).toContain("leaves these rows in place");
     expect(html).toContain("Ed25519");
     expect(html).toContain("does not contain the file");
+    expect(html).toContain("paste count");
+    expect(html).toContain("focus-loss count");
+    expect(html).not.toContain("keeps only the status word");
     expect(html).toContain("Resend");
     expect(html).toContain("There is no delete button");
   });
@@ -54,6 +58,51 @@ describe("privacy page", () => {
     expect(html).toContain("No third-party trackers or advertising cookies");
     expect(html).toContain("our own database");
     expect(html).toContain("no tracking cookie");
+  });
+
+  it("states the GDPR bases, the real file clocks, and the rights", () => {
+    expect(html).toContain("Article 6(1)(b)");
+    expect(html).toContain("Article 6(1)(f)");
+    expect(html).toContain("legitimate interest");
+    expect(html).toContain("raw uploaded file is not kept");
+    expect(html).toContain("DOCUMENT_TTL_HOURS");
+    expect(html).toContain("RETENTION_DAYS");
+    expect(html).toContain("access");
+    expect(html).toContain("portability");
+    expect(html).toContain("object");
+    expect(html).toContain("Comissão Nacional de Proteção de Dados");
+    expect(html).toContain("https://www.cnpd.pt/");
+    expect(html).toContain("geral@cnpd.pt");
+    expect(html).toContain("Luis Nunez");
+    expect(html).toContain("mailto:tramuntanabtc@gmail.com");
+    expect(html).toContain("There is no delete button");
+    expect(html).not.toContain("TODO(legal review)");
+    expect(html).not.toContain("Draft, last updated");
+  });
+
+  it("names the model and voice hosts the code actually calls", () => {
+    expect(html).toContain("router.inference.ai.exchange");
+    expect(html).toContain("openrouter.ai");
+    expect(html).toContain("api.groq.com");
+    expect(html).toContain("api.openai.com");
+    expect(html).toContain("api.anthropic.com");
+    expect(html).toContain("LiveKit");
+    expect(html).toContain("*.livekit.cloud");
+    expect(html).toContain("Deepgram");
+    expect(html).toContain("nova-3");
+    expect(html).toContain("xai/tts-1");
+    expect(html).toContain("api.resend.com");
+    expect(html).toContain("accounts.google.com");
+    expect(html).toContain("api.typesafe.ai");
+    expect(html).toContain("does not receive interview content");
+    expect(html).toContain("standard contractual clauses");
+    expect(html).toContain("does not record the country");
+  });
+
+  it("keeps the draft marker and the legal-review note in the source only", () => {
+    const source = readFileSync("src/app/privacy/page.tsx", "utf8");
+    expect(source.startsWith("// Draft, last updated 2026-10-22\n")).toBe(true);
+    expect(source).toContain("// TODO(legal review): placeholder contact");
   });
 });
 
