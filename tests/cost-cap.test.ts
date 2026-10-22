@@ -12,7 +12,9 @@ import {
 } from "../src/lib/cost";
 import { getDb, resetDbForTests } from "../src/lib/db";
 import { newId } from "../src/lib/ids";
+import { gradedWithLine } from "../src/components/receipt/metrics";
 import { getPrimaryLlm, LlmBudgetError, withLlmScope } from "../src/lib/llm";
+import { verifyReceipt } from "../src/lib/receipt";
 import { beginBudget, releaseBudget } from "../src/lib/llm/usage";
 import {
   adminSessionsCsv,
@@ -318,6 +320,12 @@ describe("defense cost cap", () => {
     expect(row?.budget_capped).toBe(1);
     expect(gradeCalls).toBeGreaterThan(0);
     expect(gradeCalls).toBeLessThanOrEqual(3);
+    const mixed = "receipt" in result ? result.receipt : undefined;
+    if (!mixed) throw new Error("expected a receipt");
+    const fallback = mixed.payload.graders?.filter((grader) => grader.budgetFallback) ?? [];
+    expect(fallback.length).toBeGreaterThan(0);
+    expect(fallback.every((grader) => grader.model.endsWith("llama-3.1-8b-instruct"))).toBe(true);
+    expect(mixed.payload.modelVersions).toEqual(mixed.payload.graders?.map((grader) => grader.model));
 
     await recordSessionVoiceUsage({
       sessionId,
@@ -334,6 +342,33 @@ describe("defense cost cap", () => {
     expect(listed.summary.cappedCount).toBeGreaterThan(0);
     expect(listed.summary.voiceUsd).toBeGreaterThan(0);
     expect(listed.summary.p50Usd).toBeGreaterThan(0);
+  });
+
+  it("grades an over-cap defense with one cheap model and marks that on the receipt", async () => {
+    const user = await signIn("fallback@fund.example");
+    const ingest = await creatorIngest({ user, fileName: "fallback.md", buffer: memo, difficulty: "standard" });
+    const session = await startSession({ token: ingest.token, user, mode: "defend" });
+    await seedSpend(ingest.requestId, 0.75);
+    const answer = "Retention holds near 1.2 percent, and the unit economics still clear the bar if churn rises.";
+    for (const probe of session.plan.probes) {
+      await recordDefendAnswer({ sessionId: session.sessionId, user, probeId: probe.id, answer });
+    }
+    const result = await completeDefendSession({ sessionId: session.sessionId, user });
+    const receipt = "receipt" in result ? result.receipt : undefined;
+    if (!receipt) throw new Error("expected a receipt");
+    expect(verifyReceipt(receipt)).toBe(true);
+    expect(receipt.payload.modelVersions).toEqual(["mock:llama-3.1-8b-instruct"]);
+    expect(receipt.payload.graders).toEqual([
+      {
+        model: "mock:llama-3.1-8b-instruct",
+        temperature: 0,
+        seed: 0,
+        budgetFallback: true,
+      },
+    ]);
+    expect(gradedWithLine(receipt.payload)).toBe(
+      `Graded with mock:llama-3.1-8b-instruct (temperature 0, seed 0, budget fallback) · ${receipt.payload.rubricVersion}`,
+    );
   });
 
   it("uses the $3 enterprise cap and still asks the follow-up", async () => {

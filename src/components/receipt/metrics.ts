@@ -6,7 +6,12 @@ import type { ReceiptPayload } from "@/lib/types";
  */
 export function gradedWithLine(p: Pick<ReceiptPayload, "graders" | "modelVersions" | "rubricVersion">): string {
   const models = p.graders?.length
-    ? p.graders.map((g) => `${g.model} (temperature ${g.temperature}, seed ${g.seed})`).join(", ")
+    ? p.graders
+        .map((g) => {
+          const fallback = g.budgetFallback ? ", budget fallback" : "";
+          return `${g.model} (temperature ${g.temperature}, seed ${g.seed}${fallback})`;
+        })
+        .join(", ")
     : p.modelVersions.join(", ");
   return `Graded with ${models} · ${p.rubricVersion}`;
 }

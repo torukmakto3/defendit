@@ -3,7 +3,7 @@ import { degrees, PDFDocument, rgb, StandardFonts, type PDFFont, type PDFPage } 
 import QRCode from "qrcode";
 import { appUrl } from "./config";
 import { fontBytes } from "./fonts";
-import type { SignedReceipt } from "./types";
+import type { ReceiptPayload, SignedReceipt } from "./types";
 
 /**
  * One-page receipt certificate in the Titleblock style (DESIGN.md, day
@@ -20,6 +20,12 @@ const C = {
   signal: rgb(0.761, 0.255, 0.047),
   white: rgb(1, 1, 1),
 };
+
+/** Models on the certificate. A cheap over-cap grade is marked on that model. */
+function gradedBy(p: Pick<ReceiptPayload, "graders" | "modelVersions">): string {
+  if (!p.graders?.length) return p.modelVersions.join(", ");
+  return p.graders.map((g) => (g.budgetFallback ? `${g.model} (budget fallback)` : g.model)).join(", ");
+}
 
 const W = 595.28; // A4 portrait, points
 const H = 841.89;
@@ -126,7 +132,7 @@ export async function renderReceiptPdf(receipt: SignedReceipt, signatureValid: b
   const foot = [
     "This receipt holds no document content, answers, file name or email. It certifies that the person who",
     "uploaded the file with this SHA-256 defended it in a timed interview graded against the rubric below.",
-    `Rubric ${p.rubricVersion}  ·  graded by ${p.modelVersions.join(", ")}  ·  assurance ${p.assuranceLevel}`,
+    `Rubric ${p.rubricVersion}  ·  graded by ${gradedBy(p)}  ·  assurance ${p.assuranceLevel}`,
   ];
   foot.forEach((s, i) => text(page, s, M, M + 22 - i * 12, f.body, 8, C.ink2));
 

@@ -331,6 +331,7 @@ async function gradeOne(
         provider: raw.provider,
         temperature,
         seed,
+        ...(raw.budgetFallback ? { budgetFallback: true as const } : {}),
         claimGrades,
         overallScore: 0,
       };

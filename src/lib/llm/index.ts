@@ -192,21 +192,22 @@ export async function trackedComplete(provider: LlmProvider, req: LlmRequest): P
   const active = decision.useCheap ? getCheapestLlm() : provider;
   try {
     const res = await active.complete(req);
+    const answered: LlmResponse = decision.useCheap ? { ...res, budgetFallback: true } : res;
     if (decision.reservationId) {
       settleBudget(decision.reservationId, {
-        provider: res.provider,
-        modelId: res.modelId,
-        usage: res.usage,
+        provider: answered.provider,
+        modelId: answered.modelId,
+        usage: answered.usage,
       });
     } else {
       await recordLlmCall({
         purpose: req.purpose,
-        provider: res.provider,
-        modelId: res.modelId,
-        usage: res.usage,
+        provider: answered.provider,
+        modelId: answered.modelId,
+        usage: answered.usage,
       });
     }
-    return res;
+    return answered;
   } catch (error) {
     await releaseBudget(decision.reservationId);
     throw error;
@@ -291,6 +292,9 @@ export function gradingCouncilProblem(members: { id: string }[]): string | null 
  * Grading council: several models when configured. A live council is never
  * padded with mock models, because their scores would land in real receipts.
  * A deployment refuses a router (`*.auto`) or a council of fewer than 2.
+ * An over-cap defense may still be graded by one cheap model. That call is
+ * not a one-member council: the receipt names the model and marks it as a
+ * budget fallback.
  */
 export function getGradingCouncil(): LlmProvider[] {
   if (isMockLlm()) {

@@ -28,6 +28,8 @@ export interface LlmResponse {
   modelId: string;
   provider: string;
   usage: LlmUsage;
+  /** Set when the cap sent this call to the cheap model instead of the one requested. */
+  budgetFallback?: true;
 }
 
 /**

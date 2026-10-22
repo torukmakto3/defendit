@@ -47,6 +47,7 @@ function gradersForReceipt(grades: ModelGrade[]): ReceiptGrader[] | undefined {
       model: `${grade.provider}:${grade.modelId}`,
       temperature: grade.temperature,
       seed: grade.seed,
+      ...(grade.budgetFallback ? { budgetFallback: true as const } : {}),
     });
   }
   return graders;
