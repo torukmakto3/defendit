@@ -7,6 +7,8 @@
  * by Quote. The extra-unit price is the overage fallback until a meter exists.
  */
 
+import { readFileSync } from "fs";
+import { join } from "path";
 import Stripe from "stripe";
 import { HttpError } from "./errors";
 import type { Sku } from "./plans";
@@ -208,6 +210,15 @@ function priceClient(): StripePriceClient {
           lookup_keys: [...lookupKeys],
           expand: ["data.product"],
         });
+        const found = new Set(
+          list.data.map((price) => price.lookup_key).filter((key): key is string => !!key),
+        );
+        if (lookupKeys.some((key) => !found.has(key))) {
+          await assertCatalogAccount(async () => {
+            const account = await stripe.accounts.retrieve(null);
+            return account.id;
+          });
+        }
         return list.data.map((price) => ({
           id: price.id,
           lookup_key: price.lookup_key,
@@ -216,6 +227,7 @@ function priceClient(): StripePriceClient {
           product: readListedProduct(price.product),
         }));
       } catch (e) {
+        if (e instanceof HttpError) throw e;
         if (e instanceof Stripe.errors.StripeError) {
           console.error("[stripe]", e.type, e.code ?? "");
           throw new HttpError(502, "Stripe could not load the price catalog.");
@@ -224,4 +236,52 @@ function priceClient(): StripePriceClient {
       }
     },
   };
+}
+
+/**
+ * Account the catalog is expected to live in.
+ * `STRIPE_EXPECTED_ACCOUNT_ID` wins. A blank value turns the check off.
+ * When that variable is unset, a non-live key uses `docs/stripe-sandbox-ids.json`.
+ * A live key does not assume the sandbox account.
+ */
+export function expectedStripeAccountId(): string | null {
+  if (process.env.STRIPE_EXPECTED_ACCOUNT_ID !== undefined) {
+    const fromEnv = process.env.STRIPE_EXPECTED_ACCOUNT_ID.trim();
+    return fromEnv || null;
+  }
+  const key = process.env.STRIPE_SECRET_KEY?.trim() ?? "";
+  const mode = (process.env.STRIPE_MODE ?? "").trim().toLowerCase();
+  if (key.startsWith("sk_live_") || key.startsWith("rk_live_") || mode === "live") return null;
+  try {
+    const parsed = JSON.parse(readFileSync(join(process.cwd(), "docs", "stripe-sandbox-ids.json"), "utf8")) as {
+      account?: { stripe_context?: string };
+    };
+    const id = parsed.account?.stripe_context?.trim() ?? "";
+    return id.startsWith("acct_") ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A key for a different Stripe account lists no prices and used to surface as
+ * "missing lookup key". Say which account the key belongs to instead.
+ * No expected id, or an account lookup the key cannot perform, leaves the
+ * original catalog error in place.
+ */
+export async function assertCatalogAccount(lookupAccount: () => Promise<string | null>): Promise<void> {
+  const expected = expectedStripeAccountId();
+  if (!expected) return;
+  let actual: string | null = null;
+  try {
+    actual = await lookupAccount();
+  } catch (e) {
+    console.error("[stripe] account check skipped", e instanceof Error ? e.message : e);
+    return;
+  }
+  if (!actual || actual === expected) return;
+  throw new HttpError(
+    502,
+    `Stripe secret key belongs to ${actual}, not ${expected}. This is the wrong Stripe account, so the price catalog does not match.`,
+  );
 }

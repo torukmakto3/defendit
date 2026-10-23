@@ -52,9 +52,9 @@ The same Stripe event id is acknowledged once. Credits are keyed on the Checkout
 | `checkout.session.async_payment_succeeded` | Same grant as completed, same session id. |
 | `checkout.session.async_payment_failed` | No grant. A notice on the dashboard. |
 | `invoice.paid` | `subscription_create`, `subscription_cycle`, or `subscription_update`. The sku comes from the non-proration line's `lookup_key`, then `parent.subscription_details.metadata`. `invoice.metadata` is ignored. Proration lines are not granted. The payment intent and charge are read from `invoicePayments.list({ invoice })`, not from `invoice.charge` or `invoice.payment_intent`. A monthly plan grants its allowance once (Pro 10 defenses, 5 challenges, 10 Learn slots; Team 50; Enterprise 200). Yearly Pro grants month 0 only, keyed `refill:<subscription id>:<period index>`, and stores that payment on the grant row. |
-| `invoice.payment_failed` | `past_due` and a portal notice. Credits stay. |
-| `customer.subscription.updated` | Sync plan, interval, status, `cancel_at_period_end`. The price `lookup_key` wins over metadata, so a portal switch from monthly to yearly sticks. No grant. An older event does not overwrite a newer one. `paused`, `incomplete`, and any unknown status are stored as non-active. |
-| `customer.subscription.deleted` | Plan returns to pay as you go. Unused subscription defenses and challenges expire. Purchased, pack, and beta credits stay. |
+| `invoice.payment_failed` | `past_due` and a portal notice, only when the invoice subscription id is the one stored on the plan. Credits stay. A different subscription does not mark the current plan past due. |
+| `customer.subscription.updated` | Sync plan, interval, status, `cancel_at_period_end`. The price `lookup_key` wins over metadata, so a portal switch from monthly to yearly sticks. No grant. An older event does not overwrite a newer one. `paused`, `incomplete`, and any unknown status are stored as non-active. The write happens when the stored subscription id is null, equals this event, or the stored plan is no longer `active` or `trialing`. An old or incomplete subscription does not replace an active plan. |
+| `customer.subscription.deleted` | Plan returns to pay as you go only when the deleted id is the one stored on the plan. Unused subscription defenses and challenges expire in that case. Purchased, pack, and beta credits stay. A different subscription does not change the plan and does not expire credits. |
 | `charge.refunded` | Claw back unspent credits from the grants with that charge or payment intent. Another purchase is left alone. Removal is capped at the bucket balance minus the credits still outstanding on the user's other unrefunded grants in that bucket, and never goes below zero. A subscription top-up has already expired earlier months, so those rows do not reserve the current balance. A partial refund removes `floor(credits × amount_refunded / amount)` and does not stop yearly refills. A refund with no charge amount removes the whole grant. Flag the account if the latest month, or the purchase, was already spent. A full refund of yearly Pro sets `refills_stopped` so later months are not granted. It does not mark the subscription terminal and it does not cancel the subscription in Stripe. The next paid invoice clears the flag and grants. |
 | `charge.dispute.created` | Same clawback for the whole grant, and flag the account. A yearly dispute sets `refills_stopped` the same way a full refund does, without canceling in Stripe. |
 | `invoice.created` | If the customer has unbilled Enterprise overage rows, add `dit_enterprise_extra_unit` × that count. |
@@ -66,6 +66,8 @@ The same Stripe event id is acknowledged once. Credits are keyed on the Checkout
 | `charge.succeeded` | Stores the card fingerprint when it arrives. Checkout does not wait for this event. |
 
 The line check compares lookup key, or the catalog price id when the line has no lookup key. It does not compare `amount_total`.
+
+Checkout for a subscription uses the same rule as `customer.subscription.updated`: it does not replace an active or trialing plan whose stored subscription id is different. Returning customers are sent with `customer_update.name` and `customer_update.address` set to `auto`, which Stripe requires when `customer` and tax id collection are both set.
 
 ## Yearly Pro refill
 
@@ -88,6 +90,8 @@ The job grants a subscription only when its status is `active` or `trialing`, it
 | `STRIPE_WEBHOOK_SECRET` | `whsec_…` for this endpoint. |
 | `STRIPE_MODE` | `test` by default. |
 | `STRIPE_TAX_ENABLED` | `true` enables `automatic_tax`. Default off. |
+| `STRIPE_TAX_ID_COLLECTION` | `0` or `false` turns off Checkout tax id collection. Default on. A saved customer sends `customer_update` for name and address. |
+| `STRIPE_EXPECTED_ACCOUNT_ID` | Optional. When a catalog lookup misses, compare `accounts.retrieve` with this id and say the key is for the wrong account. Blank turns the check off. Unset uses the sandbox id in `docs/stripe-sandbox-ids.json` for a non-live key, and skips the check for a live key. |
 | `STRIPE_METER_EVENT_NAME` | Optional. Default `defense_overage`. Not sent. |
 | `STRIPE_PORTAL_CONFIGURATION_ID` | Optional portal configuration id. |
 | `APP_URL` | Origin for success, cancel, and portal return URLs. |

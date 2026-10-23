@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:postgres": "vitest run --config vitest.postgres.config.ts",
     "test:watch": "vitest",
     "smoke": "tsx scripts/smoke.ts",
     "calibrate": "tsx scripts/calibrate-grading.ts",

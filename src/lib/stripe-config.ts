@@ -38,6 +38,16 @@ export function stripeTaxEnabled(): boolean {
   return value === "1" || value === "true";
 }
 
+/**
+ * Checkout collects a tax id unless `STRIPE_TAX_ID_COLLECTION` is `0` or `false`.
+ * Default on. A returning customer then needs `customer_update`.
+ */
+export function stripeTaxIdCollectionEnabled(): boolean {
+  const value = process.env.STRIPE_TAX_ID_COLLECTION;
+  if (value == null || value.trim() === "") return true;
+  return value === "1" || value === "true";
+}
+
 const CHECKOUT_SKUS = [
   "defense",
   "challenge",
