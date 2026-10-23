@@ -97,28 +97,32 @@ export default function CreatorEntryPage() {
   const d = data.deliverable;
   const mayUpload = data.isCreator || data.canClaim;
 
+  const defendAvailable = data.status !== "defended" && !d?.purged;
+
   return (
-    <div className="shell max-w-2xl">
-      <p className="eyebrow">
-        {data.kind === "demo" ? "Sample demo" : data.kind === "receiver" ? "Defense request" : "Your deliverable"}
-      </p>
-      <h1 className="mt-2 text-3xl font-bold sm:text-4xl">{data.title}</h1>
-      <p className="mt-3 text-[var(--ink-2)]">
-        Difficulty <strong>{data.difficulty}</strong> · status <strong>{data.status}</strong>
-      </p>
-      {data.notes && data.kind === "receiver" && (
-        <p className="mt-2 text-sm opacity-75">Note from the requester: {data.notes}</p>
-      )}
+    <div className="shell grid max-w-2xl gap-8">
+      <header className="grid gap-3">
+        <p className="eyebrow">
+          {data.kind === "demo" ? "Sample demo" : data.kind === "receiver" ? "Defense request" : "Your deliverable"}
+        </p>
+        <h1 className="type-page">{data.title}</h1>
+        <p className="text-sm text-[var(--ink-2)]">
+          Difficulty <strong>{data.difficulty}</strong> · status <strong>{data.status}</strong>
+        </p>
+        {data.notes && data.kind === "receiver" && (
+          <p className="text-sm text-[var(--ink-2)]">Note from the requester: {data.notes}</p>
+        )}
+      </header>
 
       {data.kind === "demo" && (
-        <div className="mt-8 grid gap-4">
-          <div className="panel grid gap-3 p-6">
+        <div className="grid gap-4">
+          <div className="panel grid gap-3 p-5">
             <p>
               This is a sample-file demo. No account is needed for the short interview. The receipt
               is marked as a demo and is not a credential.
             </p>
             {data.status !== "defended" && (
-              <Link className="btn btn-primary justify-self-start" href={`/d/${token}/defend`}>
+              <Link className="btn btn-primary w-full justify-self-start sm:w-auto" href={`/d/${token}/defend`}>
                 Continue the sample defense
               </Link>
             )}
@@ -127,51 +131,52 @@ export default function CreatorEntryPage() {
         </div>
       )}
 
-      {!me && data.kind !== "demo" && (
-        <div className="mt-8">
-          <SignInCard title="Sign in to defend this deliverable" />
-        </div>
-      )}
+      {!me && data.kind !== "demo" && <SignInCard title="Sign in to defend this deliverable" />}
 
       {me && data.isOwner && !data.isCreator && (
-        <div className="panel mt-8 p-6">
+        <div className="panel grid gap-3 p-5">
           <p>
             You requested this defense. Share this page&apos;s link with the creator. Results appear on
-            your <Link className="text-[var(--moss)] underline" href="/dashboard">dashboard</Link>.
+            your <Link className="text-[var(--blueprint)] underline" href="/dashboard">dashboard</Link>.
           </p>
           {d && (
-            <p className="mt-3 font-mono text-xs break-all">sha256:{d.sha256}</p>
+            <p className="mono break-all text-xs">sha256:{d.sha256}</p>
           )}
         </div>
       )}
 
       {me && !mayUpload && !data.isOwner && data.kind !== "demo" && (
-        <p className="panel mt-8 p-6">This defense belongs to another account.</p>
+        <p className="panel p-5">This defense belongs to another account.</p>
       )}
 
       {me && mayUpload && !d && (
-        <form onSubmit={onUpload} className="panel mt-8 space-y-4 p-6">
+        <form onSubmit={onUpload} className="panel grid gap-4 p-5">
           <p className="text-sm">
             Upload the exact file you will defend (PDF, DOCX, XLSX, CSV, TXT or MD). We keep its SHA-256
             fingerprint, not the file. The extracted text is encrypted and deleted when you finish.
           </p>
           <input name="file" type="file" className="field" accept=".pdf,.docx,.txt,.md,.markdown,.xlsx,.xls,.csv" required />
-          <button className="btn btn-primary" disabled={uploading}>
+          <button className="btn btn-primary w-full justify-self-start sm:w-auto" disabled={uploading}>
             {uploading ? "Parsing & extracting claims…" : "Upload"}
           </button>
         </form>
       )}
 
       {me && data.isCreator && d && (
-        <div className="panel mt-8 space-y-4 p-6">
+        <div className="panel grid gap-4 p-5">
           <p>
             Uploaded <strong>{d.fileName ?? "file (name purged)"}</strong> · {d.claimCount} claims
           </p>
-          <p className="font-mono text-xs break-all">sha256:{d.sha256}</p>
+          <p className="mono break-all text-xs">sha256:{d.sha256}</p>
           {d.purged && <p className="text-sm text-[var(--amber)]">This upload has expired and was purged.</p>}
           <div className="grid gap-3">
+            {defendAvailable && (
+              <Link className="btn btn-primary w-full justify-self-start sm:w-auto" href={`/d/${token}/defend`} prefetch>
+                Start Defend interview
+              </Link>
+            )}
             {d.documentAvailable || d.studyDeck ? (
-              <Link className="btn btn-ghost justify-self-start" href={`/d/${token}/learn`} prefetch>
+              <Link className="btn btn-ghost w-full justify-self-start sm:w-auto" href={`/d/${token}/learn`} prefetch>
                 {data.status === "defended" ? "Learn" : "Learn first (private)"}
               </Link>
             ) : (
@@ -180,18 +185,14 @@ export default function CreatorEntryPage() {
                 defended={data.status === "defended"}
                 message={data.status === "defended" ? STUDY_FILE_DELETED : STUDY_TEXT_EXPIRED}
                 onUploaded={() => router.push(`/d/${token}/learn`)}
+                emphasis={defendAvailable ? "secondary" : "primary"}
               />
-            )}
-            {data.status !== "defended" && !d.purged && (
-              <Link className="btn btn-primary justify-self-start" href={`/d/${token}/defend`} prefetch>
-                Start Defend interview
-              </Link>
             )}
           </div>
         </div>
       )}
 
-      {error && <p className="mt-4 text-sm text-danger">{error}</p>}
+      {error && <p className="text-sm text-danger">{error}</p>}
     </div>
   );
 }

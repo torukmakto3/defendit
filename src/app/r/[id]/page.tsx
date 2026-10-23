@@ -103,13 +103,13 @@ export default function ReceiptPage() {
 
   return (
     <div className="shell grid max-w-4xl gap-8">
-      <div className="grid grid-cols-[auto_1fr] items-center gap-4 sm:gap-5">
+      <div className="grid grid-cols-[auto_1fr] items-center gap-4">
         <Companion state={defended ? "surprised" : p.outcome === "Not defended" ? "skeptical" : "listening"} size={72} />
-        <div className="min-w-0">
+        <div className="min-w-0 grid gap-2">
           <p className="eyebrow">{sample ? "Sample demo · not a credential" : "Understanding receipt"}</p>
-          <h1 className="mt-1 text-3xl font-bold sm:text-4xl">{sample ? "Demo on a sample file" : p.outcome}</h1>
-          {sample && <p className="mt-1 text-lg font-semibold">{p.outcome}</p>}
-          <p className="mt-1 text-sm text-[var(--ink-2)]">
+          <h1 className="type-page">{sample ? "Demo on a sample file" : p.outcome}</h1>
+          {sample && <p className="text-lg font-semibold">{p.outcome}</p>}
+          <p className="text-sm text-[var(--ink-2)]">
             <span className={data.signatureValid ? "text-[var(--ok)]" : "text-danger"}>
               {data.signatureValid ? "Signature valid" : "Signature invalid"}
             </span>{" "}
@@ -122,8 +122,8 @@ export default function ReceiptPage() {
 
       <section className="grid gap-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-2xl font-bold">How the claims held up</h2>
-          <span className="text-xs text-[var(--ink-2)]">
+          <h2 className="type-section">How the claims held up</h2>
+          <span className="text-sm text-[var(--ink-2)]">
             {labels
               ? "Section and the quoted passage are visible only to you."
               : approximate
@@ -132,21 +132,21 @@ export default function ReceiptPage() {
           </span>
         </div>
         <div className="grid gap-5 md:grid-cols-2">
-          <div className="panel grid content-start gap-2 p-5">
-            <span className="mono text-xs uppercase tracking-[0.08em] text-[var(--blueprint)]">Load test</span>
+          <div className="panel grid content-start gap-3 p-5">
+            <span className="label mb-0">Load test</span>
             <p className="text-sm text-[var(--ink-2)]">Each claim is a support under the deliverable. Weak supports crack.</p>
             <LoadTest claims={claims} score={p.score} outcome={p.outcome} />
           </div>
-          <div className="panel grid content-start gap-2 p-5">
-            <span className="mono text-xs uppercase tracking-[0.08em] text-[var(--blueprint)]">Tolerance chart</span>
+          <div className="panel grid content-start gap-3 p-5">
+            <span className="label mb-0">Tolerance chart</span>
             <p className="text-sm text-[var(--ink-2)]">Each claim&apos;s score against the spec: 50 passes, 75 is strong.</p>
             <ToleranceChart claims={claims} />
           </div>
         </div>
       </section>
 
-      <section className="grid gap-3">
-        <h2 className="text-2xl font-bold">Details</h2>
+      <section className="grid gap-4">
+        <h2 className="type-section">Details</h2>
         <div className="titleblock" style={{ gridTemplateColumns: "1fr" }}>
           <div><small>SHA-256 of the defended file</small><b>{p.deliverable.sha256}</b></div>
           <div>
@@ -162,7 +162,7 @@ export default function ReceiptPage() {
           <div><small>Integrity (reported separately from the score)</small><b>{integritySummary(p.integrity)}</b></div>
           <div><small>Receipt</small><b>{p.id} &middot; rubric {p.rubricVersion}</b></div>
         </div>
-        <p className="text-xs text-[var(--ink-2)]">
+        <p className="text-sm text-[var(--ink-2)]">
           This receipt holds no document content, answers, file name or email. The deliverable stays
           with the people it was sent to; drop it on the verify page to check it matches.
         </p>
@@ -170,8 +170,8 @@ export default function ReceiptPage() {
 
       {data.challengeResult &&
         (data.challengeResult.visibility === "public" || data.challengeResult.visibility === "score_hidden") && (
-          <div className="panel grid gap-3 p-5">
-            <h2 className="text-xl font-bold">Share the result</h2>
+          <div className="panel grid gap-4 p-5">
+            <h2 className="type-section">Share the result</h2>
             <p className="text-sm text-[var(--ink-2)]">
               Your post, if you want one. Edit it on X before it goes out. Sharing does not change the result
               or your credit.
@@ -192,70 +192,72 @@ export default function ReceiptPage() {
 
       {sample ? (
         <div className="grid gap-4">
-          <div className="panel grid gap-2 p-5">
-            <h2 className="text-xl font-bold">Demo on a sample file. Not a credential.</h2>
+          <div className="panel grid gap-3 p-5">
+            <h2 className="type-section">Demo on a sample file. Not a credential.</h2>
             <p className="text-sm text-[var(--ink-2)]">
               This interview used a bundled file, {p.demo?.file}. It does not show that you understand
               your own work. Answers are deleted on the same schedule as any defense, and this demo
               receipt is removed after a day. It is not listed anywhere.
             </p>
-            <Link href={`/verify/${p.id}`} className="btn btn-ghost justify-self-start">
+            <Link href={`/verify/${p.id}`} className="btn btn-ghost w-full justify-self-start sm:w-auto">
               Check the sample hash
             </Link>
           </div>
           <SignInCard title="Sign in and defend your own file (3 free)" />
         </div>
       ) : (
-      <div className="panel p-5">
-        <h2 className="text-xl font-bold">Send it your way</h2>
-        <p className="mt-2 text-sm text-[var(--ink-2)]">
+      <div className="panel grid gap-4 p-5">
+        <h2 className="type-section">Send it your way</h2>
+        <p className="text-sm text-[var(--ink-2)]">
           Attach the receipt PDF to the file you defended, or paste the stamp image into your email,
           Slack or Docs. The receiver scans the code or opens the link and drops their copy of the
           file to check it. No account needed.
         </p>
-        <div className="mt-4 flex flex-wrap gap-3 text-sm">
-          <a href={`/api/receipts/${p.id}/pdf`} className="btn btn-primary">
+        <div className="grid gap-3">
+          <a href={`/api/receipts/${p.id}/pdf`} className="btn btn-primary w-full justify-self-start sm:w-auto">
             Download receipt (PDF)
           </a>
-          <a href={`/api/stamp/${p.id}?format=png&download=1`} className="btn btn-ghost">
-            Download stamp image (PNG)
-          </a>
-          <Link href={`/verify/${p.id}`} className="btn btn-ghost">
-            Verify file hash
-          </Link>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => {
-              void navigator.clipboard
-                .writeText(window.location.href)
-                .then(() => {
-                  setCopied(true);
-                  beaconReceiptShared("copy");
-                })
-                .catch(() => {});
-            }}
-          >
-            {copied ? "Copied" : "Copy link"}
-          </button>
-          {canShare && (
+          <div className="flex flex-wrap gap-3">
+            <a href={`/api/stamp/${p.id}?format=png&download=1`} className="btn btn-ghost">
+              Download stamp image (PNG)
+            </a>
+            <Link href={`/verify/${p.id}`} className="btn btn-ghost">
+              Verify file hash
+            </Link>
             <button
               type="button"
               className="btn btn-ghost"
               onClick={() => {
-                void navigator
-                  .share({ title: "Defend It receipt", url: window.location.href })
-                  .then(() => beaconReceiptShared("share"))
+                void navigator.clipboard
+                  .writeText(window.location.href)
+                  .then(() => {
+                    setCopied(true);
+                    beaconReceiptShared("copy");
+                  })
                   .catch(() => {});
               }}
             >
-              Share
+              {copied ? "Copied" : "Copy link"}
             </button>
-          )}
+            {canShare && (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => {
+                  void navigator
+                    .share({ title: "Defend It receipt", url: window.location.href })
+                    .then(() => beaconReceiptShared("share"))
+                    .catch(() => {});
+                }}
+              >
+                Share
+              </button>
+            )}
+          </div>
         </div>
       </div>
       )}
-      <p className="text-xs text-[var(--ink-2)]">{gradedWithLine(p)}</p>
+      <p className="text-sm text-[var(--ink-2)]">{gradedWithLine(p)}</p>
     </div>
   );
 }

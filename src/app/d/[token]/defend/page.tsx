@@ -396,7 +396,7 @@ export default function DefendPage() {
         {outOfCredits && <CreditTermsNotice />}
         <button
           type="button"
-          className="btn btn-primary justify-self-start"
+          className="btn btn-primary w-full justify-self-start sm:w-auto"
           onClick={() => {
             dispatch({ type: "retry" });
             void resumeOrBegin();
@@ -410,27 +410,31 @@ export default function DefendPage() {
 
   if (interview.phase === "grading" || interview.phase === "completed") {
     return (
-      <div className="shell grid max-w-3xl gap-4">
-        <Companion state="thinking" size={72} />
-        <p>{gradingProgressLabel(gradeProgress, !!error)}</p>
-        {error && <p className="text-sm text-danger">{error}</p>}
-        {error && (
-          <button type="button" className="btn btn-primary justify-self-start" onClick={() => void retryGrade()}>
-            Retry grading
-          </button>
-        )}
+      <div className="shell grid max-w-3xl gap-6">
+        <div className="panel grid gap-4 p-5">
+          <div className="grid grid-cols-[auto_1fr] items-center gap-4">
+            <Companion state="thinking" size={72} />
+            <p className="type-question">{gradingProgressLabel(gradeProgress, !!error)}</p>
+          </div>
+          {error && <p className="text-sm text-danger">{error}</p>}
+          {error && (
+            <button type="button" className="btn btn-primary w-full justify-self-start sm:w-auto" onClick={() => void retryGrade()}>
+              Retry grading
+            </button>
+          )}
+        </div>
       </div>
     );
   }
 
   if (!current) {
     return (
-      <div className="shell grid max-w-3xl gap-4">
-        <div>
+      <div className="shell grid max-w-3xl gap-6">
+        <div className="grid gap-2">
           <p className="eyebrow">Defend · text interview</p>
-          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">Live defense</h1>
+          <h1 className="type-page">Live defense</h1>
         </div>
-        <div className="panel grid gap-4 p-5 sm:p-6" aria-busy="true">
+        <div className="panel grid gap-4 p-5" aria-busy="true">
           <div className="grid grid-cols-[auto_1fr] items-start gap-4">
             <Companion state="thinking" size={64} />
             <div className="grid min-w-0 gap-2">
@@ -450,9 +454,9 @@ export default function DefendPage() {
   if (voiceReady && sessionId && interview.phase !== "follow_up") {
     return (
       <div className="shell grid max-w-3xl gap-6">
-        <div>
+        <div className="grid gap-2">
           <p className="eyebrow">Defend &middot; live voice interview</p>
-          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">Live defense</h1>
+          <h1 className="type-page">Live defense</h1>
         </div>
         <VoiceInterview
           sessionId={sessionId}
@@ -472,36 +476,36 @@ export default function DefendPage() {
   }
 
   return (
-    <div className="shell max-w-3xl">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
+    <div className="shell grid max-w-3xl gap-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="grid gap-2">
           <p className="eyebrow">
             {sampleDemo ? "Sample demo · " : "Defend · "}
             {channel === "text_accommodation" ? "typed (accommodation)" : "text interview"}
           </p>
-          <h1 className="mt-2 text-3xl font-bold sm:text-4xl">{sampleDemo ? "Sample defense" : "Live defense"}</h1>
+          <h1 className="type-page">{sampleDemo ? "Sample defense" : "Live defense"}</h1>
           {sampleDemo && (
-            <p className="mt-2 max-w-xl text-sm text-[var(--ink-2)]">
+            <p className="max-w-xl text-sm text-[var(--ink-2)]">
               Three questions on a bundled sample file. The receipt is a demo, not a credential.
             </p>
           )}
         </div>
-        <div className="text-right text-sm">
+        <div className="mono text-right text-sm">
           <div>
             Question {index + 1} / {total}
           </div>
-          <div className="font-mono">{minutes}</div>
+          <div>{minutes}</div>
         </div>
       </div>
 
-      <ol className="mt-6 flex gap-1.5" aria-label="Interview progress">
+      <ol className="flex gap-1" aria-label="Interview progress">
         {Array.from({ length: total }, (_, i) => {
           const p = probes[i];
           return (
           <li
             key={p?.id ?? `pending-${i}`}
             aria-current={i === index ? "step" : undefined}
-            className={`h-1.5 flex-1 ${
+            className={`h-2 flex-1 ${
               i < index ? "bg-[var(--blueprint)]" : i === index ? "bg-[var(--ink)]" : "bg-[var(--line)]"
             }`}
           >
@@ -514,7 +518,7 @@ export default function DefendPage() {
         })}
       </ol>
 
-      <div className="panel mt-6 grid gap-5 p-5 sm:p-6">
+      <div className="panel grid gap-5 p-5">
         <div className="grid grid-cols-[auto_1fr] items-start gap-4">
           <Companion state={busy ? "thinking" : "listening"} size={64} />
           <div className="min-w-0">
@@ -525,7 +529,7 @@ export default function DefendPage() {
             >
               Probe {String(index + 1).padStart(2, "0")} &middot; {current.type.replace("_", " ")}
             </p>
-            <p className="mt-2 whitespace-pre-wrap text-lg font-semibold leading-relaxed">
+            <p className="type-question mt-2 whitespace-pre-wrap">
               {current.question}
             </p>
             {interview.phase === "follow_up" && (
@@ -535,7 +539,7 @@ export default function DefendPage() {
             )}
           </div>
         </div>
-        <form onSubmit={submitTurn} className="space-y-3">
+        <form onSubmit={submitTurn} className="grid gap-4">
           <textarea
             className="field min-h-36"
             value={answer}
@@ -559,7 +563,7 @@ export default function DefendPage() {
           {channel === "voice" && (
             <p className="text-sm text-[var(--ink-2)]">Opening the voice interview…</p>
           )}
-          <button type="submit" className="btn btn-primary" disabled={busy || channel === "voice"}>
+          <button type="submit" className="btn btn-primary w-full justify-self-start sm:w-auto" disabled={busy || channel === "voice"}>
             {busy
               ? index + 1 < total
                 ? "Saving…"

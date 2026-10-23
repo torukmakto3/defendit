@@ -30,33 +30,35 @@ export default async function NewChallengePage({
     : null;
 
   return (
-    <div className="shell max-w-2xl">
-      <p className="eyebrow">Sponsored by DefendIT</p>
-      <h1 className="mt-2 text-3xl font-bold sm:text-4xl">Challenge someone to defend it</h1>
-      <p className="mt-3 text-[var(--ink-2)]">
-        See a launch, repo, or bold claim you respect? Make a link and post it from your own account, under
-        their post.
-      </p>
-      <p className="mt-3 text-[var(--ink-2)]">
-        Nothing happens unless they open it and opt in. They pick the file, can practice privately in Learn,
-        then take a short text interview. They choose whether the result is public, public without the score,
-        or private. If they keep it private, nothing is posted.
-      </p>
-      <p className="mt-3 text-sm text-[var(--ink-2)]">
-        Free in beta, sponsored by DefendIT. No one is paid to accept or share.
-      </p>
-      <p className="mt-3 text-sm">
-        <Link href="/c/opt-out" className="text-[var(--blueprint)]">
-          Don&apos;t challenge me again
-        </Link>
-      </p>
-      {user ? <CreateChallengeForm onward={onward} /> : (
-        <div className="mt-8">
-          <SignInCard
-            title="Sign in to create a challenge"
-            next={onward ? `/c/new?onward=${onward}` : "/c/new"}
-          />
+    <div className="shell grid max-w-2xl gap-8">
+      <header className="grid max-w-[68ch] gap-4">
+        <p className="eyebrow">Sponsored by DefendIT</p>
+        <h1 className="type-page">Challenge someone to defend it</h1>
+        <div className="grid gap-3 text-[var(--ink-2)]">
+          <p>
+            See a launch, repo, or bold claim you respect? Make a link and post it from your own account, under
+            their post.
+          </p>
+          <p>
+            Nothing happens unless they open it and opt in. They pick the file, can practice privately in Learn,
+            then take a short text interview. They choose whether the result is public, public without the score,
+            or private. If they keep it private, nothing is posted.
+          </p>
         </div>
+        <p className="text-sm text-[var(--ink-2)]">
+          Free in beta, sponsored by DefendIT. No one is paid to accept or share.
+        </p>
+        <p className="text-sm">
+          <Link href="/c/opt-out" className="text-[var(--blueprint)]">
+            Don&apos;t challenge me again
+          </Link>
+        </p>
+      </header>
+      {user ? <CreateChallengeForm onward={onward} /> : (
+        <SignInCard
+          title="Sign in to create a challenge"
+          next={onward ? `/c/new?onward=${onward}` : "/c/new"}
+        />
       )}
     </div>
   );

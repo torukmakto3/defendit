@@ -17,7 +17,7 @@ export default function PrivacyPage() {
     <div className="shell grid max-w-3xl gap-8">
       <header className="grid gap-3">
         <span className="eyebrow">Sheet 00 · Privacy</span>
-        <h1 className="text-3xl font-bold sm:text-4xl">Privacy and retention</h1>
+        <h1 className="type-page">Privacy and retention</h1>
         <p className="text-[var(--ink-2)]">
           What the app stores, why, who else sees the text, how long each piece is kept, and how to
           use your rights. This page describes the software as it runs today. The person responsible

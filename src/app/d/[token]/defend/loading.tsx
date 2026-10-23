@@ -3,12 +3,12 @@ import { Companion } from "@/components/companion/Companion";
 /** Shown while the interview route loads, before the first question is ready. */
 export default function DefendLoading() {
   return (
-    <div className="shell grid max-w-3xl gap-4">
-      <div>
+    <div className="shell grid max-w-3xl gap-6">
+      <div className="grid gap-2">
         <p className="eyebrow">Defend · text interview</p>
-        <h1 className="mt-2 text-3xl font-bold sm:text-4xl">Live defense</h1>
+        <h1 className="type-page">Live defense</h1>
       </div>
-      <div className="panel grid gap-4 p-5 sm:p-6" aria-busy="true">
+      <div className="panel grid gap-4 p-5" aria-busy="true">
         <div className="grid grid-cols-[auto_1fr] items-start gap-4">
           <Companion state="thinking" size={64} />
           <div className="grid min-w-0 gap-2">
