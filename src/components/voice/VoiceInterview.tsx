@@ -148,18 +148,18 @@ export function VoiceInterview({
 
   return (
     <div className="grid gap-5">
-      <ol className="flex gap-1.5" aria-label="Interview progress">
+      <ol className="flex gap-1" aria-label="Interview progress">
         {probes.map((p, i) => (
           <li
             key={p.id}
-            className={`h-1.5 flex-1 ${i < answered ? "bg-[var(--blueprint)]" : i === index && phase === "live" ? "bg-[var(--ink)]" : "bg-[var(--line)]"}`}
+            className={`h-2 flex-1 ${i < answered ? "bg-[var(--blueprint)]" : i === index && phase === "live" ? "bg-[var(--ink)]" : "bg-[var(--line)]"}`}
           >
             <span className="sr-only">Question {i + 1}{i < answered ? " answered" : ""}</span>
           </li>
         ))}
       </ol>
 
-      <div className="panel grid gap-5 p-5 sm:p-6">
+      <div className="panel grid gap-5 p-5">
         <div className="grid grid-cols-[auto_1fr] items-center gap-4">
           <Companion state={companion} size={84} />
           <div className="min-w-0">
@@ -168,7 +168,7 @@ export function VoiceInterview({
                 <p className="mono text-xs uppercase tracking-[0.08em] text-[var(--blueprint)]">
                   Question {Math.min(index + 1, total)} of {total}
                 </p>
-                <p className="mt-1 text-lg font-semibold" aria-live="polite">
+                <p className="type-question mt-2" aria-live="polite">
                   {agentState === "speaking"
                     ? "The examiner is asking…"
                     : agentState === "thinking"
@@ -177,11 +177,11 @@ export function VoiceInterview({
                 </p>
               </>
             ) : phase === "grading" ? (
-              <p className="text-lg font-semibold">Grading your defense…</p>
+              <p className="type-question">Grading your defense…</p>
             ) : (
               <>
                 <p className="mono text-xs uppercase tracking-[0.08em] text-[var(--blueprint)]">Live voice interview</p>
-                <p className="mt-2 text-lg font-semibold">
+                <p className="type-question mt-2">
                   The examiner will ask you {total} questions out loud. Answer in your own words and pause when you&apos;re done.
                 </p>
                 <p className="mt-2 text-sm text-[var(--ink-2)]">
@@ -209,13 +209,13 @@ export function VoiceInterview({
               )}
             </div>
             {showQuestion && current && (
-              <p className="border-l-2 border-[var(--blueprint)] pl-3 text-sm">{current.question}</p>
+              <p className="border-[1.5px] border-[var(--ink)] p-3 text-sm">{current.question}</p>
             )}
             <ol ref={logRef} className="grid max-h-72 gap-2 overflow-y-auto pr-1" aria-live="polite" aria-label="Transcript">
               {log.length === 0 && <li className="text-sm text-[var(--ink-2)]">The examiner is about to start…</li>}
               {mergeTurns(log).map((e) => (
-                <li key={e.id} className={`grid gap-0.5 ${e.who === "you" ? "justify-items-end text-right" : ""}`}>
-                  <span className="mono text-[10px] uppercase tracking-[0.08em] text-[var(--ink-2)]">
+                <li key={e.id} className={`grid gap-1 ${e.who === "you" ? "justify-items-end text-right" : ""}`}>
+                  <span className="mono text-xs uppercase tracking-[0.08em] text-[var(--ink-2)]">
                     {e.who === "you" ? "You" : "Examiner"}
                   </span>
                   <span
@@ -232,7 +232,7 @@ export function VoiceInterview({
         )}
 
         {(phase === "ready" || phase === "connecting") && (
-          <button type="button" className="btn btn-primary justify-self-start" onClick={start} disabled={phase === "connecting"}>
+          <button type="button" className="btn btn-primary w-full justify-self-start sm:w-auto" onClick={start} disabled={phase === "connecting"}>
             {phase === "connecting" ? "Connecting…" : "Start voice interview"}
           </button>
         )}

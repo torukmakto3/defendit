@@ -107,3 +107,43 @@ jobs:
         env:
           MOCK_LLM: "1"
         run: npm run e2e
+
+  # SQLite accepts `? IS NULL` without a type. These billing paths failed on
+  # Postgres in the sandbox, so they run here against a real server.
+  billing-postgres:
+    name: Billing Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: defendit
+          POSTGRES_PASSWORD: defendit
+          POSTGRES_DB: defendit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U defendit -d defendit"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install native build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Postgres billing tests
+        env:
+          DATABASE_URL: postgres://defendit:defendit@localhost:5432/defendit
+        run: npm run test:postgres

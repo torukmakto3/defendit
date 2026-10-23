@@ -97,17 +97,17 @@ export function HomePage({ demoEnabled }: { demoEnabled: boolean }) {
         : "listening";
 
   return (
-    <div className="shell grid gap-10">
-      <section className="grid gap-4">
+    <div className="shell grid gap-8">
+      <section className="grid max-w-3xl gap-4">
         <span className="eyebrow">Sheet 01 &middot; Drop</span>
-        <h1 className="max-w-3xl text-3xl font-bold leading-tight sm:text-[44px]">
+        <h1 className="type-page">
           Prove you understand what AI helped you make.
         </h1>
-        <p className="max-w-2xl text-[var(--ink-2)]">
+        <p className="max-w-[68ch] text-[var(--ink-2)]">
           Drop the memo, write-up or README. Practise privately with the coach, take a short defense
           grounded in your file, and send it with a signed receipt anyone can verify.
         </p>
-        <p className="max-w-2xl text-xs text-[var(--ink-2)]">
+        <p className="max-w-[68ch] text-xs text-[var(--ink-2)]">
           Visit counts stay on this server: no analytics cookies, no third-party tracker, and nothing
           from your file. Do Not Track and Global Privacy Control skip the visit count.
         </p>
@@ -115,13 +115,13 @@ export function HomePage({ demoEnabled }: { demoEnabled: boolean }) {
       </section>
 
       {demoEnabled && (
-        <section className="panel grid gap-3 p-5 sm:p-6">
-          <h2 className="text-xl font-bold">No file yet?</h2>
-          <p className="max-w-2xl text-sm text-[var(--ink-2)]">
+        <section className="panel grid gap-3 p-5">
+          <h2 className="type-section">No file yet?</h2>
+          <p className="max-w-[68ch] text-sm text-[var(--ink-2)]">
             Try a short text interview on a bundled README. No account and no email. The receipt is
             marked as a demo on that sample, and it is not a credential.
           </p>
-          <button type="button" className="btn btn-primary justify-self-start" disabled={demoBusy} onClick={() => void startSample()}>
+          <button type="button" className="btn btn-ghost w-full justify-self-start sm:w-auto" disabled={demoBusy} onClick={() => void startSample()}>
             {demoBusy ? "Opening the sample…" : "Try it with a sample file"}
           </button>
           {demoError && <p className="text-sm text-danger">{demoError}</p>}
@@ -131,7 +131,7 @@ export function HomePage({ demoEnabled }: { demoEnabled: boolean }) {
       {me === null && <SignInCard title="Sign in to drop a deliverable" />}
 
       {me && (
-        <section className="panel grid gap-6 p-5 sm:p-8">
+        <section className="panel grid gap-6 p-5">
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label className="label" htmlFor="displayName">
@@ -164,7 +164,7 @@ export function HomePage({ demoEnabled }: { demoEnabled: boolean }) {
           </div>
 
           <div
-            className={`grid items-center gap-5 border-2 border-dashed px-5 py-10 transition sm:grid-cols-[auto_1fr] sm:px-8 ${
+            className={`grid items-center gap-4 border-2 border-dashed px-5 py-8 transition sm:grid-cols-[auto_1fr] ${
               dragging
                 ? "border-[var(--blueprint)] bg-[var(--mist)]"
                 : "border-[var(--ink-2)] bg-[var(--card)]"
@@ -192,7 +192,7 @@ export function HomePage({ demoEnabled }: { demoEnabled: boolean }) {
                   <p className="text-xs text-[var(--ink-2)]">
                     Text and spreadsheets. Not slide decks, and not a whole repository.
                   </p>
-                  <label className="btn btn-primary mt-2 cursor-pointer">
+                  <label className={`btn mt-2 w-full cursor-pointer sm:w-auto ${ready ? "btn-ghost" : "btn-primary"}`}>
                     Choose file
                     <input
                       type="file"
@@ -209,7 +209,7 @@ export function HomePage({ demoEnabled }: { demoEnabled: boolean }) {
             </div>
           </div>
 
-          <p className="text-xs text-[var(--ink-2)]">
+          <p className="text-sm text-[var(--ink-2)]">
             Your file is read in memory and never stored. We keep its SHA-256 fingerprint; the
             extracted text is encrypted and deleted as soon as you finish defending (or after 72
             hours). Models run with zero data retention.
@@ -221,7 +221,7 @@ export function HomePage({ demoEnabled }: { demoEnabled: boolean }) {
             <div className="grid gap-4 border-t-[1.5px] border-[var(--ink)] pt-5">
               <div className="grid gap-1">
                 <span className="eyebrow">Ready</span>
-                <h2 className="text-2xl font-bold">{ready.title}</h2>
+                <h2 className="type-section">{ready.title}</h2>
               </div>
               <div className="titleblock">
                 <div><small>Claims found</small><b>{ready.claimCount}</b></div>
@@ -229,14 +229,14 @@ export function HomePage({ demoEnabled }: { demoEnabled: boolean }) {
                 <div><small>SHA-256</small><b>{ready.sha256.slice(0, 16)}&hellip;</b></div>
               </div>
               <div className="flex flex-wrap gap-3">
-                <button type="button" className="btn btn-ghost" onClick={() => router.push(ready.learnUrl)}>
-                  Learn (private)
-                </button>
-                <button type="button" className="btn btn-primary" onClick={() => router.push(ready.defendUrl)}>
+                <button type="button" className="btn btn-primary w-full sm:w-auto" onClick={() => router.push(ready.defendUrl)}>
                   Defend now
                 </button>
+                <button type="button" className="btn btn-ghost w-full sm:w-auto" onClick={() => router.push(ready.learnUrl)}>
+                  Learn (private)
+                </button>
               </div>
-              <p className="text-xs text-[var(--ink-2)]">
+              <p className="text-sm text-[var(--ink-2)]">
                 Learn stays private to you. Defend issues the signed receipt you can send to anyone.
               </p>
             </div>
@@ -244,21 +244,30 @@ export function HomePage({ demoEnabled }: { demoEnabled: boolean }) {
         </section>
       )}
 
-      <section className="grid gap-4 md:grid-cols-3">
-        {[
-          { step: "01", title: "Learn", body: "A private coach asks you to explain it back, poses what-ifs and plants errors. Your gap map stays with you." },
-          { step: "02", title: "Defend", body: "A short interview grounded in your file. The questions are drawn in code, not chosen by the model." },
-          { step: "03", title: "Send", body: "A signed score and QR bound to the file's hash. Attach the stamp and send it the way you already do." },
-        ].map((item) => (
-          <div key={item.title} className="panel grid content-start gap-2 p-5">
-            <span className="mono text-xs text-[var(--blueprint)]">STEP {item.step}</span>
-            <h2 className="text-xl font-bold">{item.title}</h2>
-            <p className="text-[var(--ink-2)]">{item.body}</p>
-          </div>
-        ))}
+      <section aria-label="How a defense works">
+        <ol className="panel grid list-none md:grid-cols-3">
+          {[
+            { step: "01", title: "Learn", body: "A private coach asks you to explain it back, poses what-ifs and plants errors. Your gap map stays with you." },
+            { step: "02", title: "Defend", body: "A short interview grounded in your file. The questions are drawn in code, not chosen by the model." },
+            { step: "03", title: "Send", body: "A signed score and QR bound to the file's hash. Attach the stamp and send it the way you already do." },
+          ].map((item, index, items) => (
+            <li
+              key={item.title}
+              className={`grid content-start gap-2 p-5 ${
+                index < items.length - 1
+                  ? "border-b-[1.5px] border-[var(--ink)] md:border-b-0 md:border-r-[1.5px]"
+                  : ""
+              }`}
+            >
+              <span className="label mb-0">{item.step}</span>
+              <h2 className="type-section">{item.title}</h2>
+              <p className="text-sm text-[var(--ink-2)]">{item.body}</p>
+            </li>
+          ))}
+        </ol>
       </section>
 
-      <p className="text-center text-sm text-[var(--ink-2)]">
+      <p className="max-w-[68ch] text-sm text-[var(--ink-2)]">
         Need someone else to defend a file?{" "}
         <Link href="/request" className="text-[var(--blueprint)] underline">
           Request a defense

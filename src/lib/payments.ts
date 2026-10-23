@@ -551,7 +551,8 @@ async function applyInvoiceFailed(event: z.infer<typeof invoiceEventSchema>): Pr
     await logEvent(event.id, event.type);
     return { duplicate: false, unmatched: true };
   }
-  await markPlanPastDue(userId);
+  const subscriptionId = stripeId(invoice.parent?.subscription_details?.subscription);
+  if (subscriptionId) await markPlanPastDue(userId, subscriptionId);
   await setPaymentNotice(userId, "Payment failed. Update the card in the billing portal.");
   return logEvent(event.id, event.type);
 }
@@ -657,10 +658,26 @@ async function clawGrants(input: {
       duplicate = true;
       return;
     }
+    // Only bind ids we actually have. `? IS NOT NULL` is untyped on Postgres
+    // (`could not determine data type of parameter`) and every clawback failed.
+    const match: string[] = [];
+    const matchParams: (string | number | null)[] = [];
+    if (input.chargeId) {
+      match.push("charge_id = ?");
+      matchParams.push(input.chargeId);
+    }
+    if (input.paymentIntentId) {
+      match.push("payment_intent_id = ?");
+      matchParams.push(input.paymentIntentId);
+    }
+    if (match.length === 0) {
+      unmatched = true;
+      return;
+    }
     const grants = await tx.all<GrantRow>(
       `SELECT id, user_id, sku, kind, source, credits, refunded_at, clawed_credits FROM stripe_grants
-       WHERE (? IS NOT NULL AND charge_id = ?) OR (? IS NOT NULL AND payment_intent_id = ?)`,
-      [input.chargeId, input.chargeId, input.paymentIntentId, input.paymentIntentId],
+       WHERE ${match.join(" OR ")}`,
+      matchParams,
     );
     if (grants.length === 0) {
       unmatched = true;
@@ -774,8 +791,8 @@ async function applySubscription(event: z.infer<typeof subscriptionEventSchema>)
   const decision = await decideSubscriptionWrite(sub.id, event.created ?? 0, terminal);
   if (event.type === "customer.subscription.deleted") {
     if (decision === "apply") {
-      await endPaidPlan(userId, sub.id);
-      await setPaymentNotice(userId, null);
+      const ended = await endPaidPlan(userId, sub.id);
+      if (ended) await setPaymentNotice(userId, null);
     }
     return logEvent(event.id, event.type);
   }
@@ -803,7 +820,7 @@ async function applySubscription(event: z.infer<typeof subscriptionEventSchema>)
       });
     }
   } else if (mapped === "past_due" || mapped === "unpaid" || mapped === "canceled") {
-    await markPlanPastDue(userId);
+    await markPlanPastDue(userId, sub.id);
   }
   return logEvent(event.id, event.type);
 }

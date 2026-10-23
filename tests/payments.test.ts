@@ -88,6 +88,7 @@ afterEach(() => {
   delete process.env.STRIPE_ALLOW_LIVE;
   delete process.env.STRIPE_MODE;
   delete process.env.STRIPE_TAX_ENABLED;
+  delete process.env.STRIPE_TAX_ID_COLLECTION;
   setStripePriceClientForTests(null);
 });
 
@@ -464,6 +465,7 @@ describe("webhook", () => {
         userId: user.id,
         sku: "subscription_month",
         amount: 1100,
+        subscription: "sub_cancel",
       }),
     );
     const res = await postWebhook({
@@ -1410,6 +1412,7 @@ describe("checkout session", () => {
     expect(params.line_items).toEqual([{ price: "price_dit_defense_payg", quantity: 1 }]);
     expect(params.payment_intent_data?.metadata).toMatchObject({ user_id: user.id, sku: "defense" });
     expect(params.subscription_data).toBeUndefined();
+    expect(params.customer_update).toBeUndefined();
     process.env.STRIPE_TAX_ENABLED = "true";
     expect(checkoutSessionParams(seen[0]).automatic_tax).toEqual({ enabled: true });
     delete process.env.STRIPE_TAX_ENABLED;
@@ -1424,6 +1427,50 @@ describe("checkout session", () => {
     );
     expect(refused.status).toBe(403);
     expect(seen).toHaveLength(1);
+  });
+
+  it("sends customer_update for a returning customer, with or without tax id collection", () => {
+    const base: StripeCheckoutRequest = {
+      userId: "usr_checkout",
+      email: "buyer@example.com",
+      customerId: null,
+      sku: "defense",
+      mode: "payment",
+      priceId: "price_dit_defense_payg",
+      lookupKey: "dit_defense_payg",
+      successUrl: "https://defendit.me/dashboard?checkout={CHECKOUT_SESSION_ID}",
+      cancelUrl: "https://defendit.me/billing/cancel",
+    };
+    function params(customerId: string | null, taxIds: boolean) {
+      if (taxIds) delete process.env.STRIPE_TAX_ID_COLLECTION;
+      else process.env.STRIPE_TAX_ID_COLLECTION = "false";
+      return checkoutSessionParams({ ...base, customerId });
+    }
+
+    const freshOn = params(null, true);
+    expect(freshOn.customer).toBeUndefined();
+    expect(freshOn.customer_update).toBeUndefined();
+    expect(freshOn.customer_email).toBe("buyer@example.com");
+    expect(freshOn.tax_id_collection).toEqual({ enabled: true });
+
+    const returningOn = params("cus_return", true);
+    expect(returningOn.customer).toBe("cus_return");
+    expect(returningOn.customer_email).toBeUndefined();
+    expect(returningOn.customer_update).toEqual({ name: "auto", address: "auto" });
+    expect(returningOn.tax_id_collection).toEqual({ enabled: true });
+
+    const freshOff = params(null, false);
+    expect(freshOff.customer).toBeUndefined();
+    expect(freshOff.customer_update).toBeUndefined();
+    expect(freshOff.customer_email).toBe("buyer@example.com");
+    expect(freshOff.tax_id_collection).toEqual({ enabled: false });
+
+    const returningOff = params("cus_return", false);
+    expect(returningOff.customer).toBe("cus_return");
+    expect(returningOff.customer_email).toBeUndefined();
+    expect(returningOff.customer_update).toEqual({ name: "auto", address: "auto" });
+    expect(returningOff.tax_id_collection).toEqual({ enabled: false });
+    delete process.env.STRIPE_TAX_ID_COLLECTION;
   });
 
   it("lists payg, packs, Pro, and Team while billing is on", () => {
@@ -1705,6 +1752,119 @@ describe("webhook idempotency and subscription state", () => {
     expect(grants.map((row) => row.idempotency_key)).toEqual(["refill:sub_year_replay:0:defense"]);
   });
 
+  it("leaves an active yearly plan alone when another subscription is deleted or updated", async () => {
+    const { user } = await signIn("stale-sub@pay.example");
+    const anchor = Math.floor(Date.UTC(2026, 0, 15) / 1000);
+    const opened = await postWebhook(
+      invoiceEvent({
+        id: "evt_stale_year",
+        invoiceId: "in_stale_year",
+        userId: user.id,
+        sku: "subscription_year",
+        amount: 9900,
+        reason: "subscription_create",
+        subscription: "sub_current_year",
+        periodStart: anchor,
+        periodEnd: Math.floor(Date.UTC(2027, 0, 15) / 1000),
+        anchor,
+      }),
+    );
+    expect(opened.status).toBe(200);
+    expect(await getBalance(user.id)).toMatchObject({ defense: 10, challenge: 5, learnSlots: 10 });
+
+    const deleted = await postWebhook({
+      id: "evt_stale_deleted",
+      type: "customer.subscription.deleted",
+      data: {
+        object: {
+          id: "sub_old",
+          status: "canceled",
+          metadata: { user_id: user.id, sku: "subscription_month" },
+        },
+      },
+    });
+    expect(deleted.status).toBe(200);
+    const incomplete = await postWebhook({
+      id: "evt_stale_incomplete",
+      type: "customer.subscription.updated",
+      data: {
+        object: {
+          id: "sub_incomplete",
+          status: "incomplete",
+          metadata: { user_id: user.id, sku: "subscription_month" },
+        },
+      },
+    });
+    expect(incomplete.status).toBe(200);
+    const canceledMonth = await postWebhook({
+      id: "evt_stale_canceled_month",
+      type: "customer.subscription.updated",
+      data: {
+        object: {
+          id: "sub_old_month",
+          status: "canceled",
+          metadata: { user_id: user.id, sku: "subscription_month" },
+        },
+      },
+    });
+    expect(canceledMonth.status).toBe(200);
+    const failed = await postWebhook({
+      id: "evt_stale_failed",
+      type: "invoice.payment_failed",
+      data: {
+        object: {
+          id: "in_stale_fail",
+          parent: {
+            subscription_details: {
+              subscription: "sub_old",
+              metadata: { user_id: user.id },
+            },
+          },
+        },
+      },
+    });
+    expect(failed.status).toBe(200);
+
+    expect((await getUserPlan(user.id)).plan.id).toBe("subscription");
+    expect(await getUserPlan(user.id)).toMatchObject({ interval: "year", status: "active" });
+    expect(await getBalance(user.id)).toMatchObject({ defense: 10, challenge: 5, learnSlots: 10 });
+    const row = await (await getDb()).get<{ stripe_subscription_id: string }>(
+      `SELECT stripe_subscription_id FROM user_plans WHERE user_id = ?`,
+      [user.id],
+    );
+    expect(row?.stripe_subscription_id).toBe("sub_current_year");
+
+    const scheduled = await postWebhook({
+      id: "evt_stale_current_update",
+      type: "customer.subscription.updated",
+      data: {
+        object: {
+          id: "sub_current_year",
+          status: "active",
+          cancel_at_period_end: true,
+          metadata: { user_id: user.id, sku: "subscription_year" },
+        },
+      },
+    });
+    expect(scheduled.status).toBe(200);
+    const after = await (await getDb()).get<{
+      stripe_subscription_id: string;
+      interval: string;
+      status: string;
+      cancel_at_period_end: number | string;
+    }>(
+      `SELECT stripe_subscription_id, interval, status, cancel_at_period_end FROM user_plans WHERE user_id = ?`,
+      [user.id],
+    );
+    expect(after).toMatchObject({
+      stripe_subscription_id: "sub_current_year",
+      interval: "year",
+      status: "active",
+    });
+    expect(Number(after?.cancel_at_period_end)).toBe(1);
+    expect(await getBalance(user.id)).toMatchObject({ defense: 10, challenge: 5, learnSlots: 10 });
+  });
+
   it("keeps credits when cancel is scheduled and expires them when the subscription ends", async () => {
     const { user } = await signIn("schedule-cancel@pay.example");
     await postWebhook(
@@ -1758,7 +1918,12 @@ describe("webhook idempotency and subscription state", () => {
       data: {
         object: {
           id: "in_due_fail",
-          parent: { subscription_details: { metadata: { user_id: user.id, sku: "team_month" } } },
+          parent: {
+            subscription_details: {
+              subscription: "sub_in_due",
+              metadata: { user_id: user.id, sku: "team_month" },
+            },
+          },
         },
       },
     });

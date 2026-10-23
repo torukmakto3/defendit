@@ -180,40 +180,40 @@ export function SignInCard({ title = "Sign in to continue", next }: { title?: st
   const shownError = error ?? (authError ? AUTH_ERROR_COPY[authError] ?? "Sign-in failed. Try again." : null);
 
   return (
-    <div className="panel rounded-2xl p-6">
-      <h2 className="text-2xl text-[var(--moss)]">{title}</h2>
+    <div className="panel grid gap-4 p-5">
+      <h2 className="type-section">{title}</h2>
       {options === undefined ? (
-        <p className="mt-2 text-sm opacity-75">Loading sign-in…</p>
+        <p className="text-sm text-[var(--ink-2)]">Loading sign-in…</p>
       ) : options === null ? (
-        <p className="mt-2 text-sm text-[var(--amber)]">
+        <p className="text-sm text-[var(--amber)]">
           Could not load sign-in options. Refresh and try again.
         </p>
       ) : sent ? (
-        <div className="mt-4 space-y-3">
+        <div className="grid gap-3">
           <p>Check <strong>{email}</strong> for your sign-in link. It expires in 15 minutes.</p>
           {devLink && (
-            <a className="btn btn-primary" href={devLink}>
+            <a className="btn btn-primary w-full sm:w-auto" href={devLink}>
               Open sign-in link (dev mode)
             </a>
           )}
         </div>
       ) : (
         <>
-          {introFor(options) && <p className="mt-2 text-sm opacity-75">{introFor(options)}</p>}
+          {introFor(options) && <p className="text-sm text-[var(--ink-2)]">{introFor(options)}</p>}
           {options.google && (
-            <a className="btn btn-primary mt-4 w-full" href={googleHref}>
+            <a className="btn btn-primary w-full" href={googleHref}>
               Sign in with Google
             </a>
           )}
           {options.google && options.email && (
-            <div className="mt-4 flex items-center gap-3 text-xs uppercase tracking-[0.08em] text-[var(--ink-2)]">
+            <div className="flex items-center gap-3 text-xs uppercase tracking-[0.08em] text-[var(--ink-2)]">
               <span className="h-px flex-1 bg-[var(--line)]" />
               or
               <span className="h-px flex-1 bg-[var(--line)]" />
             </div>
           )}
           {options.email ? (
-            <form onSubmit={submit} className="mt-4 flex flex-col gap-3 sm:flex-row">
+            <form onSubmit={submit} className="flex flex-col gap-3 sm:flex-row">
               <label className="sr-only" htmlFor="signin-email">Email</label>
               <input
                 id="signin-email"
@@ -225,20 +225,20 @@ export function SignInCard({ title = "Sign in to continue", next }: { title?: st
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
-              <button className="btn btn-primary" disabled={busy}>
+              <button className={options.google ? "btn btn-ghost w-full sm:w-auto" : "btn btn-primary w-full sm:w-auto"} disabled={busy}>
                 {busy ? "Sending…" : "Email me a link"}
               </button>
             </form>
           ) : options.google ? (
-            <p className="mt-3 text-sm opacity-75">Email sign-in links aren&apos;t set up on this server.</p>
+            <p className="text-sm text-[var(--ink-2)]">Email sign-in links aren&apos;t set up on this server.</p>
           ) : (
-            <p className="mt-4 text-sm">
+            <p className="text-sm">
               Sign-in isn&apos;t available on this server yet. Google sign-in and email links are both turned off.
             </p>
           )}
         </>
       )}
-      {shownError && <p className="mt-3 text-sm text-[var(--amber)]">{shownError}</p>}
+      {shownError && <p className="text-sm text-[var(--amber)]">{shownError}</p>}
     </div>
   );
 }
