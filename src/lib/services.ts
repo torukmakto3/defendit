@@ -21,6 +21,12 @@ import {
 } from "./demo-policy";
 import { getPublicKeyHex, sha256Hex } from "./crypto";
 import { dashboardWorkspaceHref } from "./dashboard-links";
+import {
+  deleteAccountRows,
+  deleteFeedbackForPurgedReceipts,
+  deleteFeedbackForRequest,
+  isRetainedAccountEmail,
+} from "./account-deletion";
 import { getDb, type Db } from "./db";
 import { aggregateScore, claimScores, gradeSession, scoreDefense, shouldFlagForHuman } from "./grading";
 import { readGradingProgress, type GradingProgress } from "./grading-progress";
@@ -2018,7 +2024,10 @@ export async function purgeExpired() {
     [new Date(Date.now() - 24 * 3600_000).toISOString()],
   );
   await purgeExpiredDemoPasses(db, nowIso);
-  await db.run(`DELETE FROM receipts WHERE purge_after IS NOT NULL AND purge_after < ?`, [nowIso]);
+  await db.transaction(async (tx) => {
+    await deleteFeedbackForPurgedReceipts(tx, nowIso);
+    await tx.run(`DELETE FROM receipts WHERE purge_after IS NOT NULL AND purge_after < ?`, [nowIso]);
+  });
   await refundStaleDefenseHolds();
   const analyticsEvents = await purgeOldAnalyticsEvents(db, new Date(nowIso));
   return {
@@ -2043,35 +2052,36 @@ async function purgeExpiredDemoPasses(db: Db, nowIso: string) {
     [nowIso],
   );
   if (expired.length === 0) return;
-  const anchor = await demoLedgerAnchorId(db);
   for (const requestId of expired.map((row) => row.request_id)) {
-    await db.run(
-      `DELETE FROM budget_holds WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
-      [requestId],
-    );
-    await db.run(
-      `DELETE FROM defense_holds WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
-      [requestId],
-    );
-    await db.run(
-      `DELETE FROM grades WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
-      [requestId],
-    );
-    await db.run(
-      `DELETE FROM human_grades WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
-      [requestId],
-    );
-    await db.run(`DELETE FROM receipts WHERE request_id = ?`, [requestId]);
-    await db.run(`DELETE FROM flashcards WHERE request_id = ?`, [requestId]);
-    await db.run(`DELETE FROM sessions WHERE request_id = ?`, [requestId]);
-    await db.run(`DELETE FROM deliverables WHERE request_id = ?`, [requestId]);
-    await db.run(`DELETE FROM llm_calls WHERE request_id = ?`, [requestId]);
-    await db.run(`DELETE FROM stage_timings WHERE request_id = ?`, [requestId]);
-    await db.run(`DELETE FROM demo_passes WHERE request_id = ?`, [requestId]);
-    await db.run(`DELETE FROM defense_requests WHERE id = ? AND kind = 'demo'`, [requestId]);
+    await db.transaction(async (tx) => {
+      await tx.run(
+        `DELETE FROM budget_holds WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
+        [requestId],
+      );
+      await tx.run(
+        `DELETE FROM defense_holds WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
+        [requestId],
+      );
+      await tx.run(
+        `DELETE FROM grades WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
+        [requestId],
+      );
+      await tx.run(
+        `DELETE FROM human_grades WHERE session_id IN (SELECT id FROM sessions WHERE request_id = ?)`,
+        [requestId],
+      );
+      await deleteFeedbackForRequest(tx, requestId);
+      await tx.run(`DELETE FROM receipts WHERE request_id = ?`, [requestId]);
+      await tx.run(`DELETE FROM flashcards WHERE request_id = ?`, [requestId]);
+      await tx.run(`DELETE FROM sessions WHERE request_id = ?`, [requestId]);
+      await tx.run(`DELETE FROM deliverables WHERE request_id = ?`, [requestId]);
+      await tx.run(`DELETE FROM llm_calls WHERE request_id = ?`, [requestId]);
+      await tx.run(`DELETE FROM stage_timings WHERE request_id = ?`, [requestId]);
+      await tx.run(`DELETE FROM demo_passes WHERE request_id = ?`, [requestId]);
+      await tx.run(`DELETE FROM defense_requests WHERE id = ? AND kind = 'demo'`, [requestId]);
+    });
   }
   for (const userId of new Set(expired.map((row) => row.user_id))) {
-    if (userId === anchor) continue;
     const still = await db.get<{ id: string }>(
       `SELECT id FROM defense_requests WHERE owner_user_id = ? OR creator_user_id = ?`,
       [userId, userId],
@@ -2082,29 +2092,11 @@ async function purgeExpiredDemoPasses(db: Db, nowIso: string) {
     );
     if (still || pass) continue;
     const user = await db.get<{ email: string }>(`SELECT email FROM users WHERE id = ?`, [userId]);
-    if (!user || !isDemoPrincipalEmail(user.email)) continue;
-    await db.run(`UPDATE credit_ledger SET user_id = ? WHERE user_id = ?`, [anchor, userId]);
-    await db.run(`DELETE FROM credit_wallets WHERE user_id = ?`, [userId]);
-    await db.run(`DELETE FROM beta_grants WHERE user_id = ?`, [userId]);
-    await db.run(`DELETE FROM auth_sessions WHERE user_id = ?`, [userId]);
-    await db.run(`DELETE FROM users WHERE id = ?`, [userId]);
+    if (!user || !isDemoPrincipalEmail(user.email) || isRetainedAccountEmail(user.email)) continue;
+    await db.transaction(async (tx) => {
+      await deleteAccountRows(tx, userId, user.email);
+    });
   }
-}
-
-/** Keeps sample ledger rows after the ephemeral visitor is deleted. */
-async function demoLedgerAnchorId(db: Db): Promise<string> {
-  const email = "ledger@demo.defendit.invalid";
-  const existing = await db.get<{ id: string }>(`SELECT id FROM users WHERE email = ?`, [email]);
-  if (existing) return existing.id;
-  const id = newId("usr");
-  await db.run(
-    `INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, NULL, ?)
-     ON CONFLICT (email) DO NOTHING`,
-    [id, email, new Date().toISOString()],
-  );
-  const row = await db.get<{ id: string }>(`SELECT id FROM users WHERE email = ?`, [email]);
-  if (!row) throw new Error("demo ledger anchor missing");
-  return row.id;
 }
 
 export function publicKeyInfo() {

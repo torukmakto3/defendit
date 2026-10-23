@@ -46,6 +46,14 @@ describe("privacy page", () => {
     expect(html).not.toContain("keeps only the status word");
     expect(html).toContain("Resend");
     expect(html).toContain("There is no delete button");
+    expect(html).toContain("rating from 1 to 5");
+    expect(html).toContain("optional comment");
+    expect(html).toContain("deleted with the account");
+    expect(html).toContain("founding waitlist");
+    expect(html).toContain("when founding checkout opens");
+    expect(html).toContain("not deleted on a timer");
+    expect(html).toContain("removes the matching address");
+    expect(html).toContain(SUPPORT_EMAIL);
   });
 
   it("names the zero-retention rule and refuses an AI-detection or AI Act claim", () => {

@@ -83,12 +83,19 @@ export default function PrivacyPage() {
           After a completed defense, the signed-in defender can save a rating from 1 to 5 and an
           optional comment of up to 1000 characters. That row is tied to the account and the defense.
           One rating is kept per defense. The comment is not shown on the public receipt. Counts and
-          the latest comments are available only on the token-protected stats report.
+          the latest comments are available only on the token-protected stats report. The rating and
+          the comment are deleted with the account. They are also deleted when the purge job deletes
+          that session or receipt. A receipt that is kept keeps its rating after the answer text is
+          cleared.
         </p>
         <p>
-          The founding waitlist stores an email address and the time it was added. No account is
-          required. A repeat of the same address does not add a second row. The address is not
-          published. The protected stats report includes the count only.
+          The founding waitlist stores an email address and the time it was added, so we can write
+          when founding checkout opens. No account is required. A repeat of the same address does not
+          add a second row. The address is not published. The protected stats report includes the
+          count only. The row is not deleted on a timer. It stays until you ask us to remove it, or
+          until an account with that same email is deleted, which removes the matching address. To
+          remove it, email <a href={`mailto:${contactEmail}`}>{contactEmail}</a> from that address,
+          or name the address in the message.
         </p>
         <p>
           The Day or Night choice is saved in this browser&apos;s local storage (<span className="mono">defend-it:theme</span>).

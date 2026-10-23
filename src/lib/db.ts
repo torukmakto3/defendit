@@ -489,7 +489,9 @@ CREATE TABLE IF NOT EXISTS founding_spots (
   released_at TEXT
 );
 
--- One open spot per account. Released rows stay so a refund can free the cap.
+-- One open spot per account. A refund or an account deletion releases the row
+-- so it no longer counts. Deletion keeps the row and moves user_id to a
+-- retained anchor, because user_id cannot be null.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_founding_spots_one_open
   ON founding_spots (user_id) WHERE status IN ('reserved', 'confirmed');
 

@@ -42,6 +42,8 @@ A monthly or yearly subscriber cannot buy founding while that subscription is `a
 
 A `charge.refunded` or `charge.dispute.created` that matches a founding grant ends the lifetime plan, frees the spot, and claws unused founding credits in proportion to the refund. It does not expire the remaining subscription credits on top of that claw. One open spot per account. After a refund, the same account can buy again if a spot is free.
 
+Deleting an account releases that account's founding spot, reserved or confirmed, the same way a refund does. The cap slot opens. The spot row is kept for accounting: the checkout session id, the payment intent id, and the timestamps stay, and the row is moved to a retained anchor that does not carry the person's email. A released row is not counted. The defense rating and its comment are deleted with the account, and also when the purge job deletes that session or receipt. A founding waitlist row whose email matches the account is deleted with it.
+
 While `BILLING_ENABLED` is off, `/pricing` stays hidden. `/founding` says founding spots are coming soon and takes a waitlist email. No account is required.
 
 ## Checkout

@@ -6,8 +6,11 @@ import {
   LIFETIME_BLOCKS_SUBSCRIPTION_MESSAGE,
   SECOND_SUBSCRIPTION_MESSAGE,
 } from "../src/lib/checkout-gate";
+import { FOUNDING_RELEASED_ANCHOR_EMAIL, deleteAccountData } from "../src/lib/account-deletion";
 import { getBalance, renewPlan } from "../src/lib/credits";
 import { getDb } from "../src/lib/db";
+import { foundingSubscriptionId } from "../src/lib/founding";
+import { purgeExpired } from "../src/lib/services";
 import { applyBillingEvent, createCheckout } from "../src/lib/payments";
 import { skuPriceCents } from "../src/lib/plans";
 import { rateLimit } from "../src/lib/ratelimit";
@@ -643,3 +646,218 @@ describe("postgres billing guards", () => {
     expect(after?.window_start).toBe(before?.window_start);
   });
 });
+
+describe("postgres account deletion", () => {
+  it("deletes an account that has a top-up, feedback, or a founding spot", async () => {
+    const db = await getDb();
+    const now = new Date().toISOString();
+    const topupUser = await createUser();
+    const feedbackUser = await createUser();
+    const spotUser = await createUser();
+    const survivor = await createUser();
+    const feedbackComment = `comment ${feedbackUser}`;
+    const survivorComment = `comment ${survivor}`;
+    const spotIntent = `pi_${spotUser}`;
+    const survivorIntent = `pi_${survivor}`;
+
+    await db.run(
+      `INSERT INTO beta_allowance_topups (user_id, topup_key, applied_at) VALUES (?, 'beta-allowance-v2', ?)`,
+      [topupUser, now],
+    );
+    await insertFeedback(db, feedbackUser, feedbackComment, now);
+    await insertFoundingSpot(db, spotUser, spotIntent, now);
+    await db.run(`INSERT INTO founding_waitlist (email, created_at) VALUES (?, ?)`, [
+      `${spotUser}@billing-pg.test`,
+      now,
+    ]);
+    await db.run(
+      `INSERT INTO user_plans
+        (user_id, plan_id, interval, status, stripe_subscription_id, cancel_at_period_end, updated_at)
+       VALUES (?, 'subscription', 'lifetime', 'active', ?, 0, ?)`,
+      [spotUser, foundingSubscriptionId(spotUser), now],
+    );
+    await db.run(
+      `INSERT INTO stripe_grants (id, user_id, event_id, sku, kind, source, credits, payment_intent_id, created_at)
+       VALUES (?, ?, ?, 'founding_lifetime', 'defense', 'stripe', 10, ?, ?)`,
+      [`sg_${spotUser}`, spotUser, `evt_${spotUser}`, spotIntent, now],
+    );
+    await db.run(
+      `INSERT INTO billing_profiles (user_id, stripe_customer_id, updated_at) VALUES (?, ?, ?)`,
+      [spotUser, `cus_${spotUser}`, now],
+    );
+
+    await db.run(
+      `INSERT INTO beta_allowance_topups (user_id, topup_key, applied_at) VALUES (?, 'beta-allowance-v2', ?)`,
+      [survivor, now],
+    );
+    await insertFeedback(db, survivor, survivorComment, now);
+    await insertFoundingSpot(db, survivor, survivorIntent, now);
+    await db.run(`INSERT INTO founding_waitlist (email, created_at) VALUES (?, ?)`, [
+      `${survivor}@billing-pg.test`,
+      now,
+    ]);
+
+    expect(await deleteAccountData(topupUser)).toBe(true);
+    expect(await deleteAccountData(feedbackUser)).toBe(true);
+    expect(await deleteAccountData(spotUser)).toBe(true);
+
+    expect(await db.get(`SELECT id FROM users WHERE id = ?`, [topupUser])).toBeUndefined();
+    expect(await db.get(`SELECT id FROM users WHERE id = ?`, [feedbackUser])).toBeUndefined();
+    expect(await db.get(`SELECT id FROM users WHERE id = ?`, [spotUser])).toBeUndefined();
+    expect(await db.get(`SELECT user_id FROM beta_allowance_topups WHERE user_id = ?`, [topupUser])).toBeUndefined();
+    expect(await db.get(`SELECT id FROM defense_feedback WHERE comment = ?`, [feedbackComment])).toBeUndefined();
+    expect(await db.get(`SELECT email FROM founding_waitlist WHERE email = ?`, [`${spotUser}@billing-pg.test`])).toBeUndefined();
+    expect(await db.get(`SELECT user_id FROM user_plans WHERE user_id = ?`, [spotUser])).toBeUndefined();
+    expect(await db.get(`SELECT user_id FROM stripe_grants WHERE user_id = ?`, [spotUser])).toBeUndefined();
+    expect(await db.get(`SELECT user_id FROM billing_profiles WHERE user_id = ?`, [spotUser])).toBeUndefined();
+
+    const released = await db.get<{ status: string; user_id: string; payment_intent_id: string }>(
+      `SELECT status, user_id, payment_intent_id FROM founding_spots WHERE payment_intent_id = ?`,
+      [spotIntent],
+    );
+    expect(released?.status).toBe("released");
+    expect(released?.payment_intent_id).toBe(spotIntent);
+    const anchor = await db.get<{ email: string }>(`SELECT email FROM users WHERE id = ?`, [released!.user_id]);
+    expect(anchor?.email).toBe(FOUNDING_RELEASED_ANCHOR_EMAIL);
+    const held = await db.get<{ n: number | string }>(
+      `SELECT COUNT(*) AS n FROM founding_spots
+       WHERE payment_intent_id = ? AND (status = 'confirmed' OR (status = 'reserved' AND expires_at > ?))`,
+      [spotIntent, now],
+    );
+    expect(Number(held?.n ?? 0)).toBe(0);
+
+    expect((await db.get<{ id: string }>(`SELECT id FROM users WHERE id = ?`, [survivor]))?.id).toBe(survivor);
+    expect(
+      await db.get(`SELECT user_id FROM beta_allowance_topups WHERE user_id = ?`, [survivor]),
+    ).toBeTruthy();
+    expect((await db.get<{ comment: string }>(`SELECT comment FROM defense_feedback WHERE user_id = ?`, [survivor]))?.comment).toBe(
+      survivorComment,
+    );
+    expect(await db.get(`SELECT email FROM founding_waitlist WHERE email = ?`, [`${survivor}@billing-pg.test`])).toBeTruthy();
+    const kept = await db.get<{ status: string }>(
+      `SELECT status FROM founding_spots WHERE payment_intent_id = ?`,
+      [survivorIntent],
+    );
+    expect(kept?.status).toBe("confirmed");
+  });
+
+  it("removes the feedback comment when a receipt is purged and when a demo account is deleted", async () => {
+    const db = await getDb();
+    const now = new Date().toISOString();
+    const userId = await createUser();
+    const requestId = nonce("req");
+    const deliverableId = nonce("del");
+    const sessionId = nonce("ses");
+    const receiptId = nonce("rcpt");
+    const comment = `purge comment ${receiptId}`;
+    await db.run(
+      `INSERT INTO defense_requests (id, token, owner_user_id, kind, difficulty, title, status, created_at)
+       VALUES (?, ?, ?, 'self', 'standard', 'Note', 'completed', ?)`,
+      [requestId, nonce("tok"), userId, now],
+    );
+    await db.run(
+      `INSERT INTO deliverables
+        (id, request_id, owner_user_id, mime_type, byte_length, sha256, claim_count, purge_after, created_at)
+       VALUES (?, ?, ?, 'text/markdown', 8, ?, 0, ?, ?)`,
+      [deliverableId, requestId, userId, nonce("sha"), "2099-01-01T00:00:00.000Z", now],
+    );
+    await db.run(
+      `INSERT INTO sessions
+        (id, request_id, deliverable_id, user_id, mode, seed, status, started_at, purge_after)
+       VALUES (?, ?, ?, ?, 'defend', 'seed', 'completed', ?, ?)`,
+      [sessionId, requestId, deliverableId, userId, now, "2099-01-01T00:00:00.000Z"],
+    );
+    await db.run(
+      `INSERT INTO receipts
+        (id, session_id, request_id, payload_json, signature, public_key, created_at, purge_after)
+       VALUES (?, ?, ?, '{}', 'sig', 'pk', ?, ?)`,
+      [receiptId, sessionId, requestId, now, "2000-01-01T00:00:00.000Z"],
+    );
+    await db.run(
+      `INSERT INTO defense_feedback (id, user_id, session_id, receipt_id, rating, comment, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 5, ?, ?, ?)`,
+      [nonce("fb"), userId, sessionId, receiptId, comment, now, now],
+    );
+
+    await purgeExpired();
+    expect(await db.get(`SELECT id FROM receipts WHERE id = ?`, [receiptId])).toBeUndefined();
+    expect(await db.get(`SELECT id FROM defense_feedback WHERE comment = ?`, [comment])).toBeUndefined();
+    expect((await db.get<{ id: string }>(`SELECT id FROM users WHERE id = ?`, [userId]))?.id).toBe(userId);
+
+    const demoId = nonce("usr");
+    const demoEmail = `${demoId}@demo.defendit.invalid`;
+    const demoRequest = nonce("req");
+    const demoComment = `demo comment ${demoId}`;
+    await db.run(`INSERT INTO users (id, email, display_name, created_at) VALUES (?, ?, NULL, ?)`, [
+      demoId,
+      demoEmail,
+      now,
+    ]);
+    await db.run(
+      `INSERT INTO defense_requests (id, token, owner_user_id, kind, difficulty, title, status, created_at)
+       VALUES (?, ?, ?, 'demo', 'standard', 'Sample', 'uploaded', ?)`,
+      [demoRequest, nonce("tok"), demoId, now],
+    );
+    await db.run(
+      `INSERT INTO demo_passes (token_hash, user_id, request_id, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [nonce("hash"), demoId, demoRequest, "2000-01-01T00:00:00.000Z", now],
+    );
+    await db.run(
+      `INSERT INTO beta_allowance_topups (user_id, topup_key, applied_at) VALUES (?, 'beta-allowance-v2', ?)`,
+      [demoId, now],
+    );
+    await db.run(
+      `INSERT INTO defense_feedback (id, user_id, session_id, receipt_id, rating, comment, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 2, ?, ?, ?)`,
+      [nonce("fb"), demoId, nonce("ses"), nonce("rcpt"), demoComment, now, now],
+    );
+    await db.run(
+      `INSERT INTO founding_spots
+        (id, user_id, status, checkout_session_id, payment_intent_id, reserved_at, confirmed_at)
+       VALUES (?, ?, 'confirmed', ?, ?, ?, ?)`,
+      [nonce("spot"), demoId, nonce("cs"), `pi_${demoId}`, now, now],
+    );
+    await db.run(`INSERT INTO founding_waitlist (email, created_at) VALUES (?, ?)`, [demoEmail, now]);
+
+    await purgeExpired();
+    expect(await db.get(`SELECT id FROM users WHERE id = ?`, [demoId])).toBeUndefined();
+    expect(await db.get(`SELECT user_id FROM beta_allowance_topups WHERE user_id = ?`, [demoId])).toBeUndefined();
+    expect(await db.get(`SELECT id FROM defense_feedback WHERE comment = ?`, [demoComment])).toBeUndefined();
+    expect(await db.get(`SELECT email FROM founding_waitlist WHERE email = ?`, [demoEmail])).toBeUndefined();
+    const spot = await db.get<{ status: string; user_id: string }>(
+      `SELECT status, user_id FROM founding_spots WHERE payment_intent_id = ?`,
+      [`pi_${demoId}`],
+    );
+    expect(spot?.status).toBe("released");
+    const anchor = await db.get<{ email: string }>(`SELECT email FROM users WHERE id = ?`, [spot!.user_id]);
+    expect(anchor?.email).toBe(FOUNDING_RELEASED_ANCHOR_EMAIL);
+  });
+});
+
+async function insertFeedback(
+  db: Awaited<ReturnType<typeof getDb>>,
+  userId: string,
+  comment: string,
+  now: string,
+): Promise<void> {
+  await db.run(
+    `INSERT INTO defense_feedback (id, user_id, session_id, receipt_id, rating, comment, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 4, ?, ?, ?)`,
+    [nonce("fb"), userId, nonce("ses"), nonce("rcpt"), comment, now, now],
+  );
+}
+
+async function insertFoundingSpot(
+  db: Awaited<ReturnType<typeof getDb>>,
+  userId: string,
+  paymentIntentId: string,
+  now: string,
+): Promise<void> {
+  await db.run(
+    `INSERT INTO founding_spots
+      (id, user_id, status, checkout_session_id, payment_intent_id, reserved_at, confirmed_at)
+     VALUES (?, ?, 'confirmed', ?, ?, ?, ?)`,
+    [nonce("spot"), userId, nonce("cs"), paymentIntentId, now, now],
+  );
+}
