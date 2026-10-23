@@ -8,11 +8,13 @@ import { SignInCard } from "@/components/auth";
 import { Companion } from "@/components/companion/Companion";
 import { ShareBar } from "@/components/challenge/actions";
 import { PublicChallengeResult } from "@/components/challenge/PublicResult";
+import { DefenseFeedback } from "@/components/receipt/DefenseFeedback";
 import { LoadTest } from "@/components/receipt/LoadTest";
 import { claimResults, gradedWithLine } from "@/components/receipt/metrics";
 import { PlotterStamp } from "@/components/receipt/PlotterStamp";
 import { ToleranceChart } from "@/components/receipt/ToleranceChart";
 import { integritySummary } from "@/lib/integrity";
+import { SUPPORT_EMAIL } from "@/lib/operator";
 import type { SignedReceipt } from "@/lib/types";
 
 interface ChallengeResultView {
@@ -203,7 +205,7 @@ export default function ReceiptPage() {
               Check the sample hash
             </Link>
           </div>
-          <SignInCard title="Sign in and defend your own file (3 free)" />
+          <SignInCard title="Sign in and defend your own file (8 free)" />
         </div>
       ) : (
       <div className="panel grid gap-4 p-5">
@@ -257,6 +259,10 @@ export default function ReceiptPage() {
         </div>
       </div>
       )}
+      {!sample && <DefenseFeedback receiptId={p.id} />}
+      <p className="text-sm text-[var(--ink-2)]">
+        Questions or feedback? <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>
+      </p>
       <p className="text-sm text-[var(--ink-2)]">{gradedWithLine(p)}</p>
     </div>
   );

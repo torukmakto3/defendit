@@ -85,7 +85,7 @@ Set these when turning Checkout on in test mode:
 
 Do not set `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`. Checkout is hosted. Prices resolve by lookup key (`dit_defense_payg`, `dit_challenge_payg`, `dit_pack_3`, `dit_pack_8`, `dit_pro_monthly`, `dit_pro_yearly`, `dit_team_monthly`, `dit_enterprise_base`, `dit_enterprise_extra_unit`).
 
-Webhook events the endpoint must receive: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated`, `customer.subscription.deleted`, `charge.refunded`, `charge.dispute.created`, `charge.succeeded`, `invoice.created`, `invoice.finalized`, `credit_note.created`, `cash_balance.funds_available`, `customer_cash_balance_transaction.created`, `payment_method.attached`, `payment_method.detached`.
+Webhook events the endpoint must receive: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated`, `customer.subscription.deleted`, `charge.refunded`, `charge.dispute.created`, `charge.succeeded`, `invoice.created`, `invoice.finalized`, `credit_note.created`, `cash_balance.funds_available`, `customer_cash_balance_transaction.created`, `payment_method.attached`, `payment_method.detached`.
 
 Yearly Pro (`dit_pro_yearly`) refills each month from `invoice.paid` (month 0) and the existing purge cron. The balance tops up to 10 defenses, 5 challenges, and 10 Learn projects. Unused monthly defenses and challenges do not roll over.
 
@@ -181,9 +181,9 @@ Session orchestration stays on our server; the voice provider only carries the c
 
 ## Difficulty levels
 
-- **Standard** — key claims and why they hold  
-- **Hard** — what-ifs, stretched assumptions, planted error  
-- **Expert** — adversarial edge cases and counterarguments  
+- **Standard** — why the key claims hold, including a what-if. The full interview does not plant an error.
+- **Hard** — what-ifs, stretched assumptions, and a planted error
+- **Expert** — edge cases, counterarguments, and a planted error
 
 ## Receipt contents
 

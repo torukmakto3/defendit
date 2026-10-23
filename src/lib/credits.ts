@@ -36,7 +36,9 @@
  * with purpose `demo`, against `DEMO_BUDGET_EUR` (default 20, lifetime) on
  * `credit_budget` id `demo`. That charge does not move the shared `beta`
  * row, so samples cannot exhaust `BETA_BUDGET_EUR`. Each account
- * is granted `BETA_DEFENSE_CREDITS` free defenses once (default 3). While
+ * is granted `BETA_DEFENSE_CREDITS` free defenses once (default 8), plus 5
+ * challenges and 5 Learn slots. An account that already received the earlier
+ * grant is topped up once. While
  * billing is off, the next defense after those are spent is a 402. The
  * global budget can stop a sponsored defense sooner. Starting a defense
  * refunds an unfinished hold that is already attached to an in-progress
@@ -55,8 +57,10 @@ import { getDb, type Db } from "./db";
 import { HttpError } from "./errors";
 import { newId } from "./ids";
 import {
+  BETA_ALLOWANCE_TOPUP_KEY,
   BETA_GRANT,
   betaDefenseCredits,
+  PREVIOUS_BETA_GRANT,
   billingEnabled,
   costTierForPlan,
   formatEur,
@@ -691,7 +695,8 @@ async function assignedPlan(db: Db, userId: string): Promise<AssignedPlan> {
     return { plan, interval: null, status: "none", costTier: plan.costTier, periodId: null };
   }
   const plan = getPlan(row.plan_id);
-  const interval = row.interval === "month" || row.interval === "year" ? row.interval : null;
+  const interval =
+    row.interval === "month" || row.interval === "year" || row.interval === "lifetime" ? row.interval : null;
   const status =
     row.status === "active" ||
     row.status === "trialing" ||
@@ -1119,7 +1124,10 @@ export async function ensureBetaGrant(userId: string): Promise<{ granted: boolea
       `INSERT INTO beta_grants (user_id, granted_at) VALUES (?, ?) ON CONFLICT (user_id) DO NOTHING`,
       [userId, new Date().toISOString()],
     );
-    if (inserted.changes !== 1) return { granted: false };
+    if (inserted.changes !== 1) {
+      await applyBetaAllowanceTopup(tx, userId);
+      return { granted: false };
+    }
     const base = {
       userId,
       reason: "grant" as const,
@@ -1152,8 +1160,61 @@ export async function ensureBetaGrant(userId: string): Promise<{ granted: boolea
       amount: BETA_GRANT.learnSlots,
       idempotencyKey: `beta:${userId}:learn_slot`,
     });
+    await markBetaAllowanceTopup(tx, userId);
     return { granted: true };
   });
+}
+
+/**
+ * One top-up per account. The delta is the new target minus the original
+ * beta ledger row. A missing row counts as the previously published grant,
+ * not as zero. A zero delta is skipped.
+ */
+async function applyBetaAllowanceTopup(tx: Db, userId: string): Promise<void> {
+  const marked = await markBetaAllowanceTopup(tx, userId);
+  if (!marked) return;
+  const targets = {
+    defense: betaDefenseCredits(),
+    challenge: BETA_GRANT.challenge,
+    learn_slot: BETA_GRANT.learnSlots,
+  } as const;
+  const previous = {
+    defense: PREVIOUS_BETA_GRANT.defense,
+    challenge: PREVIOUS_BETA_GRANT.challenge,
+    learn_slot: PREVIOUS_BETA_GRANT.learnSlots,
+  } as const;
+  for (const kind of ["defense", "challenge", "learn_slot"] as const) {
+    const row = await tx.get<{ amount: number | string }>(
+      `SELECT amount FROM credit_ledger WHERE idempotency_key = ?`,
+      [`beta:${userId}:${kind}`],
+    );
+    const original = row ? Number(row.amount) : previous[kind];
+    const delta = Math.max(0, targets[kind] - original);
+    if (delta === 0) continue;
+    await insertEntry(tx, {
+      userId,
+      kind,
+      reason: "grant",
+      amount: delta,
+      idempotencyKey: `beta-topup:${BETA_ALLOWANCE_TOPUP_KEY}:${userId}:${kind}`,
+      source: "beta",
+      purpose: null,
+      refType: "beta_topup",
+      refId: userId,
+      sponsored: true,
+      budgetCents: null,
+      periodId: null,
+    });
+  }
+}
+
+async function markBetaAllowanceTopup(tx: Db, userId: string): Promise<boolean> {
+  const inserted = await tx.run(
+    `INSERT INTO beta_allowance_topups (user_id, topup_key, applied_at) VALUES (?, ?, ?)
+     ON CONFLICT (user_id, topup_key) DO NOTHING`,
+    [userId, BETA_ALLOWANCE_TOPUP_KEY, new Date().toISOString()],
+  );
+  return inserted.changes === 1;
 }
 
 /** Google sign-in calls this. It is the same once-per-account grant as `ensureBetaGrant`. */
@@ -1179,6 +1240,19 @@ export async function costTierForUser(userId: string): Promise<CostCapTier> {
   return (await getUserPlan(userId)).costTier;
 }
 
+/**
+ * An active lifetime plan is not replaced, expired, or refilled by a different
+ * subscription. The check runs before any credit write.
+ */
+function lifetimeBlocksOtherSubscription(
+  current: { interval: string | null; status: string | null; stripe_subscription_id: string | null } | undefined,
+  subscriptionId: string | null,
+): boolean {
+  if (!current || current.interval !== "lifetime") return false;
+  if (current.status !== "active" && current.status !== "trialing") return false;
+  return current.stripe_subscription_id !== subscriptionId;
+}
+
 export async function renewPlan(input: {
   userId: string;
   planId: PlanId;
@@ -1193,11 +1267,16 @@ export async function renewPlan(input: {
   const activateStatus = input.activate === false ? null : "active";
   await withTx(undefined, async (tx) => {
     await lockWallet(tx, input.userId);
-    const current = await tx.get<{ period_id: string | null }>(
-      `SELECT period_id FROM user_plans WHERE user_id = ?`,
-      [input.userId],
-    );
+    const current = await tx.get<{
+      period_id: string | null;
+      interval: string | null;
+      status: string | null;
+      stripe_subscription_id: string | null;
+    }>(`SELECT period_id, interval, status, stripe_subscription_id FROM user_plans WHERE user_id = ?`, [
+      input.userId,
+    ]);
     if (current?.period_id === input.periodId) return;
+    if (lifetimeBlocksOtherSubscription(current, input.subscriptionId ?? null)) return;
     if (!plan.challengesRollOver) {
       await expireSource(tx, input.userId, "challenge", input.periodId);
     }
@@ -1280,6 +1359,12 @@ export async function attachSubscription(input: {
 }): Promise<void> {
   const now = new Date().toISOString();
   const db = await getDb();
+  const current = await db.get<{
+    interval: string | null;
+    status: string | null;
+    stripe_subscription_id: string | null;
+  }>(`SELECT interval, status, stripe_subscription_id FROM user_plans WHERE user_id = ?`, [input.userId]);
+  if (lifetimeBlocksOtherSubscription(current, input.subscriptionId)) return;
   await db.run(
     `INSERT INTO user_plans
       (user_id, plan_id, interval, status, period_id, current_period_end, stripe_subscription_id, cancel_at_period_end, updated_at)
@@ -1308,15 +1393,19 @@ export async function attachSubscription(input: {
   );
 }
 
-/** Mark a payment failure on this subscription. Credits already granted stay. */
-export async function markPlanPastDue(userId: string, subscriptionId: string): Promise<void> {
-  if (!subscriptionId) return;
+/**
+ * Mark a payment failure on this subscription. Credits already granted stay.
+ * Returns whether a row changed. A different subscription id matches nothing.
+ */
+export async function markPlanPastDue(userId: string, subscriptionId: string): Promise<boolean> {
+  if (!subscriptionId) return false;
   const db = await getDb();
-  await db.run(
+  const updated = await db.run(
     `UPDATE user_plans SET status = 'past_due', updated_at = ?
      WHERE user_id = ? AND status IN ('active', 'trialing') AND stripe_subscription_id = ?`,
     [new Date().toISOString(), userId, subscriptionId],
   );
+  return updated.changes > 0;
 }
 
 /**
@@ -1374,6 +1463,8 @@ export interface SubscriptionMonthGrant {
   grantAnchor: string;
   /** A paid invoice marks the plan active. A refill leaves status alone. */
   activate: boolean;
+  /** Yearly Pro stays `year`. Founding writes `lifetime` so a later refill does not relabel the plan. */
+  interval?: BillingInterval;
 }
 
 /**
@@ -1396,11 +1487,14 @@ export async function grantSubscriptionMonth(input: SubscriptionMonthGrant): Pro
     await lockWallet(tx, input.userId);
     const row = await tx.get<{
       stripe_subscription_id: string | null;
+      interval: string | null;
+      status: string | null;
       last_granted_period_index: number | string | null;
     }>(
-      `SELECT stripe_subscription_id, last_granted_period_index FROM user_plans WHERE user_id = ?`,
+      `SELECT stripe_subscription_id, interval, status, last_granted_period_index FROM user_plans WHERE user_id = ?`,
       [input.userId],
     );
+    if (lifetimeBlocksOtherSubscription(row, input.subscriptionId)) return { granted: false, grants: [] };
     const sameSub = row?.stripe_subscription_id === input.subscriptionId;
     const last =
       sameSub && row?.last_granted_period_index != null ? Number(row.last_granted_period_index) : null;
@@ -1437,14 +1531,15 @@ export async function grantSubscriptionMonth(input: SubscriptionMonthGrant): Pro
 async function storeRefillCursor(tx: Db, input: SubscriptionMonthGrant, periodId: string): Promise<void> {
   const now = new Date().toISOString();
   const status = input.activate ? "active" : null;
+  const interval = input.interval ?? "year";
   await tx.run(
     `INSERT INTO user_plans
       (user_id, plan_id, interval, status, period_id, current_period_start, current_period_end,
        stripe_subscription_id, grant_anchor, last_granted_period_index, cancel_at_period_end, updated_at)
-     VALUES (?, ?, 'year', 'active', ?, ?, ?, ?, ?, ?, 0, ?)
+     VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, 0, ?)
      ON CONFLICT (user_id) DO UPDATE SET
        plan_id = excluded.plan_id,
-       interval = 'year',
+       interval = excluded.interval,
        status = COALESCE(?, user_plans.status),
        period_id = excluded.period_id,
        current_period_start = excluded.current_period_start,
@@ -1466,6 +1561,7 @@ async function storeRefillCursor(tx: Db, input: SubscriptionMonthGrant, periodId
     [
       input.userId,
       input.planId,
+      interval,
       periodId,
       input.periodStart,
       input.periodEnd,
@@ -1562,6 +1658,9 @@ function periodEnd(interval: BillingInterval): string {
       break;
     case "year":
       date.setUTCFullYear(date.getUTCFullYear() + 1);
+      break;
+    case "lifetime":
+      date.setUTCMonth(date.getUTCMonth() + 1);
       break;
     default: {
       const unknown: never = interval;
@@ -2106,7 +2205,13 @@ export function ledgerLabel(entry: {
 
 export interface WalletView {
   balance: CreditBalance;
-  plan: { id: PlanId; name: string; costTier: CostCapTier; status: AssignedPlan["status"] };
+  plan: {
+    id: PlanId;
+    name: string;
+    costTier: CostCapTier;
+    status: AssignedPlan["status"];
+    interval: BillingInterval | null;
+  };
   learn: { active: number; limit: number | null };
   prices: {
     defense: string;
@@ -2131,7 +2236,13 @@ export async function walletView(userId: string): Promise<WalletView> {
   const sub = getPlan("subscription");
   return {
     balance,
-    plan: { id: plan.plan.id, name: plan.plan.name, costTier: plan.costTier, status: plan.status },
+    plan: {
+      id: plan.plan.id,
+      name: plan.interval === "lifetime" ? "Founding member" : plan.plan.name,
+      costTier: plan.costTier,
+      status: plan.status,
+      interval: plan.interval,
+    },
     learn: { active, limit },
     prices: {
       defense: formatEur(PAYG_CENTS.defense),

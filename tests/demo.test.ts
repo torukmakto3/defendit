@@ -586,6 +586,58 @@ describe("sample demo defense", () => {
     expect(Number(ledger?.n)).toBe(1);
   });
 
+  it("drops top-up, feedback, and a founding spot when the demo account is deleted", async () => {
+    const opened = await openDemo("203.0.113.71");
+    expect(opened.status).toBe(200);
+    const db = await getDb();
+    const pass = await db.get<{ user_id: string; request_id: string; email: string }>(
+      `SELECT p.user_id, p.request_id, u.email
+       FROM demo_passes p
+       JOIN defense_requests r ON r.id = p.request_id
+       JOIN users u ON u.id = p.user_id
+       WHERE r.token = ?`,
+      [opened.json.token],
+    );
+    expect(pass?.user_id).toBeTruthy();
+    const now = new Date().toISOString();
+    const comment = "demo feedback comment to delete";
+    await db.run(
+      `INSERT INTO beta_allowance_topups (user_id, topup_key, applied_at) VALUES (?, 'beta-allowance-v2', ?)`,
+      [pass!.user_id, now],
+    );
+    await db.run(
+      `INSERT INTO defense_feedback (id, user_id, session_id, receipt_id, rating, comment, created_at, updated_at)
+       VALUES ('fb_demo_purge', ?, 'ses_demo_purge', 'rcpt_demo_purge', 4, ?, ?, ?)`,
+      [pass!.user_id, comment, now, now],
+    );
+    await db.run(
+      `INSERT INTO founding_spots
+        (id, user_id, status, checkout_session_id, payment_intent_id, reserved_at, confirmed_at)
+       VALUES ('spot_demo_purge', ?, 'confirmed', 'cs_demo_purge', 'pi_demo_purge', ?, ?)`,
+      [pass!.user_id, now, now],
+    );
+    await db.run(`INSERT INTO founding_waitlist (email, created_at) VALUES (?, ?)`, [pass!.email, now]);
+    await db.run(`UPDATE demo_passes SET expires_at = ? WHERE request_id = ?`, [
+      "2000-01-01T00:00:00.000Z",
+      pass!.request_id,
+    ]);
+    await purgeExpired();
+    expect(await db.get(`SELECT id FROM users WHERE id = ?`, [pass!.user_id])).toBeUndefined();
+    expect(
+      await db.get(`SELECT user_id FROM beta_allowance_topups WHERE user_id = ?`, [pass!.user_id]),
+    ).toBeUndefined();
+    expect(await db.get(`SELECT id FROM defense_feedback WHERE comment = ?`, [comment])).toBeUndefined();
+    expect(await db.get(`SELECT email FROM founding_waitlist WHERE email = ?`, [pass!.email])).toBeUndefined();
+    const spot = await db.get<{ status: string; user_id: string; payment_intent_id: string }>(
+      `SELECT status, user_id, payment_intent_id FROM founding_spots WHERE id = 'spot_demo_purge'`,
+    );
+    expect(spot?.status).toBe("released");
+    expect(spot?.payment_intent_id).toBe("pi_demo_purge");
+    expect(spot?.user_id).not.toBe(pass!.user_id);
+    const anchor = await db.get<{ email: string }>(`SELECT email FROM users WHERE id = ?`, [spot!.user_id]);
+    expect(anchor?.email).toBe("founding-released@defendit.invalid");
+  });
+
   it("clears expired demo rate-limit keys and leaves other buckets", async () => {
     const db = await getDb();
     const old = new Date(Date.now() - 25 * 3600_000).toISOString();

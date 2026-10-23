@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { SignInCard, useMe } from "@/components/auth";
 import { CheckoutButton } from "@/components/checkout-button";
+import { PortalButton } from "@/components/portal-button";
+import { checkoutUiAction } from "@/lib/checkout-gate";
 
 interface Row {
   token: string;
@@ -26,7 +28,12 @@ interface Wallet {
     flex: number;
     held: { defense: number; challenge: number };
   };
-  plan: { name: string; costTier: string; status: string };
+  plan: {
+    name: string;
+    costTier: string;
+    status: string;
+    interval: "month" | "year" | "lifetime" | null;
+  };
   learn: { active: number; limit: number | null };
   billingEnabled: boolean;
   billingFlag: string | null;
@@ -180,7 +187,11 @@ function WalletPanel({ wallet }: { wallet: Wallet }) {
                   <span className="mono text-sm">{product.priceLabel}</span>
                 </div>
                 <p className="mt-1 text-sm text-[var(--ink-2)]">{product.detail}</p>
-                <CheckoutButton sku={product.sku} label="Checkout" />
+                {checkoutUiAction(product.sku, wallet.plan) === "portal" ? (
+                  <PortalButton label="Open billing portal" />
+                ) : (
+                  <CheckoutButton sku={product.sku} label="Checkout" />
+                )}
               </li>
             ))}
           </ul>

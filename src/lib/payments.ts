@@ -19,6 +19,7 @@ import {
   attachSubscription,
   clawbackCredits,
   endPaidPlan,
+  getUserPlan,
   grantCredits,
   markPlanPastDue,
   renewPlan,
@@ -26,8 +27,19 @@ import {
   type CreditSource,
   type LedgerKind,
 } from "./credits";
+import { checkoutBlockMessage, checkoutUiAction } from "./checkout-gate";
 import { getDb, type Db } from "./db";
 import { HttpError } from "./errors";
+import {
+  attachFoundingCheckout,
+  confirmFoundingPayment,
+  endFoundingMemberships,
+  foundingSubscriptionId,
+  releaseFoundingBySession,
+  releaseFoundingReservation,
+  reserveFoundingSpot,
+} from "./founding";
+import { SUPPORT_EMAIL } from "./operator";
 import { billingEnabled, isSku, PACKS, planForSku, skuPriceCents, type Sku } from "./plans";
 import { loadCheckoutLinePrices, stripeCheckoutApi } from "./stripe-checkout";
 import {
@@ -94,6 +106,7 @@ const checkoutEventSchema = z.object({
     "checkout.session.completed",
     "checkout.session.async_payment_succeeded",
     "checkout.session.async_payment_failed",
+    "checkout.session.expired",
   ]),
   created: z.number().int().optional(),
   data: z.object({ object: sessionObject }),
@@ -229,6 +242,7 @@ const HANDLED = [
   "checkout.session.completed",
   "checkout.session.async_payment_succeeded",
   "checkout.session.async_payment_failed",
+  "checkout.session.expired",
   "invoice.paid",
   "invoice.payment_failed",
   "customer.subscription.updated",
@@ -266,24 +280,37 @@ export async function createCheckout(input: {
   if (!billingEnabled()) throw new HttpError(402, "Billing is not enabled");
   if (liveStripeRefused()) throw new HttpError(403, "Live Stripe keys are refused.");
   const sku = assertSkuForSale(input.sku);
+  const plan = await getUserPlan(input.userId);
+  if (checkoutUiAction(sku, plan) === "portal") {
+    throw new HttpError(409, checkoutBlockMessage(sku, plan));
+  }
   if (!stripeSecretKey()) throw new HttpError(501, "Stripe is not configured");
   const price = await resolveCheckoutPrice(sku);
   if (price.currency.toLowerCase() !== "eur" || price.unitAmount !== skuPriceCents(sku)) {
     throw new HttpError(502, `Stripe price for ${price.lookupKey} does not match the plan.`);
   }
-  const session = await stripeCheckoutApi().createSession({
-    userId: input.userId,
-    email: input.email ?? null,
-    customerId: await customerIdForUser(input.userId),
-    sku,
-    mode: checkoutMode(sku),
-    priceId: price.priceId,
-    lookupKey: price.lookupKey,
-    successUrl: `${appUrl("/dashboard")}?checkout={CHECKOUT_SESSION_ID}`,
-    cancelUrl: appUrl("/billing/cancel"),
-  });
-  if (!session.url) throw new HttpError(502, "Stripe did not return a checkout URL.");
-  return { id: session.id, url: session.url };
+  const mode = checkoutMode(sku);
+  const hold = sku === "founding_lifetime" ? await reserveFoundingSpot(input.userId) : null;
+  try {
+    const session = await stripeCheckoutApi().createSession({
+      userId: input.userId,
+      email: input.email ?? null,
+      customerId: await customerIdForUser(input.userId),
+      sku,
+      mode,
+      priceId: price.priceId,
+      lookupKey: price.lookupKey,
+      successUrl: `${appUrl("/dashboard")}?checkout={CHECKOUT_SESSION_ID}`,
+      cancelUrl: appUrl("/billing/cancel"),
+      expiresAt: hold ? Math.floor(hold.expiresAt.getTime() / 1000) : undefined,
+    });
+    if (!session.url) throw new HttpError(502, "Stripe did not return a checkout URL.");
+    if (hold) await attachFoundingCheckout(hold.spotId, session.id);
+    return { id: session.id, url: session.url };
+  } catch (e) {
+    if (hold) await releaseFoundingReservation(hold.spotId);
+    throw e;
+  }
 }
 
 /** Customer Portal for the stored classic Customer. */
@@ -347,6 +374,8 @@ export async function applyBillingEvent(event: unknown): Promise<BillingResult> 
     case "checkout.session.async_payment_succeeded":
     case "checkout.session.async_payment_failed":
       return applyCheckout(checkoutEventSchema.parse(event));
+    case "checkout.session.expired":
+      return applyCheckoutExpired(checkoutEventSchema.parse(event));
     case "invoice.paid":
     case "invoice.payment_failed":
     case "invoice.created":
@@ -374,6 +403,57 @@ export async function applyBillingEvent(event: unknown): Promise<BillingResult> 
   }
 }
 
+async function applyCheckoutExpired(event: z.infer<typeof checkoutEventSchema>): Promise<BillingResult> {
+  await releaseFoundingBySession(event.data.object.id);
+  await logEvent(event.id, event.type);
+  return { duplicate: false, ignored: true };
+}
+
+const FOUNDING_MISSED_NOTICE = `Founding membership could not be added. Email ${SUPPORT_EMAIL}.`;
+
+async function applyFoundingCheckout(
+  event: z.infer<typeof checkoutEventSchema>,
+  userId: string,
+): Promise<BillingResult> {
+  const session = event.data.object;
+  if (session.mode && session.mode !== "payment") {
+    throw new HttpError(400, "Founding checkout has the wrong mode.");
+  }
+  if (await grantExists("checkout_session_id", session.id)) {
+    await logEvent(event.id, event.type);
+    return { duplicate: true };
+  }
+  const paymentIntentId = stripeId(session.payment_intent);
+  const confirmed = await confirmFoundingPayment({
+    userId,
+    sessionId: session.id,
+    paymentIntentId,
+  });
+  if (confirmed.outcome === "granted" || confirmed.outcome === "replay") {
+    await rememberGrants({
+      userId,
+      eventId: event.id,
+      sku: "founding_lifetime",
+      grants: confirmed.grants,
+      grantKey: `refill:${foundingSubscriptionId(userId)}:0`,
+      checkoutSessionId: session.id,
+      paymentIntentId,
+    });
+    await rememberCard(userId, paymentIntentId);
+    await setPaymentNotice(userId, null);
+    return logEvent(event.id, event.type);
+  }
+  console.error("[founding] paid checkout did not take a spot", {
+    eventId: event.id,
+    userId,
+    sessionId: session.id,
+    outcome: confirmed.outcome,
+  });
+  await setPaymentNotice(userId, FOUNDING_MISSED_NOTICE);
+  const logged = await logEvent(event.id, event.type);
+  return { ...logged, ignored: true };
+}
+
 async function applyCheckout(event: z.infer<typeof checkoutEventSchema>): Promise<BillingResult> {
   const session = event.data.object;
   if (event.type === "checkout.session.async_payment_failed") {
@@ -398,6 +478,7 @@ async function applyCheckout(event: z.infer<typeof checkoutEventSchema>): Promis
   const lines = await sessionLinePrices(session);
   await assertLinePrice(sku, lines);
   const plan = planForSku(sku);
+  if (sku === "founding_lifetime") return applyFoundingCheckout(event, userId);
   if (plan) {
     if (session.mode === "payment") throw new HttpError(400, "Subscription checkout has the wrong mode.");
     const subscriptionId = stripeId(session.subscription);
@@ -552,8 +633,17 @@ async function applyInvoiceFailed(event: z.infer<typeof invoiceEventSchema>): Pr
     return { duplicate: false, unmatched: true };
   }
   const subscriptionId = stripeId(invoice.parent?.subscription_details?.subscription);
-  if (subscriptionId) await markPlanPastDue(userId, subscriptionId);
-  await setPaymentNotice(userId, "Payment failed. Update the card in the billing portal.");
+  const marked = subscriptionId ? await markPlanPastDue(userId, subscriptionId) : false;
+  const current = await (await getDb()).get<{ stripe_subscription_id: string | null }>(
+    `SELECT stripe_subscription_id FROM user_plans WHERE user_id = ?`,
+    [userId],
+  );
+  const sameSubscription = Boolean(subscriptionId && current?.stripe_subscription_id === subscriptionId);
+  // A stale invoice neither flips the plan nor paints the dashboard notice.
+  // The id match still shows the notice when the plan is already past due.
+  if (marked || sameSubscription) {
+    await setPaymentNotice(userId, "Payment failed. Update the card in the billing portal.");
+  }
   return logEvent(event.id, event.type);
 }
 
@@ -723,6 +813,7 @@ async function clawGrants(input: {
     // event; a crash after commit cannot leave the event stored and the
     // refills still running. Stripe is not told to cancel.
     for (const subscriptionId of stopped) await stopSubscriptionRefills(tx, subscriptionId);
+    await endFoundingMemberships(tx, grants);
   });
   afterClawTransactionForTests?.();
   return { duplicate, unmatched };
@@ -1067,6 +1158,8 @@ async function applyCreditSku(userId: string, sku: Sku, idempotencyKey: string):
     case "team_month":
     case "enterprise_month":
       throw new HttpError(400, "Use a renewal for this plan.");
+    case "founding_lifetime":
+      throw new HttpError(400, "Founding membership is granted from checkout.");
     default: {
       const unknown: never = sku;
       throw new HttpError(400, `Unknown price: ${String(unknown)}`);

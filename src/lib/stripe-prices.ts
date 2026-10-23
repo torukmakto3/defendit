@@ -23,6 +23,7 @@ export const STRIPE_LOOKUP_KEYS = {
   teamMonthly: "dit_team_monthly",
   enterpriseBase: "dit_enterprise_base",
   enterpriseExtraUnit: "dit_enterprise_extra_unit",
+  foundingLifetime: "founding_lifetime",
 } as const;
 
 /** Usage meter name. The meter itself is not created yet. */
@@ -41,6 +42,7 @@ const CHECKOUT_LOOKUP_KEYS = {
   subscription_month: STRIPE_LOOKUP_KEYS.proMonthly,
   subscription_year: STRIPE_LOOKUP_KEYS.proYearly,
   team_month: STRIPE_LOOKUP_KEYS.teamMonthly,
+  founding_lifetime: STRIPE_LOOKUP_KEYS.foundingLifetime,
 } as const;
 
 const PRICE_CACHE_MS = 5 * 60 * 1000;
@@ -78,6 +80,7 @@ export function lookupKeyForSku(sku: Sku): string | null {
     case "subscription_month":
     case "subscription_year":
     case "team_month":
+    case "founding_lifetime":
       return CHECKOUT_LOOKUP_KEYS[sku];
     case "enterprise_month":
       return STRIPE_LOOKUP_KEYS.enterpriseBase;
@@ -113,6 +116,8 @@ export function skuForLookupKey(lookupKey: string): Sku | null {
       return "enterprise_month";
     case STRIPE_LOOKUP_KEYS.enterpriseExtraUnit:
       return null;
+    case STRIPE_LOOKUP_KEYS.foundingLifetime:
+      return "founding_lifetime";
     default:
       return null;
   }

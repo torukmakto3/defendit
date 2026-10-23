@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "crypto";
 import type { DemoDefenseStats } from "./analytics";
 import type { Db, Param } from "./db";
 import { betaBudgetCents } from "./credits";
+import { FOUNDING_CAP } from "./plans";
 
 /**
  * Throwaway sample accounts from the no-login demo. Matched by email even
@@ -27,6 +28,19 @@ export interface TierPassRate {
   completed: number;
   /** Passed ÷ completed. Null when nothing was completed. */
   rate: number | null;
+}
+
+export interface FeedbackStats {
+  count: number;
+  average: number | null;
+  distribution: Record<"1" | "2" | "3" | "4" | "5", number>;
+  latest: { rating: number; comment: string; created_at: string }[];
+}
+
+export interface FoundingStats {
+  confirmed: number;
+  reserved: number;
+  cap: number;
 }
 
 export interface ChallengeStats {
@@ -59,6 +73,10 @@ export interface StatsSlice {
   challenges: ChallengeStats | null;
   /** Sample defenses. Zeros when there are none. Not included in the counts above. */
   demo: DemoDefenseStats;
+  /** Ratings on completed defenses. Latest comments stay on this protected report. */
+  feedback: FeedbackStats;
+  waitlist_count: number;
+  founding: FoundingStats;
 }
 
 export interface StatsReport {
@@ -125,7 +143,7 @@ export async function statsReport(
 
 async function statsSlice(db: Db, since: string | null): Promise<StatsSlice> {
   const totalCents = betaBudgetCents();
-  const [signups, started, completed, receipts, learnOpens, pass, cost, spentCents, challenges, demo] =
+  const [signups, started, completed, receipts, learnOpens, pass, cost, spentCents, challenges, demo, feedback, waitlistTotal, founding] =
     await Promise.all([
       countRealSignups(db, since),
       countRealDefenses(db, since, false),
@@ -137,6 +155,9 @@ async function statsSlice(db: Db, since: string | null): Promise<StatsSlice> {
       budgetSpentCents(db, since),
       challengeStats(db, since),
       demoDefenseStats(db, since),
+      feedbackStats(db, since),
+      waitlistCount(db, since),
+      foundingStats(db, since),
     ]);
   return {
     signups,
@@ -154,6 +175,9 @@ async function statsSlice(db: Db, since: string | null): Promise<StatsSlice> {
     cost_per_completed_defense: cost,
     challenges,
     demo,
+    feedback,
+    waitlist_count: waitlistTotal,
+    founding,
   };
 }
 
@@ -410,6 +434,94 @@ async function challengesInstalled(db: Db): Promise<boolean> {
     return row?.name === "challenges";
   } catch (e) {
     if (missingRelation(e)) return false;
+    throw e;
+  }
+}
+
+function emptyFeedback(): FeedbackStats {
+  return {
+    count: 0,
+    average: null,
+    distribution: { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0 },
+    latest: [],
+  };
+}
+
+async function feedbackStats(db: Db, since: string | null): Promise<FeedbackStats> {
+  try {
+    const filter = where("created_at", since);
+    const rows = await db.all<{ rating: number | string; n: number | string }>(
+      `SELECT rating, COUNT(*) AS n FROM defense_feedback${filter.sql} GROUP BY rating`,
+      filter.params,
+    );
+    const distribution = emptyFeedback().distribution;
+    let count = 0;
+    let weighted = 0;
+    for (const row of rows) {
+      const rating = String(row.rating);
+      const n = asNumber(row.n);
+      if (rating === "1" || rating === "2" || rating === "3" || rating === "4" || rating === "5") {
+        distribution[rating] = n;
+        count += n;
+        weighted += Number(rating) * n;
+      }
+    }
+    const latestFilter = where("created_at", since, "comment <> ''");
+    const latest = await db.all<{ rating: number | string; comment: string; created_at: string }>(
+      `SELECT rating, comment, created_at FROM defense_feedback${latestFilter.sql}
+       ORDER BY created_at DESC LIMIT 20`,
+      latestFilter.params,
+    );
+    return {
+      count,
+      average: count > 0 ? round4(weighted / count) : null,
+      distribution,
+      latest: latest.map((row) => ({
+        rating: Number(row.rating),
+        comment: row.comment,
+        created_at: row.created_at,
+      })),
+    };
+  } catch (e) {
+    if (missingRelation(e)) return emptyFeedback();
+    throw e;
+  }
+}
+
+async function waitlistCount(db: Db, since: string | null): Promise<number> {
+  try {
+    return await count(db, "founding_waitlist", "created_at", since);
+  } catch (e) {
+    if (missingRelation(e)) return 0;
+    throw e;
+  }
+}
+
+async function foundingStats(db: Db, since: string | null): Promise<FoundingStats> {
+  const empty = { confirmed: 0, reserved: 0, cap: FOUNDING_CAP };
+  try {
+    const params: Param[] = [];
+    let confirmed = "status = 'confirmed'";
+    if (since) {
+      confirmed += " AND confirmed_at >= ?";
+      params.push(since);
+    }
+    let reserved = "status = 'reserved' AND expires_at > ?";
+    params.push(new Date().toISOString());
+    if (since) {
+      reserved += " AND reserved_at >= ?";
+      params.push(since);
+    }
+    const row = await db.get<{ confirmed: number | string | null; reserved: number | string | null }>(
+      `SELECT
+         COALESCE(SUM(CASE WHEN ${confirmed} THEN 1 ELSE 0 END), 0) AS confirmed,
+         COALESCE(SUM(CASE WHEN ${reserved} THEN 1 ELSE 0 END), 0) AS reserved
+       FROM founding_spots`,
+      params,
+    );
+    return { confirmed: asNumber(row?.confirmed), reserved: asNumber(row?.reserved), cap: FOUNDING_CAP };
+  } catch (e) {
+    if (missingRelation(e)) return empty;
     throw e;
   }
 }

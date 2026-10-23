@@ -7,7 +7,17 @@
  */
 
 import { HttpError } from "./errors";
-import { billingEnabled, formatEur, isSku, PACKS, PAYG_CENTS, skuPriceCents, type Sku } from "./plans";
+import {
+  billingEnabled,
+  formatEur,
+  FOUNDING_CAP,
+  getPlan,
+  isSku,
+  PACKS,
+  PAYG_CENTS,
+  skuPriceCents,
+  type Sku,
+} from "./plans";
 
 const LIVE_KEY_PREFIXES = ["sk_live_", "rk_live_"] as const;
 
@@ -56,6 +66,7 @@ const CHECKOUT_SKUS = [
   "subscription_month",
   "subscription_year",
   "team_month",
+  "founding_lifetime",
 ] as const;
 
 export type CheckoutSku = (typeof CHECKOUT_SKUS)[number];
@@ -70,6 +81,7 @@ export function isCheckoutSku(sku: Sku): sku is CheckoutSku {
     case "subscription_month":
     case "subscription_year":
     case "team_month":
+    case "founding_lifetime":
       return CHECKOUT_SKUS.includes(sku);
     case "enterprise_month":
       return false;
@@ -98,6 +110,8 @@ export function checkoutProductName(sku: string): string {
       return "Pro yearly";
     case "team_month":
       return "Team";
+    case "founding_lifetime":
+      return "Founding member";
     default: {
       const unknown: never = sku;
       return unknown;
@@ -111,6 +125,7 @@ export function checkoutMode(sku: CheckoutSku): "payment" | "subscription" {
     case "challenge":
     case "pack3":
     case "pack8":
+    case "founding_lifetime":
       return "payment";
     case "subscription_month":
     case "subscription_year":
@@ -191,6 +206,12 @@ export function checkoutCatalog(): CheckoutProduct[] | null {
       name: checkoutProductName("team_month"),
       priceLabel: formatEur(skuPriceCents("team_month")),
       detail: "50 defenses a month. VAT is added. Not switchable with Pro in the portal.",
+    },
+    {
+      sku: "founding_lifetime",
+      name: checkoutProductName("founding_lifetime"),
+      priceLabel: formatEur(skuPriceCents("founding_lifetime")),
+      detail: `€149 once. Lifetime Pro: ${getPlan("subscription").defensesPerPeriod} defenses, ${getPlan("subscription").challengesPerPeriod} challenges, and ${getPlan("subscription").learnSlots} Learn projects each month. Unused defenses and challenges do not roll over. ${FOUNDING_CAP} spots. VAT included. A current Pro or Team subscription has to end first. Cancel it in the billing portal and wait until it ends.`,
     },
   ];
 }

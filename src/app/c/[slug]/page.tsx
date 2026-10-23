@@ -46,8 +46,9 @@ export default async function ChallengePage({ params }: { params: Promise<{ slug
         opt in and choose to share.
       </p>
       <p className="mt-3 text-[var(--ink-2)]">
-        You pick the file. You can practice in Learn first, then take a short text interview grounded in that
-        file. You choose public, public without the score, or private.
+        You pick the file. You can practice in Learn first, then take a short interview grounded in that file.
+        Standard can be typed or spoken. Hard and Expert are a voice interview when voice is configured, and text
+        is the fallback. You choose public, public without the score, or private.
       </p>
       <p className="mt-3 text-sm text-[var(--ink-2)]">
         {view.sponsorLabel === "Sponsored by DefendIT"

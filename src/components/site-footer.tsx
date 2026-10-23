@@ -17,6 +17,9 @@ export function SiteFooter() {
           <a href="/faq" className="hover:text-[var(--blueprint)]">
             FAQ
           </a>
+          <a href="/founding" className="hover:text-[var(--blueprint)]">
+            Founding
+          </a>
         </nav>
       </div>
     </footer>

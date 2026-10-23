@@ -156,9 +156,9 @@ export function HomePage({ demoEnabled }: { demoEnabled: boolean }) {
                 value={difficulty}
                 onChange={(e) => setDifficulty(e.target.value)}
               >
-                <option value="standard">Standard: key claims and why they hold</option>
-                <option value="hard">Hard: what-ifs and a planted error</option>
-                <option value="expert">Expert: adversarial cross-examination</option>
+                <option value="standard">Standard: why the key claims hold, including a what-if</option>
+                <option value="hard">Hard: a planted error, plus what-ifs</option>
+                <option value="expert">Expert: a planted error and edge cases</option>
               </select>
             </div>
           </div>
@@ -275,6 +275,10 @@ export function HomePage({ demoEnabled }: { demoEnabled: boolean }) {
         {" or open your "}
         <Link href="/dashboard" className="text-[var(--blueprint)] underline">
           dashboard
+        </Link>
+        {" or see "}
+        <Link href="/founding" className="text-[var(--blueprint)] underline">
+          founding member
         </Link>
         .
       </p>

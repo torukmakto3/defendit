@@ -72,6 +72,12 @@ export async function rateLimitIp(
   return rateLimit(key, budget.limit, budget.windowSec);
 }
 
+/**
+ * Fixed window. A call that is already at the limit does not write.
+ * Counting that rejection would let a retry move `window_start` if the
+ * upsert were ever changed to refresh the window, and it inflates `count`
+ * for keys such as `checkout:<user>`.
+ */
 export async function rateLimit(
   key: string,
   limit: number,
@@ -82,23 +88,30 @@ export async function rateLimit(
   const windowStartCutoff = new Date(now.getTime() - windowSec * 1000).toISOString();
   const nowIso = now.toISOString();
 
-  await db.run(
-    `INSERT INTO rate_limits (bucket_key, window_start, count) VALUES (?, ?, 1)
-     ON CONFLICT (bucket_key) DO UPDATE SET
-       count = CASE WHEN rate_limits.window_start < ? THEN 1 ELSE rate_limits.count + 1 END,
-       window_start = CASE WHEN rate_limits.window_start < ? THEN excluded.window_start ELSE rate_limits.window_start END`,
-    [key, nowIso, windowStartCutoff, windowStartCutoff],
-  );
-  const row = await db.get<{ window_start: string; count: number }>(
-    `SELECT window_start, count FROM rate_limits WHERE bucket_key = ?`,
-    [key],
-  );
-  if (!row || Number(row.count) <= limit) return { ok: true, retryAfterSec: 0 };
-  const resetAt = new Date(row.window_start).getTime() + windowSec * 1000;
-  return {
-    ok: false,
-    retryAfterSec: Math.max(1, Math.ceil((resetAt - now.getTime()) / 1000)),
-  };
+  return db.transaction(async (tx) => {
+    const lock = tx.dialect === "postgres" ? " FOR UPDATE" : "";
+    const row = await tx.get<{ window_start: string; count: number | string }>(
+      `SELECT window_start, count FROM rate_limits WHERE bucket_key = ?${lock}`,
+      [key],
+    );
+    if (!row || row.window_start < windowStartCutoff) {
+      await tx.run(
+        `INSERT INTO rate_limits (bucket_key, window_start, count) VALUES (?, ?, 1)
+         ON CONFLICT (bucket_key) DO UPDATE SET window_start = excluded.window_start, count = 1`,
+        [key, nowIso],
+      );
+      return { ok: true, retryAfterSec: 0 };
+    }
+    if (Number(row.count) >= limit) {
+      const resetAt = new Date(row.window_start).getTime() + windowSec * 1000;
+      return {
+        ok: false,
+        retryAfterSec: Math.max(1, Math.ceil((resetAt - now.getTime()) / 1000)),
+      };
+    }
+    await tx.run(`UPDATE rate_limits SET count = count + 1 WHERE bucket_key = ?`, [key]);
+    return { ok: true, retryAfterSec: 0 };
+  });
 }
 
 /** Named limits so routes share one table of budgets. */
@@ -186,7 +199,12 @@ export const LIMITS = {
   ),
   /** Daily traction dashboard, per keyed IP hash. Skipped when `ipHash` returns null. */
   statsRead: budget("RATE_LIMIT_STATS_READ", 60, "RATE_LIMIT_STATS_READ_WINDOW_SEC", 60 * 60),
-  /** Hosted Checkout sessions, per account. */
+  /**
+   * Hosted Checkout sessions, per account. A 429 is not counted again:
+   * `rateLimit` leaves the row alone once `count` is at this limit, and the
+   * checkout route checks the IP bucket first so an IP rejection never
+   * increments `checkout:<user>`.
+   */
   checkoutPerUser: budget("RATE_LIMIT_CHECKOUT_USER", 10, "RATE_LIMIT_CHECKOUT_USER_WINDOW_SEC", 60 * 60),
   /** Hosted Checkout sessions, per hashed IP. */
   checkoutPerIp: budget("RATE_LIMIT_CHECKOUT_IP", 20, "RATE_LIMIT_CHECKOUT_IP_WINDOW_SEC", 60 * 60),
@@ -194,4 +212,15 @@ export const LIMITS = {
   portalPerUser: budget("RATE_LIMIT_PORTAL_USER", 20, "RATE_LIMIT_PORTAL_USER_WINDOW_SEC", 60 * 60),
   /** Customer Portal sessions, per hashed IP. */
   portalPerIp: budget("RATE_LIMIT_PORTAL_IP", 30, "RATE_LIMIT_PORTAL_IP_WINDOW_SEC", 60 * 60),
+  /** Defense rating, per account. */
+  feedbackPerUser: budget("RATE_LIMIT_FEEDBACK_USER", 10, "RATE_LIMIT_FEEDBACK_USER_WINDOW_SEC", 60 * 60),
+  /** Defense rating, per hashed IP. */
+  feedbackPerIp: budget("RATE_LIMIT_FEEDBACK_IP", 20, "RATE_LIMIT_FEEDBACK_IP_WINDOW_SEC", 60 * 60),
+  /** Founding waitlist, per hashed IP. No account is required. */
+  foundingWaitlistPerIp: budget(
+    "RATE_LIMIT_FOUNDING_WAITLIST_IP",
+    5,
+    "RATE_LIMIT_FOUNDING_WAITLIST_IP_WINDOW_SEC",
+    60 * 60,
+  ),
 } as const;

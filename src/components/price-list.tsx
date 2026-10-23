@@ -1,4 +1,4 @@
-import { formatEur, getPlan, PACKS, PAYG_CENTS } from "@/lib/plans";
+import { formatEur, FOUNDING_CAP, FOUNDING_PRICE_CENTS, getPlan, PACKS, PAYG_CENTS } from "@/lib/plans";
 
 /** Amounts come from `plans.ts`. Checkout is not on, so this list does not name Stripe prices. */
 export function PriceList() {
@@ -46,6 +46,11 @@ export function PriceList() {
       name: "Team",
       price: `${formatEur(teamMonth)} / month`,
       detail: `${team.defensesPerPeriod} defenses a month. No challenge credits are included. Learn projects are not capped. The price is before VAT.`,
+    },
+    {
+      name: "Founding member",
+      price: `${formatEur(FOUNDING_PRICE_CENTS)} once`,
+      detail: `Lifetime Pro: ${pro.defensesPerPeriod} defenses, ${pro.challengesPerPeriod} challenges, and ${pro.learnSlots} Learn projects each month. Unused defenses and challenges do not roll over. ${FOUNDING_CAP} spots. VAT included.`,
     },
     {
       name: "Enterprise",

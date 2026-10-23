@@ -18,9 +18,10 @@ const GRANTS_PER_PAID_YEAR = 12;
 interface YearlyRow {
   user_id: string;
   plan_id: string;
+  interval: string;
   stripe_subscription_id: string;
-  current_period_start: string;
-  current_period_end: string;
+  current_period_start: string | null;
+  current_period_end: string | null;
   grant_anchor: string;
   last_granted_period_index: number | string | null;
 }
@@ -86,6 +87,7 @@ export async function grantYearlyInvoiceMonth(input: {
     periodEnd: input.periodEnd.toISOString(),
     grantAnchor: anchor.toISOString(),
     activate: input.activate !== false,
+    interval: "year",
   });
   return { ...result, periodIndex };
 }
@@ -154,16 +156,21 @@ export async function grantDueSubscriptionRefills(opts?: {
   }
   const db = await getDb();
   const rows = await db.all<YearlyRow>(
-    `SELECT user_id, plan_id, stripe_subscription_id, current_period_start, current_period_end,
+    `SELECT user_id, plan_id, interval, stripe_subscription_id, current_period_start, current_period_end,
             grant_anchor, last_granted_period_index
      FROM user_plans
-     WHERE interval = 'year'
-       AND status IN ('active', 'trialing')
+     WHERE status IN ('active', 'trialing')
        AND stripe_subscription_id IS NOT NULL
        AND grant_anchor IS NOT NULL
-       AND current_period_start IS NOT NULL
-       AND current_period_end IS NOT NULL
-       AND current_period_end > ?
+       AND (
+         (
+           interval = 'year'
+           AND current_period_start IS NOT NULL
+           AND current_period_end IS NOT NULL
+           AND current_period_end > ?
+         )
+         OR interval = 'lifetime'
+       )
        AND NOT EXISTS (
          SELECT 1 FROM stripe_subscription_state
          WHERE subscription_id = user_plans.stripe_subscription_id
@@ -189,9 +196,10 @@ export async function refillUserIfDue(userId: string): Promise<void> {
 }
 
 async function refillRow(row: YearlyRow, now: Date): Promise<number> {
+  if (row.interval === "lifetime") return refillLifetime(row, now);
   const anchor = new Date(row.grant_anchor);
-  const periodStart = new Date(row.current_period_start);
-  const periodEnd = new Date(row.current_period_end);
+  const periodStart = new Date(row.current_period_start ?? "");
+  const periodEnd = new Date(row.current_period_end ?? "");
   if (
     Number.isNaN(anchor.getTime()) ||
     Number.isNaN(periodStart.getTime()) ||
@@ -218,6 +226,35 @@ async function refillRow(row: YearlyRow, now: Date): Promise<number> {
       periodEnd: periodEnd.toISOString(),
       grantAnchor: anchor.toISOString(),
       activate: false,
+      interval: "year",
+    });
+    await recordRefillGrants(row.user_id, row.stripe_subscription_id, index, result.grants);
+    if (result.granted) granted += 1;
+  }
+  return granted;
+}
+
+/** Lifetime Pro refills every month from the grant anchor, with no 12-month cap and no period end. */
+async function refillLifetime(row: YearlyRow, now: Date): Promise<number> {
+  const anchor = new Date(row.grant_anchor);
+  if (Number.isNaN(anchor.getTime())) return 0;
+  const due = monthlyAnniversaryIndex(anchor, now);
+  if (due < 0) return 0;
+  const last = row.last_granted_period_index == null ? null : Number(row.last_granted_period_index);
+  const start = last == null ? 0 : last + 1;
+  if (!isPlanId(row.plan_id)) return 0;
+  let granted = 0;
+  for (let index = start; index <= due; index += 1) {
+    const result = await grantSubscriptionMonth({
+      userId: row.user_id,
+      planId: row.plan_id,
+      subscriptionId: row.stripe_subscription_id,
+      periodIndex: index,
+      periodStart: addUtcMonths(anchor, index).toISOString(),
+      periodEnd: addUtcMonths(anchor, index + 1).toISOString(),
+      grantAnchor: anchor.toISOString(),
+      activate: false,
+      interval: "lifetime",
     });
     await recordRefillGrants(row.user_id, row.stripe_subscription_id, index, result.grants);
     if (result.granted) granted += 1;
@@ -266,7 +303,7 @@ async function recordRefillGrants(
         `${grantKey}:${grant.kind}`,
         userId,
         prior?.event_id ?? grantKey,
-        prior?.sku ?? "subscription_year",
+        prior?.sku ?? (subscriptionId.startsWith("founding_") ? "founding_lifetime" : "subscription_year"),
         grant.kind,
         grant.source,
         grant.credits,

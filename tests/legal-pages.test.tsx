@@ -218,7 +218,7 @@ describe("public pages", () => {
     expect(faq).toContain("keyed hash");
     expect(faq).not.toContain("raw IP");
     const privacy = readFileSync(join(root, "src/app/privacy/page.tsx"), "utf8");
-    expect(privacy.startsWith("// Draft, last updated 2026-10-22")).toBe(true);
+    expect(privacy.startsWith("// Draft, last updated 2026-10-23")).toBe(true);
   });
 
   it("sets a title and description on each page", () => {

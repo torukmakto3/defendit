@@ -13,7 +13,13 @@ import {
 } from "@/lib/challenge-public";
 import { RATE_LIMIT_MESSAGE } from "@/lib/http";
 import { OPERATOR_NAME, SUPPORT_EMAIL } from "@/lib/operator";
-import { BETA_GRANT, betaDefenseCredits, formatEur, ONWARD_CHALLENGE_CREDITS } from "@/lib/plans";
+import {
+  BETA_GRANT,
+  betaDefenseCredits,
+  formatEur,
+  ONWARD_CHALLENGE_CREDITS,
+  PREVIOUS_BETA_GRANT,
+} from "@/lib/plans";
 import { RATE_LIMIT_ROW_MAX_AGE_MS } from "@/lib/ratelimit";
 
 export const metadata: Metadata = {
@@ -54,8 +60,11 @@ export default function TermsPage() {
         <p>
           The first time a signed-in account needs credits, it receives {defenses}{" "}
           {defenses === 1 ? "defense" : "defenses"}, {BETA_GRANT.challenge} challenges, and{" "}
-          {BETA_GRANT.learnSlots} Learn slots. That grant happens once. While billing is off, the
-          next defense after those are spent is refused.
+          {BETA_GRANT.learnSlots} Learn slots. That grant happens once. An account that already
+          received the earlier grant ({PREVIOUS_BETA_GRANT.defense} defenses, {PREVIOUS_BETA_GRANT.challenge}{" "}
+          challenges, and {PREVIOUS_BETA_GRANT.learnSlots} Learn slots) is topped up to these amounts
+          once. That top-up does not repeat, and it does not refill credits that were already spent.
+          While billing is off, the next defense after the allowance is spent is refused.
         </p>
         <p>
           Sponsored defenses can also stop sooner, when a shared trial budget of {budget} is used.

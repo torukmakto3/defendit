@@ -5,7 +5,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["tests/billing-postgres.test.ts"],
+    include: ["tests/billing-postgres.test.ts", "tests/founding-postgres.test.ts"],
     fileParallelism: false,
   },
   resolve: {

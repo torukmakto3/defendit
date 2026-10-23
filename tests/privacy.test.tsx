@@ -13,10 +13,10 @@ describe("privacy page", () => {
   const html = renderToStaticMarkup(createElement(PrivacyPage));
 
   it("states when the page was last updated", () => {
-    expect(PRIVACY_UPDATED).toBe("22 October 2026");
+    expect(PRIVACY_UPDATED).toBe("23 October 2026");
     expect(html).toContain("Last updated");
-    expect(html).toContain("22 October 2026");
-    expect(html).toContain("2026-10-22");
+    expect(html).toContain("23 October 2026");
+    expect(html).toContain("2026-10-23");
   });
 
   it("describes storage, retention, the receipt, and deletion from the code", () => {
@@ -46,6 +46,14 @@ describe("privacy page", () => {
     expect(html).not.toContain("keeps only the status word");
     expect(html).toContain("Resend");
     expect(html).toContain("There is no delete button");
+    expect(html).toContain("rating from 1 to 5");
+    expect(html).toContain("optional comment");
+    expect(html).toContain("deleted with the account");
+    expect(html).toContain("founding waitlist");
+    expect(html).toContain("when founding checkout opens");
+    expect(html).toContain("not deleted on a timer");
+    expect(html).toContain("removes the matching address");
+    expect(html).toContain(SUPPORT_EMAIL);
   });
 
   it("names the zero-retention rule and refuses an AI-detection or AI Act claim", () => {
@@ -148,7 +156,7 @@ describe("privacy page", () => {
 
   it("keeps the draft marker in the source and the final support address", () => {
     const source = readFileSync("src/app/privacy/page.tsx", "utf8");
-    expect(source.startsWith("// Draft, last updated 2026-10-22\n")).toBe(true);
+    expect(source.startsWith("// Draft, last updated 2026-10-23\n")).toBe(true);
     expect(source).not.toContain("TODO(legal review)");
     expect(source).not.toContain(retiredContact);
     expect(source).toContain("SUPPORT_EMAIL");

@@ -441,6 +441,62 @@ CREATE TABLE IF NOT EXISTS stripe_subscription_state (
   terminal INTEGER NOT NULL DEFAULT 0,
   refills_stopped INTEGER NOT NULL DEFAULT 0
 );
+
+-- One-time top-up from the earlier beta grant. The primary key is the idempotency gate.
+CREATE TABLE IF NOT EXISTS beta_allowance_topups (
+  user_id TEXT NOT NULL REFERENCES users(id),
+  topup_key TEXT NOT NULL,
+  applied_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, topup_key)
+);
+
+-- One rating per defender per completed defense. Comments are not on the public receipt.
+CREATE TABLE IF NOT EXISTS defense_feedback (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  session_id TEXT NOT NULL,
+  receipt_id TEXT NOT NULL,
+  rating INTEGER NOT NULL,
+  comment TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (user_id, session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_defense_feedback_created ON defense_feedback(created_at);
+
+-- Emails waiting for founding checkout. No account is required. The address is the key.
+CREATE TABLE IF NOT EXISTS founding_waitlist (
+  email TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL
+);
+
+-- Row lock for the 100-spot count. Incrementing lock_nonce holds the row until commit.
+CREATE TABLE IF NOT EXISTS founding_inventory (
+  id TEXT PRIMARY KEY,
+  lock_nonce INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS founding_spots (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  status TEXT NOT NULL,
+  checkout_session_id TEXT,
+  payment_intent_id TEXT,
+  reserved_at TEXT NOT NULL,
+  expires_at TEXT,
+  confirmed_at TEXT,
+  released_at TEXT
+);
+
+-- One open spot per account. A refund or an account deletion releases the row
+-- so it no longer counts. Deletion keeps the row and moves user_id to a
+-- retained anchor, because user_id cannot be null.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_founding_spots_one_open
+  ON founding_spots (user_id) WHERE status IN ('reserved', 'confirmed');
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_founding_spots_session
+  ON founding_spots (checkout_session_id) WHERE checkout_session_id IS NOT NULL;
 `;
 
 /** Stats filters on these session columns. Skip when an older table lacks them. */
