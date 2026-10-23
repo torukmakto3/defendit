@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img">
+  <title>Defend It</title>
+  <!--
+    Placeholder monogram while the logo is on hold. Not the final mark.
+    The D is a path, so Chrome and Firefox draw the same glyph as the PNG and ICO.
+    Day tokens from src/app/globals.css: ink tile, and card for the letter
+    (light text on ink). Replace this file, then run `npm run brand-icon`.
+  -->
+  <rect width="64" height="64" fill="#0e1726"/>
+  <path fill="#ffffff" d="M23.10 49.51L23.10 42.17L29.63 42.17Q32.08 42.17 34.05 41.42Q36.02 40.68 37.41 39.31Q38.80 37.94 39.52 36.00Q40.24 34.06 40.24 31.70Q40.24 29.26 39.52 27.34Q38.80 25.42 37.41 24.07Q36.02 22.73 34.05 22.03Q32.08 21.34 29.63 21.34L23.10 21.34L23.10 13.99L29.20 13.99Q33.95 13.99 37.50 15.38Q41.06 16.78 43.46 19.18Q45.86 21.58 47.03 24.67Q48.21 27.77 48.21 31.18L48.21 32.23Q48.21 35.40 47.03 38.50Q45.86 41.59 43.46 44.06Q41.06 46.54 37.50 48.02Q33.95 49.51 29.20 49.51ZM16.19 49.51L16.19 13.99L24.06 13.99L24.06 49.51Z"/>
+</svg>
