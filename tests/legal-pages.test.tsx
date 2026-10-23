@@ -1,10 +1,11 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import FaqPage, { metadata as faqMeta } from "../src/app/faq/page";
 import HowItWorksPage, { metadata as howMeta } from "../src/app/how-it-works/page";
+import PrivacyPage from "../src/app/privacy/page";
 import TermsPage, { metadata as termsMeta } from "../src/app/terms/page";
 import { CreditTermsNotice } from "../src/components/credit-terms";
 import { SiteFooter } from "../src/components/site-footer";
@@ -19,7 +20,7 @@ import {
 import { dailyPerCreator, openPerCreator, openPerDefender } from "../src/lib/challenges";
 import { RATE_LIMIT_MESSAGE } from "../src/lib/http";
 import { GRADING_TEMPERATURE } from "../src/lib/llm";
-import { LEGAL_UPDATED, OPERATOR_EMAIL, OPERATOR_NAME } from "../src/lib/operator";
+import { HELLO_EMAIL, LEGAL_UPDATED, OPERATOR_NAME, SUPPORT_EMAIL } from "../src/lib/operator";
 import { BETA_GRANT, formatEur, getPlan, PACKS, PAYG_CENTS } from "../src/lib/plans";
 import { RATE_LIMIT_ROW_MAX_AGE_MS } from "../src/lib/ratelimit";
 import { documentTtlHours, retentionDays } from "../src/lib/retention";
@@ -38,6 +39,7 @@ import { bandOf } from "../src/components/receipt/metrics";
 import { outcomeFor } from "../src/lib/receipt";
 
 const root = join(__dirname, "..");
+const retiredContact = ["tramuntana", "btc@gmail.com"].join("");
 
 function page(node: ReturnType<typeof createElement>): string {
   return renderToStaticMarkup(node);
@@ -62,14 +64,19 @@ describe("public pages", () => {
     expect(faq).toContain("Questions");
   });
 
-  it("keeps the draft comment in source and the contact off the page as a todo", () => {
+  it("keeps the draft comment in source and publishes the contact addresses", () => {
     for (const file of ["src/app/terms/page.tsx", "src/app/how-it-works/page.tsx", "src/app/faq/page.tsx"]) {
       const src = readFileSync(join(root, file), "utf8");
       expect(src.startsWith("// Draft, last updated 2026-10-22")).toBe(true);
+      expect(src).not.toContain("TODO(legal review)");
     }
     const operator = readFileSync(join(root, "src/lib/operator.ts"), "utf8");
-    expect(operator).toContain("// TODO(legal review): placeholder contact");
-    expect(operator).toContain(OPERATOR_EMAIL);
+    expect(operator).not.toContain("TODO(legal review)");
+    expect(operator).not.toContain(retiredContact);
+    expect(SUPPORT_EMAIL).toBe("support@defendit.me");
+    expect(HELLO_EMAIL).toBe("hello@defendit.me");
+    expect(operator).toContain(SUPPORT_EMAIL);
+    expect(operator).toContain(HELLO_EMAIL);
     expect(OPERATOR_NAME).toBe("DefendIT");
     expect(operator).not.toContain("Luis");
     expect(terms).toContain(OPERATOR_NAME);
@@ -77,8 +84,27 @@ describe("public pages", () => {
     expect(faq).toContain(OPERATOR_NAME);
     expect(faq).not.toContain("Luis");
     expect(how).not.toContain("Luis");
-    expect(terms).toContain(`mailto:${OPERATOR_EMAIL}`);
-    expect(faq).toContain(`mailto:${OPERATOR_EMAIL}`);
+    expect(terms).toContain(`mailto:${SUPPORT_EMAIL}`);
+    expect(terms).not.toContain(HELLO_EMAIL);
+    expect(faq).toContain(`mailto:${HELLO_EMAIL}`);
+    expect(faq).toContain(`mailto:${SUPPORT_EMAIL}`);
+    expect(how).toContain(`mailto:${SUPPORT_EMAIL}`);
+    expect(how).not.toContain(HELLO_EMAIL);
+  });
+
+  it("shows support@defendit.me on terms and privacy, and the placeholder is gone from src", () => {
+    const privacy = page(createElement(PrivacyPage));
+    expect(terms).toContain("mailto:support@defendit.me");
+    expect(privacy).toContain("mailto:support@defendit.me");
+    expect(terms).not.toContain(retiredContact);
+    expect(privacy).not.toContain(retiredContact);
+    const hits: string[] = [];
+    for (const name of readdirSync(join(root, "src"), { recursive: true, encoding: "utf8" })) {
+      const path = join(root, "src", name);
+      if (!statSync(path).isFile()) continue;
+      if (readFileSync(path, "utf8").includes(retiredContact)) hits.push(path);
+    }
+    expect(hits).toEqual([]);
   });
 
   it("prints prices and the beta grant from the plan module", () => {

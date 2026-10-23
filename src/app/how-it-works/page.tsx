@@ -2,7 +2,7 @@
 import type { Metadata } from "next";
 import { LegalPage, LegalSection } from "@/components/legal-page";
 import { GRADING_TEMPERATURE } from "@/lib/llm";
-import { OPERATOR_EMAIL } from "@/lib/operator";
+import { SUPPORT_EMAIL } from "@/lib/operator";
 import { RUBRIC_VERSION } from "@/lib/rubric";
 import { documentTtlHours, MAX_UPLOAD_BYTES, retentionDays } from "@/lib/retention";
 import {
@@ -158,8 +158,8 @@ export default function HowItWorksPage() {
         </p>
         <p>
           Questions about a score:{" "}
-          <a className="text-[var(--blueprint)] underline" href={`mailto:${OPERATOR_EMAIL}`}>
-            {OPERATOR_EMAIL}
+          <a className="text-[var(--blueprint)] underline" href={`mailto:${SUPPORT_EMAIL}`}>
+            {SUPPORT_EMAIL}
           </a>
           .
         </p>
