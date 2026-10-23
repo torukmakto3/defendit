@@ -1,3 +1,4 @@
+import { languageInstruction } from "./language";
 import type { Difficulty } from "./types";
 
 export const RUBRIC_VERSION = "defend-it-rubric-v0.5";
@@ -8,11 +9,14 @@ export const DIMENSIONS = ["accuracy", "reasoning", "transfer", "errorDetection"
  * Anchored levels. The model picks a level; code turns the median into the
  * receipt score. There is no holistic 0–100 for the model to invent.
  */
-export function rubricPrompt(difficulty: Difficulty): string {
+export function rubricPrompt(difficulty: Difficulty, language?: string | null): string {
   return `You are grading one oral defense of a deliverable. Score each answer on its own. Do not produce an overall percentage.
 
 Rubric version: ${RUBRIC_VERSION}
 Difficulty: ${difficulty}
+${languageInstruction(language)}
+Write the reason sentence in the document language. Do not lower any level because the answer is in the document language or in English.
+On a planted_error probe, judge errorDetection against the full planted excerpt in the transcript, not against a shortened quotation inside the question. The cited span in the transcript is the full span.
 
 Level 0 means no substantive engagement with the claim. If the answer is blank, a refusal ("I don't know"), or only restates the question, set accuracy, reasoning, transfer, errorDetection and ownership all to 0. An answer that engages the claim is not level 0 just because it uses different words, or another language. An answer that engages but is wrong can still be accuracy 0 with other dimensions above 0.
 

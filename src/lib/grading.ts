@@ -11,6 +11,7 @@ import {
   LlmBudgetError,
 } from "./llm";
 import { detectNonAnswer } from "./non-answer";
+import { languageInstruction, resolveDocumentLanguage } from "./language";
 import { RUBRIC_VERSION, rubricPrompt } from "./rubric";
 import {
   graderScore,
@@ -82,6 +83,8 @@ export async function gradeSession(
     turns: TurnRecord[];
     /** Absolute time the defend route must finish. Caps only the budget-fallback grader. */
     deadlineMs?: number;
+    /** Document language. Missing stays English, including sessions stored before the column. */
+    language?: string | null;
   },
   hooks?: {
     onProgress?: (progress: GraderProgress) => void | Promise<void>;
@@ -103,7 +106,7 @@ export async function gradeSession(
     return skipped;
   }
 
-  const transcript = buildTranscript(opts.claims, opts.plan, opts.turns);
+  const transcript = buildTranscript(opts.claims, opts.plan, opts.turns, opts.language);
   report({ done: 0, total: council.length, stage: "grading" });
 
   const settled = await Promise.allSettled(
@@ -187,7 +190,7 @@ async function notify(
 /** Bound one grader so a hung model cannot hold the other two. */
 async function gradeWithTimeout(
   model: ReturnType<typeof getGradingCouncil>[number],
-  opts: { difficulty: Difficulty; claims: Claim[]; plan: InterviewPlan; turns: TurnRecord[] },
+  opts: { difficulty: Difficulty; claims: Claim[]; plan: InterviewPlan; turns: TurnRecord[]; language?: string | null },
   transcript: string,
   timeout: number,
 ): Promise<ModelGrade> {
@@ -216,11 +219,13 @@ export function aggregateScore(grades: ModelGrade[], plan?: InterviewPlan): numb
   return legacyAggregateScore(grades);
 }
 
-function buildTranscript(claims: Claim[], plan: InterviewPlan, turns: TurnRecord[]): string {
-  return turns
+function buildTranscript(claims: Claim[], plan: InterviewPlan, turns: TurnRecord[], language?: string | null): string {
+  const code = resolveDocumentLanguage(language);
+  const blocks = turns
     .map((turn) => {
       const probe = plan.probes.find((p) => p.id === turn.probeId);
       const claim = claims.find((c) => c.id === probe?.claimId);
+      const cited = probe?.sourceSpan || claim?.sourceSpan || "";
       return [
         `Probe id: ${probe?.id ?? turn.probeId}`,
         `Claim id: ${claim?.id ?? "unknown"}`,
@@ -229,12 +234,15 @@ function buildTranscript(claims: Claim[], plan: InterviewPlan, turns: TurnRecord
         `Section: ${claim?.section ?? "General"}`,
         `Claim: ${neutralizeTags(claim?.text ?? "")}`,
         `Source: ${neutralizeTags(claim?.sourceSpan ?? "")}`,
+        `Cited span (full): ${neutralizeTags(cited)}`,
+        `Planted excerpt (full): ${neutralizeTags(probe?.plantedContent || "none")}`,
         `Figures: ${(claim?.figures ?? []).join(", ") || "none"}`,
         `Question: ${neutralizeTags(turn.question)}`,
         `Answer: ${neutralizeTags(turn.answer)}`,
       ].join("\n");
     })
     .join("\n\n");
+  return `Document language: ${code}\n\n${blocks}`;
 }
 
 /** Stop an answer from closing the transcript block early. */
@@ -414,7 +422,7 @@ function waitForGraderRetry(signal: AbortSignal | undefined, modelId: string): P
  */
 async function completeGradeCall(
   model: ReturnType<typeof getGradingCouncil>[number],
-  opts: { difficulty: Difficulty },
+  opts: { difficulty: Difficulty; language?: string | null },
   transcript: string,
   signal?: AbortSignal,
 ) {
@@ -429,10 +437,17 @@ async function completeGradeCall(
         seed,
         signal,
         messages: [
-          { role: "system", content: rubricPrompt(opts.difficulty) },
+          { role: "system", content: rubricPrompt(opts.difficulty, opts.language) },
           {
             role: "user",
-            content: `Grade each answer against its claim. Quote the answer in evidence.\n\n<transcript>\n${transcript}\n</transcript>`,
+            content: [
+              languageInstruction(opts.language),
+              "Grade each answer against its claim. Grade against the full cited span and the full planted excerpt in the transcript, not against a shortened quotation inside the question.",
+              "An answer in the document language or in English is equally acceptable. Do not penalize the language.",
+              "Write each reason in the document language. Quote the answer in evidence.",
+              "",
+              `<transcript>\n${transcript}\n</transcript>`,
+            ].join("\n"),
           },
         ],
       },
@@ -450,7 +465,7 @@ async function completeGradeCall(
 /** One council member. A skipped question is asked again once, then the grader is dropped. */
 async function gradeOne(
   model: ReturnType<typeof getGradingCouncil>[number],
-  opts: { difficulty: Difficulty; claims: Claim[]; plan: InterviewPlan; turns: TurnRecord[] },
+  opts: { difficulty: Difficulty; claims: Claim[]; plan: InterviewPlan; turns: TurnRecord[]; language?: string | null },
   transcript: string,
   signal?: AbortSignal,
 ): Promise<ModelGrade> {

@@ -3,6 +3,8 @@ import { isDemoRequestKind } from "./analytics";
 import { purgeOldAnalyticsEvents, track } from "./analytics-store";
 import type { User } from "./auth";
 import { extractClaims } from "./claims";
+import { clipExcerpt, cutText } from "./excerpt";
+import { detectDocumentLanguage, resolveDocumentLanguage } from "./language";
 import {
   assertLearnSlotAvailable,
   chargeBetaDefenseBudget,
@@ -157,6 +159,8 @@ interface RequestRow {
   pinned_claims: string | null;
   status: string;
   created_at: string;
+  /** BCP-47 primary subtag. NULL on rows created before detection, treated as en. */
+  language?: string | null;
 }
 
 interface DeliverableRow {
@@ -216,6 +220,7 @@ interface NewRequest {
   title: string;
   notes?: string;
   pinnedClaims?: string;
+  language?: string | null;
 }
 
 async function insertRequest(db: Db, input: NewRequest) {
@@ -223,8 +228,8 @@ async function insertRequest(db: Db, input: NewRequest) {
   const token = newToken();
   await db.run(
     `INSERT INTO defense_requests
-      (id, token, owner_user_id, creator_user_id, kind, difficulty, title, notes, pinned_claims, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+      (id, token, owner_user_id, creator_user_id, kind, difficulty, title, notes, pinned_claims, status, created_at, language)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
     [
       requestId,
       token,
@@ -236,6 +241,7 @@ async function insertRequest(db: Db, input: NewRequest) {
       input.notes?.slice(0, 2000) || null,
       input.pinnedClaims?.slice(0, 500) || null,
       new Date().toISOString(),
+      input.language ?? null,
     ],
   );
   return { requestId, token };
@@ -253,6 +259,7 @@ interface PreparedUpload {
   text: string;
   claims: Claim[];
   parseMs: number;
+  language: string;
 }
 
 /** Parse and extract claims before anything is written, so failures leave no rows behind. */
@@ -264,7 +271,7 @@ async function prepareUpload(fileName: string, buffer: Buffer, mimeType?: string
   const mime = mimeType || guessMimeType(fileName);
   let text: string;
   try {
-    text = (await extractText(buffer, mime, fileName)).slice(0, MAX_TEXT_CHARS);
+    text = cutText(await extractText(buffer, mime, fileName), MAX_TEXT_CHARS);
   } catch {
     throw new HttpError(400, "Could not read that file. Try PDF, DOCX, XLSX, CSV, TXT or MD.");
   }
@@ -280,6 +287,7 @@ async function prepareUpload(fileName: string, buffer: Buffer, mimeType?: string
     text,
     claims,
     parseMs: Date.now() - started,
+    language: detectDocumentLanguage(text),
   };
 }
 
@@ -330,7 +338,11 @@ export async function creatorIngest(opts: {
     const upload = await prepareUpload(opts.fileName, opts.buffer, opts.mimeType);
     const difficulty = opts.difficulty || "hard";
     // Phrase the first question while the deliverable row is written.
-    const prefetchPromise = precomputeFirstQuestion({ claims: upload.claims, difficulty });
+    const prefetchPromise = precomputeFirstQuestion({
+      claims: upload.claims,
+      difficulty,
+      language: upload.language,
+    });
     const db = await getDb();
     const result = await db.transaction(async (tx) => {
       await assertLearnSlotAvailable(opts.user.id, tx);
@@ -339,6 +351,7 @@ export async function creatorIngest(opts: {
         kind: "creator",
         difficulty,
         title: PRIVATE_TITLE,
+        language: upload.language,
       });
       const deliverableId = await insertDeliverable(tx, created.requestId, opts.user, upload);
       await tx.run(`UPDATE defense_requests SET status = 'uploaded' WHERE id = ?`, [created.requestId]);
@@ -378,6 +391,7 @@ export async function createDemoDefense(sampleId: DemoSampleId) {
     text: bundled.text,
     claims: bundled.claims,
     parseMs: 0,
+    language: "en",
   };
   const user: User = {
     id: newId("usr"),
@@ -397,6 +411,7 @@ export async function createDemoDefense(sampleId: DemoSampleId) {
       kind: "demo",
       difficulty: "standard",
       title: sample.title,
+      language: "en",
     });
     await insertDeliverable(tx, request.requestId, user, upload, { hours: demoRetentionHours() });
     await tx.run(`UPDATE defense_requests SET status = 'uploaded' WHERE id = ?`, [request.requestId]);
@@ -545,6 +560,7 @@ export async function ingestDeliverable(opts: {
       claims: upload.claims,
       difficulty: request.difficulty,
       pinnedClaimIds,
+      language: upload.language,
     });
     const db = await getDb();
     const deliverableId = await db.transaction(async (tx) => {
@@ -558,8 +574,8 @@ export async function ingestDeliverable(opts: {
     }
     // Never move a defended request back: its receipt is bound to the earlier hash.
     const open = await tx.run(
-      `UPDATE defense_requests SET status = 'uploaded' WHERE id = ? AND status <> 'defended'`,
-      [request.id],
+      `UPDATE defense_requests SET status = 'uploaded', language = ? WHERE id = ? AND status <> 'defended'`,
+      [upload.language, request.id],
     );
     if (open.changes !== 1) throw new HttpError(409, "This deliverable has already been defended.");
     return insertDeliverable(tx, request.id, opts.user, upload);
@@ -660,12 +676,13 @@ export async function startSession(opts: {
   let startedAt = "";
   try {
 
+  const language = resolveDocumentLanguage(request.language);
   if (opts.mode === "learn") {
     seed = newId("seed");
-    plan = buildLearnPlan(claims, seed);
+    plan = buildLearnPlan(claims, seed, language);
   } else {
     const shape = demo ? "demo" : undefined;
-    const prefetched = await loadQuestionPrefetch(request.id, claims, request.difficulty, pinned, shape);
+    const prefetched = await loadQuestionPrefetch(request.id, claims, request.difficulty, pinned, shape, language);
     if (prefetched) {
       seed = prefetched.seed;
       plan = prefetched.plan;
@@ -678,11 +695,12 @@ export async function startSession(opts: {
         seed,
         pinnedClaimIds: pinned,
         shape,
+        language,
       });
       const started = Date.now();
       let phrasingCapped = false;
       plan = await withLlmScope({ sessionId, requestId: request.id, user: opts.user }, async () => {
-        const phrased = await phraseQuestions(plan, claims, { indexes: [0] });
+        const phrased = await phraseQuestions(plan, claims, { indexes: [0], language });
         phrasingCapped = scopeWasCapped();
         return phrased;
       });
@@ -737,7 +755,7 @@ export async function startSession(opts: {
   if (phraseRest) {
     const rest = plan.probes.map((_, index) => index).filter((index) => index !== 0);
     plan = await withLlmScope({ sessionId, requestId: request.id, user: opts.user }, () =>
-      phraseQuestions(plan, claims, { indexes: rest }),
+      phraseQuestions(plan, claims, { indexes: rest, language: resolveDocumentLanguage(request.language) }),
     );
     await db.run(`UPDATE sessions SET plan_enc = ? WHERE id = ?`, [
       encryptJson(plan, ctx.plan(sessionId)),
@@ -905,12 +923,16 @@ export async function learnCoachTurn(opts: { sessionId: string; user: User; answ
 
   if (opts.answer) history.push({ role: "creator", content: opts.answer.slice(0, 4000) });
 
+  const request = await db.get<{ language: string | null }>(`SELECT language FROM defense_requests WHERE id = ?`, [
+    session.request_id,
+  ]);
   const result = await withLlmScope({ sessionId: session.id, requestId: session.request_id, user: opts.user }, () =>
     nextLearnTurn({
       documentExcerpt: text,
       claims,
       history,
       turnIndex: history.filter((h) => h.role === "creator").length + 1,
+      language: resolveDocumentLanguage(request?.language),
     }),
   );
 
@@ -1051,10 +1073,14 @@ export async function voicePlan(sessionId: string) {
   const plan = decryptJson<InterviewPlan>(session.plan_enc, ctx.plan(session.id));
   const turns = decryptJson<TurnRecord[]>(session.transcript_enc, ctx.transcript(session.id)) ?? [];
   if (!plan) throw new HttpError(410, "This session has expired.");
+  const request = await db.get<{ language: string | null }>(`SELECT language FROM defense_requests WHERE id = ?`, [
+    session.request_id,
+  ]);
   return {
     difficulty: plan.difficulty,
     probes: publicProbes(plan).map((p) => ({ id: p.id, type: p.type, question: p.question })),
     answered: turns.length,
+    language: resolveDocumentLanguage(request?.language),
   };
 }
 
@@ -1352,7 +1378,14 @@ export async function completeDefendSession(opts: {
     // Graders see each claim and the answer, not the raw file.
     grades = await withLlmScope({ sessionId: session.id, requestId: session.request_id, user: opts.user }, () =>
       gradeSession(
-        { difficulty: request.difficulty, claims, plan, turns, deadlineMs: opts.deadlineMs },
+        {
+          difficulty: request.difficulty,
+          claims,
+          plan,
+          turns,
+          deadlineMs: opts.deadlineMs,
+          language: resolveDocumentLanguage(request.language),
+        },
         {
           onProgress: async (progress) => {
             await writeGradingProgress(session.id, progress);
@@ -1388,7 +1421,7 @@ export async function completeDefendSession(opts: {
     if (!demo && disputed.length > 0 && !plan.probes.some((p) => p.followUpOf) && !skipSecondRound) {
       const source = plan.probes.find((p) => p.id === disputed[0]) ?? plan.probes[0];
       const claim = claims.find((c) => c.id === source.claimId) ?? claims[0];
-      const extra = makeFollowUpProbe(claim, source);
+      const extra = makeFollowUpProbe(claim, source, resolveDocumentLanguage(request.language));
       const nextPlan: InterviewPlan = { ...plan, probes: [...plan.probes, extra] };
       const released = await db.run(
         `UPDATE sessions SET plan_enc = ?, status = 'in_progress', grading_claimed_at = NULL, grading_progress = NULL WHERE id = ? AND status = 'grading'`,
@@ -1891,7 +1924,7 @@ export async function receiptClaimLabels(receiptId: string, user: User): Promise
     const probe = plan.probes.find((p) => p.claimId === id);
     if (!claim) return "Claim";
     const span = (probe?.sourceSpan || claim.sourceSpan || "").replace(/\s+/g, " ").trim();
-    const short = span.length > 60 ? `${span.slice(0, 59)}…` : span;
+    const short = clipExcerpt(span, 60);
     return short ? `${claim.section}: ${short}` : claim.section;
   });
 }

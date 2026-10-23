@@ -1,4 +1,5 @@
 import { prepareCardFaces } from "../card-text";
+import { cutText, firstSentence } from "../excerpt";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./types";
 import { usageFromProviderBody } from "./usage";
 
@@ -113,14 +114,25 @@ function mockJson(purpose: string, user: string, modelId: string): unknown {
   }
 }
 
+function promptLanguage(user: string): string {
+  const match = user.match(/Document language:\s*([a-z]{2,3})\b/i);
+  return match?.[1]?.toLowerCase() ?? "en";
+}
+
 function mockFlashcards(user: string): unknown {
   const match = user.match(/<claims>\n([\s\S]*?)\n<\/claims>/);
   const claims = match
     ? (JSON.parse(match[1]) as { id: string; text: string; section: string; source?: string }[])
     : [];
+  const language = promptLanguage(user);
   return {
     cards: claims.map((c) => {
-      const faces = prepareCardFaces({ section: c.section, text: c.text, source: c.source || c.text });
+      const faces = prepareCardFaces({
+        section: c.section,
+        text: c.text,
+        source: c.source || c.text,
+        language,
+      });
       return { claimId: c.id, front: faces.front, back: faces.back, source: faces.source };
     }),
   };
@@ -130,10 +142,28 @@ function mockFlashcards(user: string): unknown {
 function mockQuestions(user: string): unknown {
   const match = user.match(/<probes>\n([\s\S]*?)\n<\/probes>/);
   const items = match ? (JSON.parse(match[1]) as { probeId: string; type: string; claim: string }[]) : [];
-  const openers = ["Talk me through", "Help me understand", "Defend", "Convince me of", "Unpack"];
+  const language = promptLanguage(user);
+  const openers =
+    language === "es"
+      ? ["Explícame", "Ayúdame a entender", "Defiende", "Convénceme de", "Desarrolla"]
+      : language === "pt"
+        ? ["Explique", "Ajude-me a perceber", "Defenda", "Convença-me de", "Desenvolva"]
+        : ["Talk me through", "Help me understand", "Defend", "Convince me of", "Unpack"];
   return {
     questions: items.map((it, i) => {
-      const claim = it.claim.replace(/\s+/g, " ").slice(0, 120);
+      const claim = cutText(it.claim.replace(/\s+/g, " "), 120);
+      if (language === "es") {
+        if (it.type === "planted_error") return { probeId: it.probeId, question: "Lee esta línea de tu documento con cuidado. ¿Está bien?" };
+        if (it.type === "counterfactual") return { probeId: it.probeId, question: `Si la cifra clave de "${claim}" empeorara un 30%, ¿qué cede primero?` };
+        if (it.type === "confidence") return { probeId: it.probeId, question: `¿Qué tan seguro estás, del 0 al 100, de que "${claim}" se sostiene?` };
+        return { probeId: it.probeId, question: `${openers[i % openers.length]} "${claim}". ¿Qué lo respalda?` };
+      }
+      if (language === "pt") {
+        if (it.type === "planted_error") return { probeId: it.probeId, question: "Leia esta linha do seu documento com atenção. Está correta?" };
+        if (it.type === "counterfactual") return { probeId: it.probeId, question: `Se o número chave de "${claim}" piorasse 30%, o que cede primeiro?` };
+        if (it.type === "confidence") return { probeId: it.probeId, question: `Quão confiante está, de 0 a 100, de que "${claim}" se sustenta?` };
+        return { probeId: it.probeId, question: `${openers[i % openers.length]} "${claim}". O que o sustenta?` };
+      }
       if (it.type === "planted_error") return { probeId: it.probeId, question: "Read this line from your document carefully. Is it right?" };
       if (it.type === "counterfactual") return { probeId: it.probeId, question: `Say the key number in "${claim}" came in 30% worse. What gives way first?` };
       if (it.type === "confidence") return { probeId: it.probeId, question: `How confident are you, 0 to 100, that "${claim}" holds up?` };
@@ -158,11 +188,12 @@ function mockClaims(user: string): { claims: unknown[] } {
   const claims = raw.map((text, i) => {
     const figures = text.match(/\$?\d[\d,]*(?:\.\d+)?%?/g) ?? [];
     const assumption = /\b(assum|risk|depend|contingent|fragile|if)\b/i.test(text);
+    const clipped = text.length <= 280 ? text : cutText(text, 280);
     return {
       id: `claim_${i + 1}`,
-      text: text.slice(0, 280),
+      text: clipped,
       section: sectionName(i),
-      sourceSpan: text.slice(0, 80),
+      sourceSpan: firstSentence(clipped),
       stakes: i % 3 === 0 ? "high" : i % 3 === 1 ? "medium" : "low",
       kind: figures.length ? "number" : assumption ? "assumption" : "claim",
       figures: figures.slice(0, 6),
@@ -222,12 +253,18 @@ function sectionName(i: number): string {
 
 function mockLearnTurn(user: string): unknown {
   const lower = user.toLowerCase();
+  const language = promptLanguage(user);
   const answered =
     lower.includes("creator answer:") || lower.includes("answer:");
   if (!answered) {
+    const coachMessage =
+      language === "es"
+        ? "Antes de entrar en detalle: con tus propias palabras, ¿cuál es la afirmación más importante de este documento?"
+        : language === "pt"
+          ? "Antes de entrarmos no detalhe: com as suas próprias palavras, qual é a afirmação mais importante deste documento?"
+          : "Before we dig in: in your own words, what is the single most important claim this document is making?";
     return {
-      coachMessage:
-        "Before we dig in: in your own words, what is the single most important claim this document is making?",
+      coachMessage,
       gapHint: null,
       done: false,
     };
@@ -236,11 +273,21 @@ function mockLearnTurn(user: string): unknown {
   const answerMatch = user.match(/Creator answer:\s*([\s\S]*?)(?:\n\n|$)/i);
   const answer = (answerMatch?.[1] || "").trim();
   const thin = answer.split(/\s+/).length < 25;
+  const coachMessage =
+    language === "es"
+      ? thin
+        ? "Eso cubre el titular. Baja un nivel: ¿qué supuesto rompería la conclusión si estuviera mal, y por qué?"
+        : "Bien. Ahora un qué pasaría si: si la cifra que acabas de citar se moviera un 30% en tu contra, ¿qué cambia en la recomendación?"
+      : language === "pt"
+        ? thin
+          ? "Isso cobre o título. Desça um nível: que pressuposto quebraria a conclusão se estivesse errado, e porquê?"
+          : "Bem. Agora um e-se: se o número que acabou de citar se movesse 30% contra si, o que muda na recomendação?"
+        : thin
+          ? "That covers the headline. Push one level deeper: which assumption would break the conclusion if it were wrong, and why?"
+          : "Good. Now a what-if: if the key number you just mentioned moved 30% against you, what changes in the recommendation?";
 
   return {
-    coachMessage: thin
-      ? "That covers the headline. Push one level deeper: which assumption would break the conclusion if it were wrong, and why?"
-      : "Good. Now a what-if: if the key number you just mentioned moved 30% against you, what changes in the recommendation?",
+    coachMessage,
     gapHint: thin
       ? {
           section: "Assumptions",
@@ -313,10 +360,10 @@ function mockGrade(user: string, modelId: string): unknown {
   const claimGrades = blocks.map((b) => {
       const answer = b.answer;
       const words = answer.split(/\s+/).filter(Boolean).length;
-      const hasBecause = /because|therefore|so that|which means/i.test(answer);
+      const hasBecause = /because|therefore|so that|which means|porque|ya que|pois|portanto/i.test(answer);
       const hasNumber = /\d/.test(answer);
       const unsure = /don't know|not sure|guess/i.test(answer);
-      const caughtError = /wrong|incorrect|error|typo|should be|doesn't match|altered/i.test(answer);
+      const caughtError = /wrong|incorrect|error|typo|should be|doesn't match|altered|incorrecto|errado|errada|equivocad|alterado|no coincide|não confere/i.test(answer);
 
       let accuracy = clamp(1.5 + words / 40 + (hasNumber ? 0.5 : 0) + bias);
       let reasoning = clamp(1.2 + (hasBecause ? 1.2 : 0.3) + words / 50 + bias);

@@ -25,7 +25,7 @@ The test-mode catalog (account `acct_1UNDfOBIumCL91iA`, all `livemode: false`) i
 
 ### Founding member sandbox object
 
-Create this in the sandbox before turning billing on. Do not hard-code the resulting price id. The app resolves `founding_lifetime`.
+The sandbox price exists: `price_1UTkBGBIumCL91iAMsnxp890` on product `dit_founding`, listed in the catalog files. Production still resolves the lookup key `founding_lifetime` and does not hard-code that id.
 
 | Field | Value |
 |---|---|

@@ -322,21 +322,31 @@ export default function PrivacyPage() {
           this page does not claim LiveKit zero retention.
         </p>
         <p>
-          Speech-to-text is Deepgram model <span className="mono">nova-3</span> when{" "}
+          Speech-to-text is Deepgram model <span className="mono">nova-3</span>. An English document
+          uses language <span className="mono">en-US</span> when{" "}
           <span className="mono">DEEPGRAM_API_KEY</span> is set, and that request sends{" "}
           <span className="mono">mipOptOut</span> so Deepgram is asked not to use the audio to improve
-          its models. Without that key, speech-to-text is the LiveKit Inference name{" "}
-          <span className="mono">deepgram/nova-3</span>.
+          its models. Without that key, English speech-to-text is the LiveKit Inference name{" "}
+          <span className="mono">deepgram/nova-3</span>. A Spanish or Portuguese document, and the
+          other Nova-3 multilingual languages, use language <span className="mono">multi</span>{" "}
+          (inference name <span className="mono">deepgram/nova-3:multi</span>) so an answer in the
+          document language or in English is transcribed. A language outside that set is sent as
+          itself, and an English answer may then be missed.
         </p>
         <p>
-          The spoken voice defaults to Deepgram. With the Deepgram key it is Aura-2 Thalia through the
-          Deepgram plugin, also with <span className="mono">mipOptOut</span>. Without the key it is
-          LiveKit Inference <span className="mono">deepgram/aura-2</span>. Setting{" "}
-          <span className="mono">TTS_PROVIDER</span> to <span className="mono">xai</span> speaks with
-          xAI Grok TTS through LiveKit Inference (<span className="mono">xai/tts-1</span>). That path
-          does not use an xAI key of our own. The words sent are the questions already written for the
-          interview. The document is not sent to xAI as a separate language-model call. The spoken
-          answer is stored as text, the same way a typed answer is.
+          The spoken voice for an English document defaults to Deepgram. With the Deepgram key it is
+          Aura-2 Thalia through the Deepgram plugin, also with <span className="mono">mipOptOut</span>.
+          Without the key it is LiveKit Inference <span className="mono">deepgram/aura-2</span>. A
+          Spanish document uses Aura-2 Estrella (<span className="mono">aura-2-estrella-es</span>, or
+          inference voice <span className="mono">estrella</span>). Aura-2 has no Portuguese voice, so a
+          Portuguese document is spoken by xAI Grok TTS through LiveKit Inference (
+          <span className="mono">xai/tts-1</span>, voice Ara, language <span className="mono">pt-BR</span>
+          ) even when <span className="mono">TTS_PROVIDER</span> is Deepgram. Setting{" "}
+          <span className="mono">TTS_PROVIDER</span> to <span className="mono">xai</span> speaks every
+          language with xAI Grok TTS. That path does not use an xAI key of our own. The words sent are
+          the questions already written for the interview. The document is not sent to xAI as a
+          separate language-model call. The spoken answer is stored as text, the same way a typed
+          answer is.
         </p>
         <p>
           The ElevenLabs and OpenAI Realtime adapters in the web app are stubs. They do not open a

@@ -12,14 +12,16 @@
  * (xai/tts-1) and does not call xAI with our own key. Session recording is
  * off, and logs stay at error level so answers never land in log storage.
  */
-import { type JobContext, type JobProcess, ServerOptions, cli, defineAgent, llm, voice } from "@livekit/agents";
+import { type JobContext, type JobProcess, ServerOptions, cli, defineAgent, inference, llm, voice } from "@livekit/agents";
 import * as deepgram from "@livekit/agents-plugin-deepgram";
 import * as silero from "@livekit/agents-plugin-silero";
 import { createHmac } from "node:crypto";
 import { ReadableStream } from "node:stream/web";
 import { fileURLToPath } from "node:url";
+import { examinerScript, type ExaminerScript } from "./examiner-script.js";
 import { SPEAKABLE_BUDGET_MS, toSpeakable, type SpeakableRewrite } from "./speech/speakable.js";
 import { emptySpeechTotals, noteSpeechMetric } from "./speech-usage.js";
+import { selectStt, type SttChoice } from "./stt.js";
 import { selectTts, type TtsChoice } from "./tts.js";
 
 export const AGENT_NAME = "defend-it-interviewer";
@@ -35,6 +37,8 @@ interface Plan {
   difficulty: string;
   probes: Probe[];
   answered: number;
+  /** BCP-47 primary subtag stored on the defense. Missing means English. */
+  language?: string;
 }
 
 async function call<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
@@ -51,14 +55,25 @@ async function call<T>(path: string, body: unknown, signal?: AbortSignal): Promi
   return (await res.json()) as T;
 }
 
-function interviewerTts(choice: TtsChoice): string | deepgram.TTS {
+function interviewerTts(choice: TtsChoice): string | deepgram.TTS | inference.TTS<inference.TTSModels> {
   switch (choice.kind) {
     case "deepgram-plugin":
       return new deepgram.TTS({ model: choice.model, mipOptOut: choice.mipOptOut });
     case "deepgram-inference":
-      return choice.descriptor;
+      // English keeps the string descriptor so the gateway default voice stays Thalia.
+      if (choice.language === "en") return choice.descriptor;
+      return new inference.TTS({
+        model: "deepgram/aura-2",
+        voice: choice.voice,
+        language: choice.language,
+      });
     case "xai-inference":
-      return choice.descriptor;
+      if (choice.language === "en") return choice.descriptor;
+      return new inference.TTS({
+        model: "xai/tts-1",
+        voice: choice.voice,
+        language: choice.language,
+      });
     default: {
       const _exhaustive: never = choice;
       return _exhaustive;
@@ -66,8 +81,24 @@ function interviewerTts(choice: TtsChoice): string | deepgram.TTS {
   }
 }
 
-const ACKS = ["Thanks.", "Got it.", "Okay.", "Understood.", "Thank you."];
-const REPEAT = /\b(repeat|say (that|it) again|didn'?t (catch|hear)|pardon|come again)\b/i;
+function interviewerStt(choice: SttChoice): string | deepgram.STT {
+  switch (choice.kind) {
+    case "deepgram-plugin":
+      return new deepgram.STT({
+        model: choice.model,
+        language: choice.language,
+        smartFormat: choice.smartFormat,
+        punctuate: choice.punctuate,
+        mipOptOut: choice.mipOptOut,
+      });
+    case "deepgram-inference":
+      return choice.descriptor;
+    default: {
+      const _exhaustive: never = choice;
+      return _exhaustive;
+    }
+  }
+}
 
 /**
  * Optional model paraphrase. The web app owns the model call (zero retention).
@@ -128,6 +159,7 @@ class Interview {
   questionEndedAt = new Date();
   answerStartedAt: Date | null = null;
   finished = false;
+  private lines: ExaminerScript;
 
   constructor(
     private ctx: JobContext,
@@ -136,6 +168,7 @@ class Interview {
     private plan: Plan,
   ) {
     this.index = plan.answered;
+    this.lines = examinerScript(plan.language);
   }
 
   get current(): Probe | undefined {
@@ -152,15 +185,17 @@ class Interview {
     if (!p) return;
     this.answerStartedAt = null;
     void this.publish({ type: "question", index: this.index, total: this.plan.probes.length, probeId: p.id });
-    this.session.say(`${prefix}Question ${this.index + 1}. ${p.question}`, { allowInterruptions: true });
+    this.session.say(`${prefix}${this.lines.questionLabel(this.index + 1)} ${p.question}`, {
+      allowInterruptions: true,
+    });
   }
 
   async onAnswer(text: string) {
     const p = this.current;
     const answer = text.trim();
     if (!p || this.finished || !answer) return;
-    if (REPEAT.test(answer) && answer.split(/\s+/).length < 10) {
-      this.ask("Of course. ");
+    if (this.lines.repeat.test(answer) && answer.split(/\s+/).length < 10) {
+      this.ask(this.lines.repeatPrefix);
       return;
     }
     // The answer window for this attempt ends now; the next attempt starts fresh.
@@ -186,7 +221,7 @@ class Interview {
       } else {
         // Status only: never log what the creator said.
         console.error(`[interviewer] saving an answer failed (${(e as { status?: number }).status ?? "network"})`);
-        this.session.say("Sorry, I couldn't save that answer. Could you say it again?", { allowInterruptions: true });
+        this.session.say(this.lines.saveFailed, { allowInterruptions: true });
         return;
       }
     }
@@ -194,11 +229,11 @@ class Interview {
     await this.publish({ type: "progress", answered: this.index, total: this.plan.probes.length });
 
     if (this.current) {
-      this.ask(`${ACKS[this.index % ACKS.length]} `);
+      this.ask(`${this.lines.acks[this.index % this.lines.acks.length]} `);
       return;
     }
     this.finished = true;
-    this.session.say("That's every question. Thank you. Your answers are being graded now.", { allowInterruptions: false });
+    this.session.say(this.lines.closing, { allowInterruptions: false });
     await this.publish({ type: "done" });
   }
 }
@@ -243,14 +278,12 @@ export default defineAgent({
       // so the live transcript and the on-screen question stay exact.
       ttsTextTransforms: [speakableTtsTransform(sessionId), "filter_markdown", "filter_emoji"],
       vad: ctx.proc.userData.vad as silero.VAD,
-      // Our own Deepgram key with mip_opt_out on every request when configured;
-      // otherwise LiveKit Inference's Deepgram Nova-3 (LiveKit states zero retention).
-      stt: process.env.DEEPGRAM_API_KEY
-        ? new deepgram.STT({ model: "nova-3", smartFormat: true, punctuate: true, mipOptOut: true })
-        : ("deepgram/nova-3" as const),
-      // deepgram (default): Aura-2 Thalia on our key, or LiveKit Inference.
-      // xai: Grok TTS through LiveKit Inference. See docs/voice-evaluation.md.
-      tts: interviewerTts(selectTts(process.env)),
+      // English stays Nova-3 / en-US. Spanish and Portuguese use Nova-3 multi
+      // so an answer in the document language or in English is transcribed.
+      stt: interviewerStt(selectStt(process.env, plan.language)),
+      // English stays Aura-2 Thalia. Spanish uses Estrella. Portuguese uses
+      // xAI Ara, because Aura-2 has no Portuguese voice. See docs/voice-evaluation.md.
+      tts: interviewerTts(selectTts(process.env, plan.language)),
       // Viva answers include thinking pauses: wait longer before ending a turn.
       turnHandling: { endpointing: { minDelay: 1800, maxDelay: 6000 } },
     });
@@ -275,15 +308,11 @@ export default defineAgent({
     await session.start({ agent: new Interviewer(() => interview), room: ctx.room, record: false });
     interview = new Interview(ctx, session, sessionId, plan);
 
-    const total = plan.probes.length;
+    const lines = examinerScript(plan.language);
     if (plan.answered === 0) {
-      session.say(
-        `Hi, I'm your examiner. I'll ask you ${total} questions about your document. ` +
-          "Answer in your own words, take your time, and pause when you've finished. You can ask me to repeat a question.",
-        { allowInterruptions: false },
-      );
+      session.say(lines.intro(plan.probes.length), { allowInterruptions: false });
     } else {
-      session.say("Welcome back. Let's pick up where we left off.", { allowInterruptions: false });
+      session.say(lines.welcomeBack, { allowInterruptions: false });
     }
     interview.ask();
   },
