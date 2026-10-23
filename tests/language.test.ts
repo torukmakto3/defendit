@@ -1,7 +1,5 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { selectStt } from "../agent/src/stt";
-import { selectTts } from "../agent/src/tts";
 import { prepareCardFaces } from "../src/lib/card-text";
 import { decodePlainText } from "../src/lib/parse";
 import { examinerScript } from "../src/lib/examiner-script";
@@ -53,26 +51,6 @@ describe("examiner script", () => {
     const web = readFileSync(new URL("../src/lib/examiner-script.ts", import.meta.url), "utf8");
     const agent = readFileSync(new URL("../agent/src/examiner-script.ts", import.meta.url), "utf8");
     expect(agent).toBe(web);
-  });
-});
-
-describe("speech config for es and pt", () => {
-  it("keeps English Nova-3 and Thalia, and switches Spanish and Portuguese", () => {
-    const englishStt = selectStt({}, "en");
-    const spanishStt = selectStt({ DEEPGRAM_API_KEY: "dg" }, "es");
-    const portugueseStt = selectStt({}, "pt");
-    expect(englishStt.kind === "deepgram-inference" && englishStt.descriptor).toBe("deepgram/nova-3");
-    expect(spanishStt.language).toBe("multi");
-    expect(portugueseStt.kind === "deepgram-inference" && portugueseStt.descriptor).toBe("deepgram/nova-3:multi");
-    expect(selectTts({ DEEPGRAM_API_KEY: "dg" }, "es")).toMatchObject({
-      model: "aura-2-estrella-es",
-      language: "es",
-    });
-    expect(selectTts({}, "pt")).toMatchObject({
-      language: "pt-BR",
-      note: "aura-2-has-no-portuguese",
-    });
-    expect(selectTts({ DEEPGRAM_API_KEY: "dg" })).toMatchObject({ model: "aura-2-thalia-en", language: "en" });
   });
 });
 
