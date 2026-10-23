@@ -9,6 +9,7 @@ YYYY-MM-DD BLOCKED — what stopped the work · what the next agent needs
 
 ## Log
 
+2026-10-23 DONE — Document language on upload: examiner lines, questions, flashcards, grading, and voice STT/TTS follow es and pt; excerpts clip on graphemes; founding sandbox price recorded. Voice worker needs agent/deploy.sh. · PR #65 · tsc, eslint, vitest (483), test:postgres (19), e2e (15), agent tsc
 2026-10-23 DONE — Hide the email field, send-link button, divider, and the "aren't set up" note when the server says email links are off, so a Google-only card stays on the landing page, dashboard, request, and Learn. The email-link route still returns 503. · PR #64 · tsc, eslint, vitest (472), e2e (18), browser check of the unconfigured card
 2026-10-23 DONE — Public launch receipt image at /launch/receipt-post4.png (94761 bytes, sha256 b02e585afd8cba8072185e0d44e74ee77f4e8576ba5d08458d0a9371ede03b43), served with no auth redirect. · cursor/launch-receipt-png-d7c1 · playwright GET 200 image/png
 2026-10-22 DONE — Rebased the titleblock polish onto 8c55ee9 (#57). Homepage polish stays in home-page.tsx with the landing beacon, the visit-count line, and the outline sample-demo button. The receipt keeps Copy and Share. /privacy keeps the page title and OPERATOR_NAME. The interview keeps the sample heading and the out-of-credits terms line. After screenshots include the site footer. · PR #54 · tsc, eslint (0 errors), vitest (403)
