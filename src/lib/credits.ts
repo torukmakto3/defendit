@@ -1221,6 +1221,8 @@ export async function renewPlan(input: {
     // Branch in JS. `CASE WHEN ? IS NULL` has no type on Postgres
     // (`could not determine data type of parameter`) and every monthly
     // invoice.paid failed before the plan or the credits were written.
+    // The upsert below does not replace a different active subscription.
+    // The credits granted above still land.
     const cancelAtPeriodEnd = activateStatus == null ? "user_plans.cancel_at_period_end" : "0";
     await tx.run(
       `INSERT INTO user_plans
@@ -1234,7 +1236,10 @@ export async function renewPlan(input: {
          current_period_end = excluded.current_period_end,
          stripe_subscription_id = COALESCE(excluded.stripe_subscription_id, user_plans.stripe_subscription_id),
          cancel_at_period_end = ${cancelAtPeriodEnd},
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at
+       WHERE user_plans.stripe_subscription_id IS NULL
+          OR user_plans.stripe_subscription_id = excluded.stripe_subscription_id
+          OR user_plans.status NOT IN ('active', 'trialing')`,
       [
         input.userId,
         input.planId,

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import sandboxIds from "../docs/stripe-sandbox-ids.json";
 import { HttpError } from "../src/lib/errors";
 import { assertCatalogAccount, expectedStripeAccountId } from "../src/lib/stripe-prices";
 
-const SANDBOX_ACCOUNT = "acct_1UNDfOBIumCL91iA";
+const SANDBOX_ACCOUNT = sandboxIds.account.stripe_context;
 
 let snapshot: Record<string, string | undefined>;
 
@@ -22,10 +23,11 @@ afterEach(() => {
 });
 
 describe("expected Stripe account", () => {
-  it("uses the sandbox file when no account is configured", () => {
+  it("uses the bundled sandbox account when no account is configured", () => {
     delete process.env.STRIPE_EXPECTED_ACCOUNT_ID;
     delete process.env.STRIPE_SECRET_KEY;
     delete process.env.STRIPE_MODE;
+    expect(SANDBOX_ACCOUNT.startsWith("acct_")).toBe(true);
     expect(expectedStripeAccountId()).toBe(SANDBOX_ACCOUNT);
   });
 

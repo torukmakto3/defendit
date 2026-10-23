@@ -427,4 +427,42 @@ describe("postgres subscription scope", () => {
     expect(after.stripe_subscription_id).toBe(endedSub);
     expect(await getBalance(ended)).toMatchObject({ defense: 0, challenge: 0 });
   });
+
+  it("keeps an active yearly plan when another subscription's monthly invoice is paid", async () => {
+    const userId = await createUser();
+    const yearlyId = nonce("sub");
+    await grantYear(userId, yearlyId);
+    const planSql = `SELECT plan_id, interval, status, period_id, stripe_subscription_id, cancel_at_period_end,
+            grant_anchor, current_period_start, current_period_end, last_granted_period_index
+     FROM user_plans WHERE user_id = ?`;
+    const before = await (await getDb()).get(planSql, [userId]);
+
+    setCardFingerprintLoaderForTests(async () => null);
+    setInvoicePaymentLoaderForTests(async () => ({
+      paymentIntentId: nonce("pi"),
+      chargeId: nonce("ch"),
+    }));
+    const paid = await applyBillingEvent(
+      invoicePaid({
+        userId,
+        sku: "subscription_month",
+        subscriptionId: nonce("sub"),
+      }),
+    );
+    expect(paid).toMatchObject({ duplicate: false });
+
+    const after = await (await getDb()).get(planSql, [userId]);
+    expect(after).toEqual(before);
+    expect(after).toMatchObject({
+      plan_id: "subscription",
+      interval: "year",
+      status: "active",
+      stripe_subscription_id: yearlyId,
+    });
+    const grant = await (await getDb()).get<{ idempotency_key: string }>(
+      `SELECT idempotency_key FROM credit_ledger WHERE user_id = ? AND idempotency_key LIKE 'renew:%:defense'`,
+      [userId],
+    );
+    expect(grant?.idempotency_key).toMatch(/^renew:stripe:/);
+  });
 });

@@ -7,9 +7,8 @@
  * by Quote. The extra-unit price is the overage fallback until a meter exists.
  */
 
-import { readFileSync } from "fs";
-import { join } from "path";
 import Stripe from "stripe";
+import sandboxIds from "../../docs/stripe-sandbox-ids.json";
 import { HttpError } from "./errors";
 import type { Sku } from "./plans";
 import { stripeSdk } from "./stripe-client";
@@ -239,9 +238,17 @@ function priceClient(): StripePriceClient {
 }
 
 /**
+ * Sandbox account bundled from `docs/stripe-sandbox-ids.json`.
+ * A static import is what Vercel traces into the function. A cwd read is not.
+ */
+const SANDBOX_STRIPE_ACCOUNT_ID = sandboxIds.account.stripe_context.startsWith("acct_")
+  ? sandboxIds.account.stripe_context
+  : null;
+
+/**
  * Account the catalog is expected to live in.
  * `STRIPE_EXPECTED_ACCOUNT_ID` wins. A blank value turns the check off.
- * When that variable is unset, a non-live key uses `docs/stripe-sandbox-ids.json`.
+ * When that variable is unset, a non-live key uses the bundled sandbox id.
  * A live key does not assume the sandbox account.
  */
 export function expectedStripeAccountId(): string | null {
@@ -252,15 +259,7 @@ export function expectedStripeAccountId(): string | null {
   const key = process.env.STRIPE_SECRET_KEY?.trim() ?? "";
   const mode = (process.env.STRIPE_MODE ?? "").trim().toLowerCase();
   if (key.startsWith("sk_live_") || key.startsWith("rk_live_") || mode === "live") return null;
-  try {
-    const parsed = JSON.parse(readFileSync(join(process.cwd(), "docs", "stripe-sandbox-ids.json"), "utf8")) as {
-      account?: { stripe_context?: string };
-    };
-    const id = parsed.account?.stripe_context?.trim() ?? "";
-    return id.startsWith("acct_") ? id : null;
-  } catch {
-    return null;
-  }
+  return SANDBOX_STRIPE_ACCOUNT_ID;
 }
 
 /**
