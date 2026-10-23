@@ -62,7 +62,7 @@ function bundled(id: DemoSampleId): DemoBundle {
     prefetch: {
       seed: DEMO_SEED[id],
       difficulty: "standard",
-      fingerprint: questionPrefetchFingerprint(claims, undefined, "demo"),
+      fingerprint: questionPrefetchFingerprint(claims, undefined, "demo", "en"),
       plan,
       restPhrased: true,
       firstQuestionMs: 0,

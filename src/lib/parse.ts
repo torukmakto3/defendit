@@ -49,10 +49,64 @@ export async function extractText(
     lower.endsWith(".md") ||
     lower.endsWith(".markdown")
   ) {
-    return buffer.toString("utf8").trim();
+    return decodePlainText(buffer).trim();
   }
 
-  return buffer.toString("utf8").trim();
+  return decodePlainText(buffer).trim();
+}
+
+/**
+ * UTF-8 when the bytes are valid UTF-8. Otherwise Windows-1252, which is how
+ * a Spanish or Portuguese .txt from an older editor usually arrives (ñ is
+ * 0xF1). `buffer.toString("utf8")` would replace those bytes with U+FFFD.
+ */
+export function decodePlainText(buffer: Buffer): string {
+  const body = buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf ? buffer.subarray(3) : buffer;
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(body);
+  } catch {
+    return decodeWindows1252(body);
+  }
+}
+
+/** Bytes 0x80–0x9F that differ from Latin-1. Undefined slots become U+FFFD. */
+const CP1252_80: Record<number, string> = {
+  0x80: "€",
+  0x82: "‚",
+  0x83: "ƒ",
+  0x84: "„",
+  0x85: "…",
+  0x86: "†",
+  0x87: "‡",
+  0x88: "ˆ",
+  0x89: "‰",
+  0x8a: "Š",
+  0x8b: "‹",
+  0x8c: "Œ",
+  0x8e: "Ž",
+  0x91: "‘",
+  0x92: "’",
+  0x93: "“",
+  0x94: "”",
+  0x95: "•",
+  0x96: "–",
+  0x97: "—",
+  0x98: "˜",
+  0x99: "™",
+  0x9a: "š",
+  0x9b: "›",
+  0x9c: "œ",
+  0x9e: "ž",
+  0x9f: "Ÿ",
+};
+
+function decodeWindows1252(buffer: Buffer): string {
+  let out = "";
+  for (const byte of buffer) {
+    if (byte >= 0x80 && byte <= 0x9f) out += CP1252_80[byte] ?? "\uFFFD";
+    else out += String.fromCharCode(byte);
+  }
+  return out;
 }
 
 function extractSpreadsheetText(buffer: Buffer, XLSX: typeof import("xlsx")): string {

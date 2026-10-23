@@ -48,7 +48,9 @@ function isGrounded(question: string, claim: Claim, probeType: ProbeType, plante
   const hay = question.toLowerCase();
   if (probeType === "planted_error") {
     const excerpt = (plantedContent ?? "").replace(/\s+/g, " ").trim().toLowerCase();
-    return excerpt.length >= 12 && hay.includes(excerpt.slice(0, 24));
+    // The full altered span has to be in the question. A 24-character prefix
+    // let a mid-sentence cut pass, and the grader then saw only that cut.
+    return excerpt.length >= 12 && hay.includes(excerpt);
   }
   const span = claim.sourceSpan.replace(/\s+/g, " ").trim();
   if (span.length >= 4 && hay.includes(span.toLowerCase())) return true;

@@ -84,3 +84,7 @@ curl -sS -X POST https://api.x.ai/v1/tts \
 That request shape is the xAI TTS API: `POST /v1/tts`, `voice_id`, `language`. ([xAI TTS docs](https://docs.x.ai/developers/model-capabilities/audio/text-to-speech))
 
 To hear the current voice the same way, `DEEPGRAM_API_KEY` and `model=aura-2-thalia-en` on Deepgram’s speak endpoint. To hear v4 Turbo, an ElevenLabs API key. Neither key is required for the default agent or for `TTS_PROVIDER=xai`.
+
+## Document language
+
+English stays Thalia and Nova-3 `en-US`. A Spanish document uses Aura-2 Estrella (`aura-2-estrella-es`) and Nova-3 `multi`, so an English answer is transcribed as well as a Spanish one. Aura-2 has no Portuguese voice, so a Portuguese document is spoken by xAI Ara with language `pt-BR` even when `TTS_PROVIDER` is unset. That is the same LiveKit Inference path as the xAI flag, and it is cheaper than Aura-2. The worker has to be redeployed (`agent/deploy.sh`) before production speech follows the document. The Vercel deploy does not update it.

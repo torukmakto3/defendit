@@ -1,6 +1,7 @@
 import { sha256Hex } from "./crypto";
 import { getDb } from "./db";
 import { newId } from "./ids";
+import { resolveDocumentLanguage } from "./language";
 import { buildInterviewPlan } from "./probes";
 import { phraseQuestions } from "./questions";
 import { recordStageTiming } from "./timings";
@@ -28,11 +29,13 @@ export function questionPrefetchFingerprint(
   claims: Claim[],
   pinnedClaimIds?: string[],
   shape?: "demo",
+  language?: string | null,
 ): string {
   const pins = [...(pinnedClaimIds ?? [])].map((id) => id.trim()).filter(Boolean).sort();
-  const body: { pins: string[]; claims: [string, string][]; shape?: "demo" } = {
+  const body: { pins: string[]; claims: [string, string][]; language: string; shape?: "demo" } = {
     pins,
     claims: claims.map((claim) => [claim.id, claim.text]),
+    language: resolveDocumentLanguage(language),
   };
   if (shape === "demo") body.shape = "demo";
   return sha256Hex(JSON.stringify(body));
@@ -44,6 +47,7 @@ export async function precomputeFirstQuestion(opts: {
   difficulty: Difficulty;
   pinnedClaimIds?: string[];
   shape?: "demo";
+  language?: string | null;
 }): Promise<QuestionPrefetch> {
   const seed = newId("seed");
   const drafted = buildInterviewPlan({
@@ -52,13 +56,14 @@ export async function precomputeFirstQuestion(opts: {
     seed,
     pinnedClaimIds: opts.pinnedClaimIds,
     shape: opts.shape,
+    language: opts.language,
   });
   const started = Date.now();
-  const plan = await phraseQuestions(drafted, opts.claims, { indexes: [0] });
+  const plan = await phraseQuestions(drafted, opts.claims, { indexes: [0], language: opts.language });
   return {
     seed,
     difficulty: opts.difficulty,
-    fingerprint: questionPrefetchFingerprint(opts.claims, opts.pinnedClaimIds, opts.shape),
+    fingerprint: questionPrefetchFingerprint(opts.claims, opts.pinnedClaimIds, opts.shape, opts.language),
     plan,
     restPhrased: plan.probes.length <= 1,
     firstQuestionMs: Math.max(0, Date.now() - started),
@@ -79,6 +84,7 @@ export async function loadQuestionPrefetch(
   difficulty: Difficulty,
   pinnedClaimIds?: string[],
   shape?: "demo",
+  language?: string | null,
 ): Promise<QuestionPrefetch | null> {
   const db = await getDb();
   const row = await db.get<{ question_prefetch_enc: string | null }>(
@@ -89,7 +95,7 @@ export async function loadQuestionPrefetch(
   const stored = decryptJson<QuestionPrefetch>(row.question_prefetch_enc, prefetchCtx(requestId));
   if (!stored?.plan?.probes?.length || !stored.seed) return null;
   if (stored.difficulty !== difficulty) return null;
-  if (stored.fingerprint !== questionPrefetchFingerprint(claims, pinnedClaimIds, shape)) return null;
+  if (stored.fingerprint !== questionPrefetchFingerprint(claims, pinnedClaimIds, shape, language)) return null;
   return stored;
 }
 

@@ -1,7 +1,9 @@
 import { createEmptyCard, fsrs, Rating, type Card, type Grade } from "ts-fsrs";
 import { z } from "zod";
 import type { User } from "./auth";
-import { FLASHCARD_WRITING_RULES, prepareCardFaces, settleCardText } from "./card-text";
+import { FLASHCARD_WRITING_RULES, flashcardWritingRules, prepareCardFaces, settleCardText } from "./card-text";
+import { cutText } from "./excerpt";
+import { resolveDocumentLanguage } from "./language";
 import { claimsFromText } from "./claims";
 import { sha256Hex } from "./crypto";
 import { getDb } from "./db";
@@ -120,7 +122,11 @@ function cardFromJson(json: string): Card {
 }
 
 function normalizeKey(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return text
+    .toLowerCase()
+    .normalize("NFC")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
 }
 
 /** Drop cards that ask the same thing, answer the same thing, or quote the same line. */
@@ -140,13 +146,14 @@ export function dedupeFlashcards<T extends { front: string; back: string; source
   return kept;
 }
 
-function draftFromClaim(claim: Claim, fileName: string | null): DraftCard {
+function draftFromClaim(claim: Claim, fileName: string | null, language?: string | null): DraftCard {
   const faces = prepareCardFaces({
     section: claim.section,
     text: claim.text,
     source: claim.sourceSpan || claim.text,
+    language,
   });
-  return { claimId: claim.id, ...settleCardText(faces, { fileName }) };
+  return { claimId: claim.id, ...settleCardText(faces, { fileName, language }) };
 }
 
 interface OrderedDraft extends DraftCard {
@@ -174,7 +181,7 @@ function claimsBlock(claims: Claim[]): string {
 
 /** The single call Learn used to make: system rules, up to 4,000 characters of the file, then every claim. */
 function legacyFlashcardUserPrompt(claims: Claim[], fileText: string | null): string {
-  const excerpt = fileText ? fileText.slice(0, 4000) : null;
+  const excerpt = fileText ? cutText(fileText, 4000) : null;
   return [
     excerpt
       ? `<file>\n${excerpt}\n</file>`
@@ -187,14 +194,18 @@ function legacyFlashcardUserPrompt(claims: Claim[], fileText: string | null): st
  * Card 1 omits the file excerpt so the call stays small. Later batches include
  * the same excerpt the single call used to send.
  */
-function batchUserPrompt(claims: Claim[], fileText: string | null): string {
-  const excerpt = fileText ? fileText.slice(0, 4000) : null;
-  return [
+function batchUserPrompt(claims: Claim[], fileText: string | null, language?: string | null): string {
+  const excerpt = fileText ? cutText(fileText, 4000) : null;
+  const body = [
     excerpt
       ? `<file>\n${excerpt}\n</file>`
       : "<file>Each claim's text and source are the file. Write one card per claim.</file>",
     claimsBlock(claims),
   ].join("\n");
+  const code = resolveDocumentLanguage(language);
+  if (code === "en") return body;
+  const extra = flashcardWritingRules(code).slice(FLASHCARD_WRITING_RULES.length).trim();
+  return `${extra}\n${body}`;
 }
 
 function batchClaims(claims: Claim[]): Claim[][] {
@@ -265,8 +276,13 @@ function keepCard(card: DraftCard, seen: Set<string>): boolean {
   return true;
 }
 
-async function writeCardBatch(claims: Claim[], fileName: string | null, fileText: string | null): Promise<DraftCard[]> {
-  const drafts = new Map(claims.map((claim) => [claim.id, draftFromClaim(claim, fileName)]));
+async function writeCardBatch(
+  claims: Claim[],
+  fileName: string | null,
+  fileText: string | null,
+  language?: string | null,
+): Promise<DraftCard[]> {
+  const drafts = new Map(claims.map((claim) => [claim.id, draftFromClaim(claim, fileName, language)]));
   await pauseForMockCards(claims.length);
   try {
     const { data } = await completeJson(
@@ -275,8 +291,8 @@ async function writeCardBatch(claims: Claim[], fileName: string | null, fileText
         purpose: "write_flashcards",
         temperature: 0.3,
         messages: [
-          { role: "system", content: FLASHCARD_WRITING_RULES },
-          { role: "user", content: batchUserPrompt(claims, fileText) },
+          { role: "system", content: flashcardWritingRules(language) },
+          { role: "user", content: batchUserPrompt(claims, fileText, language) },
         ],
       },
       cardResponseSchema,
@@ -291,7 +307,7 @@ async function writeCardBatch(claims: Claim[], fileName: string | null, fileText
           back: raw.back,
           source: raw.source || claim?.sourceSpan || claim?.text,
         },
-        { fileName },
+        { fileName, language },
       );
       drafts.set(raw.claimId, { claimId: raw.claimId, ...settled });
     }
@@ -311,6 +327,7 @@ async function writeCardsBatched(
   fileName: string | null,
   fileText: string | null,
   onReady: (cards: OrderedDraft[]) => Promise<void>,
+  language?: string | null,
 ): Promise<OrderedDraft[]> {
   const selected = claims.slice(0, MAX_CARDS).map((claim, order) => ({ claim, order }));
   if (selected.length === 0) return [];
@@ -353,6 +370,7 @@ async function writeCardsBatched(
         group.map((item) => item.claim),
         fileName,
         groupIndex === 0 ? null : fileText,
+        language,
       );
       for (let i = 0; i < group.length; i++) pending.set(group[i].order, drafts[i]);
       await enqueue(async () => {
@@ -397,6 +415,7 @@ interface StudySource {
   text: string | null;
   claims: Claim[] | null;
   fileName: string | null;
+  language: string;
 }
 
 function stillWithin(iso: string | null | undefined, nowIso: string): boolean {
@@ -432,7 +451,8 @@ async function loadForStudy(token: string, user: User): Promise<StudySource> {
     id: string;
     status: string;
     creator_user_id: string | null;
-  }>(`SELECT id, status, creator_user_id FROM defense_requests WHERE token = ?`, [token]);
+    language: string | null;
+  }>(`SELECT id, status, creator_user_id, language FROM defense_requests WHERE token = ?`, [token]);
   if (!request) throw new HttpError(404, "Defense link not found");
   if (request.creator_user_id !== user.id) {
     throw new HttpError(403, "This defense belongs to another account");
@@ -465,6 +485,7 @@ async function loadForStudy(token: string, user: User): Promise<StudySource> {
       retained && deliverable.file_name_enc
         ? decryptField(deliverable.file_name_enc, deliverableCtx.fileName(deliverable.id))
         : null,
+    language: resolveDocumentLanguage(request.language),
   };
 }
 
@@ -717,7 +738,7 @@ async function runGeneration(
           logStage(source.requestId, "first_card", "generated", firstCardMs);
         }
         for (const card of stored) job.emit(card);
-      }),
+      }, source.language),
     );
     await setDeckFlag(source.deliverableId, 1);
     const deckMs = Date.now() - started;
@@ -751,13 +772,14 @@ interface CacheRow {
   purged_at: string | null;
   status: string;
   sha256: string;
+  language: string | null;
 }
 
 async function loadDeliverable(deliverableId: string): Promise<{ source: StudySource; userId: string } | null> {
   const db = await getDb();
   const nowIso = new Date().toISOString();
   const row = await db.get<CacheRow>(
-    `SELECT d.id, d.request_id, d.owner_user_id, d.text_enc, d.claims_enc, d.file_name_enc, d.purge_after, d.purged_at, d.sha256, r.status
+    `SELECT d.id, d.request_id, d.owner_user_id, d.text_enc, d.claims_enc, d.file_name_enc, d.purge_after, d.purged_at, d.sha256, r.status, r.language
      FROM deliverables d JOIN defense_requests r ON r.id = d.request_id WHERE d.id = ?`,
     [deliverableId],
   );
@@ -778,6 +800,7 @@ async function loadDeliverable(deliverableId: string): Promise<{ source: StudySo
       text,
       claims,
       fileName,
+      language: resolveDocumentLanguage(row.language),
     },
   };
 }

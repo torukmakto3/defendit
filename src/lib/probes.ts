@@ -1,6 +1,8 @@
+import { clipExcerpt } from "./excerpt";
+import { newId } from "./ids";
+import { resolveDocumentLanguage, type AuthoredLanguage } from "./language";
 import { mulberry32, seedFromString } from "./rng";
 import type { Claim, ClaimKind, Difficulty, InterviewPlan, Probe, ProbeType, QuestionDifficulty } from "./types";
-import { newId } from "./ids";
 
 type Prefer = ClaimKind | "high";
 
@@ -59,7 +61,7 @@ export function blueprintMix(difficulty: Difficulty): string[] {
 export function claimKind(claim: Claim): ClaimKind {
   if (claim.kind === "claim" || claim.kind === "assumption" || claim.kind === "number") return claim.kind;
   if (/\d/.test(claim.text) || (claim.figures?.length ?? 0) > 0) return "number";
-  if (/\b(assum|risk|depend|contingent|fragile)\b/i.test(claim.text)) return "assumption";
+  if (/\b(assum|risk|depend|contingent|fragile|supone|riesgo|depende|pressup|risco)\b/i.test(claim.text)) return "assumption";
   return "claim";
 }
 
@@ -70,14 +72,17 @@ export function buildInterviewPlan(opts: {
   pinnedClaimIds?: string[];
   /** `demo` uses the short sample blueprint. Omit it for a full interview. */
   shape?: "demo";
+  /** Document language. Missing or unknown stays English, including old sessions. */
+  language?: string | null;
 }): InterviewPlan {
+  const language = authoredLanguage(opts.language);
   const rand = mulberry32(seedFromString(opts.seed));
   const slots = shuffle([...(opts.shape === "demo" ? DEMO_SLOTS : BLUEPRINT[opts.difficulty])], rand);
   const pinned = new Set(opts.pinnedClaimIds ?? []);
   const used = new Set<string>();
   const probes = slots.map((slot) => {
     const claim = pickClaim(opts.claims, slot, used, pinned, rand);
-    return buildProbe(claim, slot.type, slot.difficulty, rand);
+    return buildProbe(claim, slot.type, slot.difficulty, rand, language);
   });
   return {
     seed: opts.seed,
@@ -164,11 +169,97 @@ const PLANTED_LEADS = [
   "Check this excerpt for me. Anything wrong with it?",
 ];
 
+const ES_TEMPLATES: Record<Exclude<ProbeType, "planted_error">, string[]> = {
+  explain_back: [
+    'Explícame por qué se sostiene esto: "{q}". ¿Qué parte del documento apoya "{c}"?',
+    'Explica "{q}" como si se lo contaras a un colega escéptico. ¿De dónde sale "{c}"?',
+    'Tu documento dice "{q}". ¿Cómo llegaste a "{c}"?',
+    'Toma "{q}". ¿Cuál es el razonamiento detrás de "{c}", paso a paso?',
+  ],
+  counterfactual: [
+    'Supón que el supuesto principal detrás de "{q}" se mueve un 30% en tu contra. ¿Qué se rompe primero en "{c}"?',
+    'Si los datos detrás de "{q}" fueran la mitad de favorables, ¿sobreviviría "{c}"? ¿Por qué?',
+    '¿Qué tendría que cambiar para que "{c}" — en concreto "{q}" — dejara de ser cierto?',
+  ],
+  weakest_link: [
+    'En "{c}", el pasaje "{q}" apoya un supuesto frágil. ¿Cuál es, y por qué sigue siendo aceptable?',
+    'Si tuvieras que apostar contra "{q}" dentro de "{c}", ¿qué parte sería?',
+    '¿Dónde queda "{c}" más expuesto si un revisor insiste en "{q}"?',
+  ],
+  prediction: [
+    'Si alguien cuestionara "{q}" de "{c}" en una revisión, ¿qué preguntaría primero?',
+    'Anticipa la objeción más dura a "{q}" en "{c}". ¿Cómo la responderías?',
+    '¿Qué cifra alrededor de "{q}" comprobarías primero si "{c}" quedara por debajo del plan?',
+  ],
+  confidence: [
+    'Del 0 al 100, ¿qué tan seguro estás de que "{q}" en "{c}" es correcto? ¿Qué movería ese número?',
+    '¿Qué tan seguro estás de "{c}", citando "{q}", del 0 al 100? Nombra algo que lo bajaría.',
+  ],
+};
+
+const PT_TEMPLATES: Record<Exclude<ProbeType, "planted_error">, string[]> = {
+  explain_back: [
+    'Explique porque isto se sustenta: "{q}". O que no documento apoia "{c}"?',
+    'Explique "{q}" como se falasse com um colega cético. De onde vem "{c}"?',
+    'O seu documento diz "{q}". Como chegou a "{c}"?',
+    'Tome "{q}". Qual é o raciocínio por trás de "{c}", passo a passo?',
+  ],
+  counterfactual: [
+    'Suponha que o pressuposto principal por trás de "{q}" se mova 30% contra si. O que quebra primeiro em "{c}"?',
+    'Se os dados por trás de "{q}" fossem metade tão favoráveis, "{c}" sobreviveria? Porquê?',
+    'O que teria de mudar para "{c}" — em concreto "{q}" — deixar de ser verdade?',
+  ],
+  weakest_link: [
+    'Em "{c}", a passagem "{q}" apoia um pressuposto frágil. Qual é, e porque continua aceitável?',
+    'Se tivesse de apostar contra "{q}" dentro de "{c}", que parte seria?',
+    'Onde fica "{c}" mais exposto se um revisor insistir em "{q}"?',
+  ],
+  prediction: [
+    'Se alguém questionasse "{q}" de "{c}" numa revisão, o que perguntaria primeiro?',
+    'Antecipe a objeção mais dura a "{q}" em "{c}". Como responderia?',
+    'Que número à volta de "{q}" verificaria primeiro se "{c}" ficasse abaixo do plano?',
+  ],
+  confidence: [
+    'De 0 a 100, quão confiante está de que "{q}" em "{c}" está certo? O que moveria esse número?',
+    'Quão seguro está de "{c}", citando "{q}", de 0 a 100? Diga uma coisa que o baixaria.',
+  ],
+};
+
+const ES_LEADS = [
+  "Estoy mirando este fragmento de tu documento. ¿Está bien como está escrito, o hay algo que no cuadra?",
+  "Aquí hay una línea de tu documento. ¿Coincide con lo que escribiste?",
+  "Revisa este fragmento. ¿Hay algo que esté mal?",
+];
+
+const PT_LEADS = [
+  "Estou a ver este excerto do seu documento. Está correto como está escrito, ou há algo fora do lugar?",
+  "Aqui está uma linha do seu documento. Corresponde ao que escreveu?",
+  "Verifique este excerto. Há alguma coisa errada?",
+];
+
+const TEMPLATES_BY_LANGUAGE: Record<AuthoredLanguage, Record<Exclude<ProbeType, "planted_error">, string[]>> = {
+  en: TEMPLATES,
+  es: ES_TEMPLATES,
+  pt: PT_TEMPLATES,
+};
+
+const LEADS_BY_LANGUAGE: Record<AuthoredLanguage, string[]> = {
+  en: PLANTED_LEADS,
+  es: ES_LEADS,
+  pt: PT_LEADS,
+};
+
+function authoredLanguage(code: string | null | undefined): AuthoredLanguage {
+  const resolved = resolveDocumentLanguage(code);
+  if (resolved === "es" || resolved === "pt") return resolved;
+  return "en";
+}
+
 function fill(template: string, claim: Claim, max: number): string {
-  const quote = truncate((claim.sourceSpan || claim.text).trim() || claim.text, 80);
+  const quote = clipExcerpt((claim.sourceSpan || claim.text).trim() || claim.text, 80);
   return template
     .split("{c}")
-    .join(truncate(claim.text, max))
+    .join(clipExcerpt(claim.text, max))
     .split("{s}")
     .join(claim.section)
     .split("{q}")
@@ -183,16 +274,22 @@ export function plantedQuestion(lead: string, altered: string): string {
   return `${lead}\n\n"${altered}"`;
 }
 
-function buildProbe(claim: Claim, type: ProbeType, difficulty: QuestionDifficulty, rand: () => number): Probe {
+function buildProbe(
+  claim: Claim,
+  type: ProbeType,
+  difficulty: QuestionDifficulty,
+  rand: () => number,
+  language: AuthoredLanguage,
+): Probe {
   const id = newId("probe");
   if (type === "planted_error") {
-    const altered = plantError(claim.text, rand);
+    const altered = plantError(claim.text, rand, language);
     return {
       id,
       claimId: claim.id,
       type,
       difficulty,
-      question: plantedQuestion(pick(PLANTED_LEADS, rand), altered),
+      question: plantedQuestion(pick(LEADS_BY_LANGUAGE[language], rand), altered),
       plantedContent: altered,
       sourceSpan: claim.sourceSpan,
       expectedFocus: "detect alteration",
@@ -210,21 +307,33 @@ function buildProbe(claim: Claim, type: ProbeType, difficulty: QuestionDifficult
     claimId: claim.id,
     type,
     difficulty,
-    question: fill(pick(TEMPLATES[type], rand), claim, type === "confidence" ? 100 : 140),
+    question: fill(pick(TEMPLATES_BY_LANGUAGE[language][type], rand), claim, type === "confidence" ? 100 : 140),
     sourceSpan: claim.sourceSpan,
     expectedFocus: expectedFocus[type],
   };
 }
 
+const FOLLOW_UP: Record<AuthoredLanguage, (quote: string, claim: string) => string> = {
+  en: (quote, claim) =>
+    `One more check, because that answer was read differently by different graders. What in the document supports "${quote}" in "${claim}", and which assumption would change your answer?`,
+  es: (quote, claim) =>
+    `Una comprobación más, porque esa respuesta se leyó de formas distintas. ¿Qué parte del documento sostiene "${quote}" en "${claim}", y qué supuesto cambiaría tu respuesta?`,
+  pt: (quote, claim) =>
+    `Mais uma verificação, porque essa resposta foi lida de formas diferentes. O que no documento sustenta "${quote}" em "${claim}", e que pressuposto mudaria a sua resposta?`,
+};
+
 /** One extra question when graders disagree. Wording is fixed so it costs no model call. */
-export function makeFollowUpProbe(claim: Claim, source: Probe): Probe {
+export function makeFollowUpProbe(claim: Claim, source: Probe, language?: string | null): Probe {
+  const code = authoredLanguage(language);
+  const quote = clipExcerpt(claim.sourceSpan || claim.text, 80);
+  const text = clipExcerpt(claim.text, 120);
   return {
     id: newId("probe"),
     claimId: claim.id,
     type: "explain_back",
     difficulty: source.difficulty ?? 2,
     followUpOf: source.id,
-    question: `One more check, because that answer was read differently by different graders. What in the document supports "${truncate(claim.sourceSpan || claim.text, 80)}" in "${truncate(claim.text, 120)}", and which assumption would change your answer?`,
+    question: FOLLOW_UP[code](quote, text),
     sourceSpan: claim.sourceSpan,
     expectedFocus: claim.sourceSpan,
   };
@@ -240,11 +349,49 @@ const SWAPS: [string, string][] = [
   ["first", "last"], ["minimum", "maximum"], ["includes", "excludes"],
 ];
 
+const EXTRA_SWAPS: Record<AuthoredLanguage, [string, string][]> = {
+  en: [],
+  es: [
+    ["aumenta", "disminuye"],
+    ["mayor", "menor"],
+    ["antes", "después"],
+    ["siempre", "nunca"],
+    ["incluye", "excluye"],
+    ["seguro", "inseguro"],
+    ["cuatro", "seis"],
+    ["seis", "ocho"],
+  ],
+  pt: [
+    ["aumenta", "diminui"],
+    ["maior", "menor"],
+    ["antes", "depois"],
+    ["sempre", "nunca"],
+    ["inclui", "exclui"],
+    ["seguro", "inseguro"],
+    ["quatro", "seis"],
+    ["seis", "oito"],
+  ],
+};
+
+const AUDIT_SUFFIX: Record<AuthoredLanguage, string> = {
+  en: ", as confirmed by an external audit.",
+  es: ", según una auditoría externa.",
+  pt: ", conforme uma auditoria externa.",
+};
+
+function wordPattern(word: string): RegExp {
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "iu");
+}
+
 /**
  * Alter one fact so a careful author would notice: numbers first, then a
- * meaning-flipping word swap. Only as a last resort, an added claim.
+ * meaning-flipping word swap. Only as a last resort, an added claim in the
+ * document language. The returned string is the full altered span. Callers
+ * that speak or display it must not cut it with a byte slice.
  */
-export function plantError(text: string, rand: () => number): string {
+export function plantError(text: string, rand: () => number, language?: string | null): string {
+  const code = authoredLanguage(language);
   const numbers = [...text.matchAll(/\$?\d[\d,]*(\.\d+)?(\s?(?:%|x|ms|M|B|k)(?![A-Za-z]))?/g)];
   if (numbers.length) {
     const m = numbers[Math.floor(rand() * numbers.length)];
@@ -259,26 +406,24 @@ export function plantError(text: string, rand: () => number): string {
       return text.replace(original, `${prefix}${changed}${suffix}`);
     }
   }
-  const candidates = SWAPS.flatMap(([a, b]) => [
+  const swaps = [...SWAPS, ...EXTRA_SWAPS[code]];
+  const candidates = swaps.flatMap(([a, b]) => [
     [a, b],
     [b, a],
-  ]).filter(([from]) => new RegExp(`\\b${from}\\b`, "i").test(text));
+  ]).filter(([from]) => wordPattern(from).test(text));
   if (candidates.length) {
     const [from, to] = candidates[Math.floor(rand() * candidates.length)];
-    return text.replace(new RegExp(`\\b${from}\\b`, "i"), (w) => (w[0] === w[0].toUpperCase() ? to[0].toUpperCase() + to.slice(1) : to));
+    return text.replace(wordPattern(from), (w) => (w[0] === w[0].toUpperCase() ? to[0].toUpperCase() + to.slice(1) : to));
   }
-  return `${text.replace(/\.$/, "")}, as confirmed by an external audit.`;
-}
-
-function truncate(s: string, n: number): string {
-  return s.length <= n ? s : `${s.slice(0, n - 1)}…`;
+  return `${text.replace(/[.!?…]+$/u, "")}${AUDIT_SUFFIX[code]}`;
 }
 
 /** Learn mode: private probe sequence, never shared. */
-export function buildLearnPlan(claims: Claim[], seed: string): InterviewPlan {
+export function buildLearnPlan(claims: Claim[], seed: string, language?: string | null): InterviewPlan {
   return buildInterviewPlan({
     claims,
     difficulty: "hard",
     seed: `learn:${seed}`,
+    language,
   });
 }
