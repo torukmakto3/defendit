@@ -142,9 +142,25 @@ function introFor(options: SignInMethods): string {
   return "";
 }
 
-/** Google first, then an email link when that path is actually available. */
-export function SignInCard({ title = "Sign in to continue", next }: { title?: string; next?: string }) {
-  const options = useSignInMethods();
+function SignInShell({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="panel grid gap-4 p-5">
+      <h2 className="type-section">{title}</h2>
+      {children}
+    </div>
+  );
+}
+
+/** Resolved sign-in methods. `email` is the server boolean from `/api/auth/providers`. */
+export function SignInChoices({
+  options,
+  title,
+  next,
+}: {
+  options: SignInMethods;
+  title: string;
+  next?: string;
+}) {
   const authError = useSyncExternalStore(subscribeLocation, authErrorCode, () => null);
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
@@ -180,15 +196,8 @@ export function SignInCard({ title = "Sign in to continue", next }: { title?: st
   const shownError = error ?? (authError ? AUTH_ERROR_COPY[authError] ?? "Sign-in failed. Try again." : null);
 
   return (
-    <div className="panel grid gap-4 p-5">
-      <h2 className="type-section">{title}</h2>
-      {options === undefined ? (
-        <p className="text-sm text-[var(--ink-2)]">Loading sign-in…</p>
-      ) : options === null ? (
-        <p className="text-sm text-[var(--amber)]">
-          Could not load sign-in options. Refresh and try again.
-        </p>
-      ) : sent ? (
+    <SignInShell title={title}>
+      {sent ? (
         <div className="grid gap-3">
           <p>Check <strong>{email}</strong> for your sign-in link. It expires in 15 minutes.</p>
           {devLink && (
@@ -229,18 +238,40 @@ export function SignInCard({ title = "Sign in to continue", next }: { title?: st
                 {busy ? "Sending…" : "Email me a link"}
               </button>
             </form>
-          ) : options.google ? (
-            <p className="text-sm text-[var(--ink-2)]">Email sign-in links aren&apos;t set up on this server.</p>
           ) : (
-            <p className="text-sm">
-              Sign-in isn&apos;t available on this server yet. Google sign-in and email links are both turned off.
-            </p>
+            !options.google && (
+              <p className="text-sm">
+                Sign-in isn&apos;t available on this server yet. Google sign-in and email links are both turned off.
+              </p>
+            )
           )}
         </>
       )}
       {shownError && <p className="text-sm text-[var(--amber)]">{shownError}</p>}
-    </div>
+    </SignInShell>
   );
+}
+
+/** Google first, then an email link when that path is actually available. */
+export function SignInCard({ title = "Sign in to continue", next }: { title?: string; next?: string }) {
+  const options = useSignInMethods();
+  if (options === undefined) {
+    return (
+      <SignInShell title={title}>
+        <p className="text-sm text-[var(--ink-2)]">Loading sign-in…</p>
+      </SignInShell>
+    );
+  }
+  if (options === null) {
+    return (
+      <SignInShell title={title}>
+        <p className="text-sm text-[var(--amber)]">
+          Could not load sign-in options. Refresh and try again.
+        </p>
+      </SignInShell>
+    );
+  }
+  return <SignInChoices options={options} title={title} next={next} />;
 }
 
 export function AccountMenu() {
