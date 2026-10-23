@@ -13,7 +13,8 @@
     "smoke": "tsx scripts/smoke.ts",
     "calibrate": "tsx scripts/calibrate-grading.ts",
     "soak": "tsx scripts/interview-soak.ts",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "brand-icon": "tsx scripts/brand-icon.ts"
   },
   "dependencies": {
     "@noble/ed25519": "^3.2.0",

@@ -7,7 +7,7 @@ import {
   CHALLENGE_OPT_OUT_HANDLES_MAX,
   CHALLENGE_UNCLAIMED_DAYS_DEFAULT,
 } from "@/lib/challenge-public";
-import { OPERATOR_EMAIL, OPERATOR_NAME } from "@/lib/operator";
+import { HELLO_EMAIL, OPERATOR_NAME, SUPPORT_EMAIL } from "@/lib/operator";
 import { documentTtlHours, retentionDays } from "@/lib/retention";
 
 export const metadata: Metadata = {
@@ -94,9 +94,12 @@ export default function FaqPage() {
         </p>
         <p>
           The receipt is kept. It has the hash, the score, the date, and the signature. It does not
-          contain the file or the answers. There is no delete button. Email {OPERATOR_NAME} if you
-          want an account or a receipt link taken down. The automatic job does not delete receipts
-          or accounts.
+          contain the file or the answers. There is no delete button. Email {OPERATOR_NAME} at{" "}
+          <a className="text-[var(--blueprint)] underline" href={`mailto:${SUPPORT_EMAIL}`}>
+            {SUPPORT_EMAIL}
+          </a>{" "}
+          if you want an account or a receipt link taken down. The automatic job does not delete
+          receipts or accounts.
         </p>
         <p>
           Abuse limits are a different row. When a salt is set they store a keyed hash of the IP
@@ -135,8 +138,8 @@ export default function FaqPage() {
       <LegalSection title="How do I contact you?">
         <p>
           {OPERATOR_NAME} ·{" "}
-          <a className="text-[var(--blueprint)] underline" href={`mailto:${OPERATOR_EMAIL}`}>
-            {OPERATOR_EMAIL}
+          <a className="text-[var(--blueprint)] underline" href={`mailto:${HELLO_EMAIL}`}>
+            {HELLO_EMAIL}
           </a>
         </p>
       </LegalSection>

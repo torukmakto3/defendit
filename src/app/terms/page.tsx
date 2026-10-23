@@ -12,7 +12,7 @@ import {
   CHALLENGE_UNCLAIMED_DAYS_DEFAULT,
 } from "@/lib/challenge-public";
 import { RATE_LIMIT_MESSAGE } from "@/lib/http";
-import { OPERATOR_EMAIL, OPERATOR_NAME } from "@/lib/operator";
+import { OPERATOR_NAME, SUPPORT_EMAIL } from "@/lib/operator";
 import { BETA_GRANT, betaDefenseCredits, formatEur, ONWARD_CHALLENGE_CREDITS } from "@/lib/plans";
 import { RATE_LIMIT_ROW_MAX_AGE_MS } from "@/lib/ratelimit";
 
@@ -151,8 +151,8 @@ export default function TermsPage() {
         </p>
         <p>
           The score is produced by AI models. A person reviews a score on request. Email{" "}
-          <a className="text-[var(--blueprint)] underline" href={`mailto:${OPERATOR_EMAIL}`}>
-            {OPERATOR_EMAIL}
+          <a className="text-[var(--blueprint)] underline" href={`mailto:${SUPPORT_EMAIL}`}>
+            {SUPPORT_EMAIL}
           </a>
           . That review is the one in Article 22 GDPR.
         </p>
@@ -241,8 +241,8 @@ export default function TermsPage() {
       <LegalSection title="Contact">
         <p>
           {OPERATOR_NAME} ·{" "}
-          <a className="text-[var(--blueprint)] underline" href={`mailto:${OPERATOR_EMAIL}`}>
-            {OPERATOR_EMAIL}
+          <a className="text-[var(--blueprint)] underline" href={`mailto:${SUPPORT_EMAIL}`}>
+            {SUPPORT_EMAIL}
           </a>
         </p>
       </LegalSection>
