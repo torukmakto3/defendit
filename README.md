@@ -106,7 +106,7 @@ Locally, the sign-in card shows an on-screen magic link (no email provider requi
 
 Admin access follows that verified email, compared case-insensitively. That address has to be added and verified on the Google account (Google Account → Personal info → Email). Signing in with a different Gmail does not open `/admin`. The sign-in screen asks Google to show the account picker so the right account can be chosen.
 
-The Google button is hidden when `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` is missing. The email form is shown only when Resend is configured (`RESEND_API_KEY` and `EMAIL_FROM`) or an on-screen dev link is allowed. Otherwise the card says sign-in is not available, instead of failing with a 503.
+The Google button is hidden when `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` is missing. The email field, the send-link button, and the “or” divider are shown only when Resend is configured (`RESEND_API_KEY` and `EMAIL_FROM`) or an on-screen dev link is allowed. When only Google is configured, the card shows that button and does not mention email links. When neither is configured, the card says sign-in is not available. `POST /api/auth/request` still returns 503 when a link cannot be sent.
 
 On-screen links are a local and preview convenience. `VERCEL_ENV=production` never returns one, even if `AUTH_DEV_LINKS=1`. Preview can opt in with `AUTH_DEV_LINKS=1` and `AUTH_DEV_LINK_ALLOW`. Admin addresses never get an on-screen link. Magic-link email stays in place for when Resend has a sending domain.
 
