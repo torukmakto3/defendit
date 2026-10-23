@@ -103,7 +103,7 @@ A live key while billing is off does not block the beta. With billing on, checko
 
 ```bash
 stripe listen --forward-to localhost:3000/api/billing/webhook \
-  --events checkout.session.completed,checkout.session.async_payment_succeeded,checkout.session.async_payment_failed,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted,charge.refunded,charge.dispute.created,invoice.created,invoice.finalized,credit_note.created,cash_balance.funds_available,customer_cash_balance_transaction.created,payment_method.attached,payment_method.detached
+  --events checkout.session.completed,checkout.session.async_payment_succeeded,checkout.session.async_payment_failed,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted,charge.refunded,charge.dispute.created,charge.succeeded,invoice.created,invoice.finalized,credit_note.created,cash_balance.funds_available,customer_cash_balance_transaction.created,payment_method.attached,payment_method.detached
 ```
 
 Put the printed `whsec_…` in `STRIPE_WEBHOOK_SECRET`. Set `BILLING_ENABLED=true` and the sandbox restricted key. The dev server must restart so it reads the new environment. A live key does not stop that process; the checkout and portal routes refuse it.

@@ -3,7 +3,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import PrivacyPage from "../src/app/privacy/page";
-import { OPERATOR_NAME } from "../src/lib/operator";
+import { OPERATOR_NAME, SUPPORT_EMAIL } from "../src/lib/operator";
+
+const retiredContact = ["tramuntana", "btc@gmail.com"].join("");
 import { PRIVACY_UPDATED } from "../src/lib/privacy";
 import { SiteFooter } from "../src/components/site-footer";
 
@@ -114,7 +116,9 @@ describe("privacy page", () => {
     expect(html).toContain("geral@cnpd.pt");
     expect(html).toContain(OPERATOR_NAME);
     expect(html).not.toContain("Luis");
-    expect(html).toContain("mailto:tramuntanabtc@gmail.com");
+    expect(SUPPORT_EMAIL).toBe("support@defendit.me");
+    expect(html).toContain(`mailto:${SUPPORT_EMAIL}`);
+    expect(html).not.toContain(retiredContact);
     expect(html).toContain("There is no delete button");
     expect(html).not.toContain("TODO(legal review)");
     expect(html).not.toContain("Draft, last updated");
@@ -142,10 +146,12 @@ describe("privacy page", () => {
     expect(html).toContain("do not store the card number");
   });
 
-  it("keeps the draft marker and the legal-review note in the source only", () => {
+  it("keeps the draft marker in the source and the final support address", () => {
     const source = readFileSync("src/app/privacy/page.tsx", "utf8");
     expect(source.startsWith("// Draft, last updated 2026-10-22\n")).toBe(true);
-    expect(source).toContain("// TODO(legal review): placeholder contact");
+    expect(source).not.toContain("TODO(legal review)");
+    expect(source).not.toContain(retiredContact);
+    expect(source).toContain("SUPPORT_EMAIL");
   });
 });
 
