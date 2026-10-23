@@ -1,12 +1,22 @@
 import { randomBytes } from "crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  ALREADY_FOUNDING_MESSAGE,
+  FOUNDING_AFTER_CANCEL_MESSAGE,
+  LIFETIME_BLOCKS_SUBSCRIPTION_MESSAGE,
+  SECOND_SUBSCRIPTION_MESSAGE,
+} from "../src/lib/checkout-gate";
 import { getBalance, renewPlan } from "../src/lib/credits";
 import { getDb } from "../src/lib/db";
-import { applyBillingEvent } from "../src/lib/payments";
+import { applyBillingEvent, createCheckout } from "../src/lib/payments";
+import { skuPriceCents } from "../src/lib/plans";
+import { rateLimit } from "../src/lib/ratelimit";
+import { setStripeCheckoutApiForTests } from "../src/lib/stripe-checkout";
 import {
   setCardFingerprintLoaderForTests,
   setInvoicePaymentLoaderForTests,
 } from "../src/lib/stripe-client";
+import { setStripePriceClientForTests, skuForLookupKey } from "../src/lib/stripe-prices";
 
 /**
  * These paths return 500 on Postgres and succeed on SQLite. `npm test` does
@@ -464,5 +474,172 @@ describe("postgres subscription scope", () => {
       [userId],
     );
     expect(grant?.idempotency_key).toMatch(/^renew:stripe:/);
+  });
+});
+
+describe("postgres billing guards", () => {
+  async function notice(userId: string): Promise<string | null> {
+    const row = await (await getDb()).get<{ payment_notice: string | null }>(
+      `SELECT payment_notice FROM billing_profiles WHERE user_id = ?`,
+      [userId],
+    );
+    return row?.payment_notice ?? null;
+  }
+
+  it("sets the payment-failed notice only for the subscription stored on the plan", async () => {
+    const userId = await createUser();
+    const subscriptionId = nonce("sub");
+    await grantMonthly(userId, subscriptionId, { chargeId: nonce("ch"), paymentIntentId: nonce("pi") });
+
+    await applyBillingEvent({
+      id: nonce("evt"),
+      type: "invoice.payment_failed",
+      data: {
+        object: {
+          id: nonce("in"),
+          parent: {
+            subscription_details: {
+              subscription: nonce("sub_other"),
+              metadata: { user_id: userId },
+            },
+          },
+        },
+      },
+    });
+    expect(await notice(userId)).toBeNull();
+    expect((await storedPlan(userId)).status).toBe("active");
+
+    await applyBillingEvent({
+      id: nonce("evt"),
+      type: "invoice.payment_failed",
+      data: {
+        object: {
+          id: nonce("in"),
+          parent: {
+            subscription_details: {
+              subscription: subscriptionId,
+              metadata: { user_id: userId, sku: "subscription_month" },
+            },
+          },
+        },
+      },
+    });
+    expect((await storedPlan(userId)).status).toBe("past_due");
+    expect(await notice(userId)).toMatch(/Payment failed/);
+
+    await applyBillingEvent({
+      id: nonce("evt"),
+      type: "invoice.payment_failed",
+      data: {
+        object: {
+          id: nonce("in"),
+          parent: {
+            subscription_details: {
+              subscription: subscriptionId,
+              metadata: { user_id: userId },
+            },
+          },
+        },
+      },
+    });
+    expect((await storedPlan(userId)).status).toBe("past_due");
+    expect(await notice(userId)).toMatch(/billing portal/);
+    expect(await getBalance(userId)).toMatchObject({ defense: 10, challenge: 5, learnSlots: 10 });
+  });
+
+  it("refuses a second subscription and founding checkout on postgres", async () => {
+    process.env.BILLING_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_dummy";
+    const seen: string[] = [];
+    setStripeCheckoutApiForTests({
+      async createSession(input) {
+        seen.push(input.sku);
+        return { id: nonce("cs"), url: "https://checkout.stripe.com/c/pay/cs_pg" };
+      },
+    });
+    setStripePriceClientForTests({
+      async list(lookupKeys) {
+        return lookupKeys.map((key) => {
+          const sku = skuForLookupKey(key);
+          return {
+            id: `price_${key}`,
+            lookup_key: key,
+            currency: "eur",
+            unit_amount: sku ? skuPriceCents(sku) : 250,
+            product: { id: `prod_${key}`, name: key },
+          };
+        });
+      },
+    });
+    try {
+      const userId = await createUser();
+      const subscriptionId = nonce("sub");
+      await grantMonthly(userId, subscriptionId, { chargeId: null, paymentIntentId: null });
+      await expect(createCheckout({ userId, sku: "subscription_year" })).rejects.toMatchObject({
+        status: 409,
+        message: SECOND_SUBSCRIPTION_MESSAGE,
+      });
+      await expect(createCheckout({ userId, sku: "team_month" })).rejects.toMatchObject({ status: 409 });
+      await expect(createCheckout({ userId, sku: "founding_lifetime" })).rejects.toMatchObject({
+        status: 409,
+        message: FOUNDING_AFTER_CANCEL_MESSAGE,
+      });
+      const spots = await (await getDb()).get<{ n: number | string }>(
+        `SELECT COUNT(*) AS n FROM founding_spots WHERE user_id = ?`,
+        [userId],
+      );
+      expect(Number(spots?.n ?? 0)).toBe(0);
+      await (await getDb()).run(`UPDATE user_plans SET status = 'trialing' WHERE user_id = ?`, [userId]);
+      await expect(createCheckout({ userId, sku: "subscription_month" })).rejects.toMatchObject({ status: 409 });
+      const defense = await createCheckout({ userId, sku: "defense" });
+      expect(defense.url).toContain("checkout.stripe.com");
+      expect(seen).toEqual(["defense"]);
+
+      const founder = await createUser();
+      await (await getDb()).run(
+        `INSERT INTO user_plans
+          (user_id, plan_id, interval, status, period_id, current_period_end, stripe_subscription_id, cancel_at_period_end, updated_at)
+         VALUES (?, 'subscription', 'lifetime', 'active', NULL, NULL, ?, 0, ?)`,
+        [founder, `founding_${founder}`, new Date().toISOString()],
+      );
+      await expect(createCheckout({ userId: founder, sku: "subscription_month" })).rejects.toMatchObject({
+        status: 409,
+        message: LIFETIME_BLOCKS_SUBSCRIPTION_MESSAGE,
+      });
+      await expect(createCheckout({ userId: founder, sku: "subscription_year" })).rejects.toMatchObject({
+        status: 409,
+      });
+      await expect(createCheckout({ userId: founder, sku: "team_month" })).rejects.toMatchObject({ status: 409 });
+      await expect(createCheckout({ userId: founder, sku: "founding_lifetime" })).rejects.toMatchObject({
+        status: 409,
+        message: ALREADY_FOUNDING_MESSAGE,
+      });
+      expect(seen).toEqual(["defense"]);
+    } finally {
+      setStripeCheckoutApiForTests(null);
+      setStripePriceClientForTests(null);
+      delete process.env.BILLING_ENABLED;
+      delete process.env.STRIPE_SECRET_KEY;
+    }
+  });
+
+  it("does not count a rejected checkout retry or move its window", async () => {
+    const userId = await createUser();
+    const key = `checkout:${userId}`;
+    expect((await rateLimit(key, 2, 3600)).ok).toBe(true);
+    expect((await rateLimit(key, 2, 3600)).ok).toBe(true);
+    const before = await (await getDb()).get<{ count: number | string; window_start: string }>(
+      `SELECT count, window_start FROM rate_limits WHERE bucket_key = ?`,
+      [key],
+    );
+    expect(Number(before?.count)).toBe(2);
+    expect((await rateLimit(key, 2, 3600)).ok).toBe(false);
+    expect((await rateLimit(key, 2, 3600)).ok).toBe(false);
+    const after = await (await getDb()).get<{ count: number | string; window_start: string }>(
+      `SELECT count, window_start FROM rate_limits WHERE bucket_key = ?`,
+      [key],
+    );
+    expect(Number(after?.count)).toBe(2);
+    expect(after?.window_start).toBe(before?.window_start);
   });
 });

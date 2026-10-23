@@ -127,7 +127,7 @@ export default function CreatorEntryPage() {
               </Link>
             )}
           </div>
-          {!me && <SignInCard title="Sign in and defend your own file (3 free)" />}
+          {!me && <SignInCard title="Sign in and defend your own file (8 free)" />}
         </div>
       )}
 

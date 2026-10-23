@@ -20,7 +20,7 @@ export const DEMO_COPY = {
   noLearn: "This sample is only a short defense. Sign in to use Learn, challenges, or your own file.",
   noUpload: "This sample file can't be replaced. Sign in to defend your own file.",
   openFromHome: "Open the sample from the homepage. This demo is not an account.",
-  cta: "Sign in and defend your own file (3 free).",
+  cta: "Sign in and defend your own file (8 free).",
   unavailable: "The sample demo is unavailable right now. Sign in to defend your own file.",
 } as const;
 

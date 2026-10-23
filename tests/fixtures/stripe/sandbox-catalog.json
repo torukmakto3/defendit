@@ -9,7 +9,8 @@
     "dit_pro":              { "name": "DefendIT Pro",                      "tax_code": "txcd_10103000" },
     "dit_team":             { "name": "DefendIT Team",                     "tax_code": "txcd_10103001" },
     "dit_enterprise":       { "name": "DefendIT Enterprise",               "tax_code": "txcd_10103001" },
-    "dit_enterprise_extra": { "name": "DefendIT Enterprise extra defense", "tax_code": "txcd_10103001" }
+    "dit_enterprise_extra": { "name": "DefendIT Enterprise extra defense", "tax_code": "txcd_10103001" },
+    "dit_founding":         { "name": "DefendIT Founding member", "description": "Founding member, €149 once, lifetime Pro, 100 spots. Each month refills to 10 defenses, 5 challenges, and 10 Learn projects. Unused defenses and challenges do not roll over.", "tax_code": "txcd_10103000" }
   },
   "prices": {
     "dit_defense_payg":          { "id": "price_1UTNtuBIumCL91iAj0fkLVCn", "product": "dit_defense",          "eur_cents": 400,   "type": "one_time",       "tax_behavior": "inclusive", "app_sku": "defense",            "grants": { "defense": 1 } },
@@ -20,7 +21,8 @@
     "dit_pro_yearly":            { "id": "price_1UTNu7BIumCL91iAVe8etueb", "product": "dit_pro",              "eur_cents": 9900,  "type": "recurring/year",  "tax_behavior": "inclusive", "app_sku": "subscription_year",  "grants_per_month": { "defense": 10, "challenge": 5, "learn_slots": 10 }, "note": "metadata grant_interval=month (assumed monthly refill; confirm with Luis)" },
     "dit_team_monthly":          { "id": "price_1UTNu9BIumCL91iAo2hSClrc", "product": "dit_team",             "eur_cents": 14900, "type": "recurring/month", "tax_behavior": "exclusive", "app_sku": "team_month",         "grants_per_month": { "defense": 50 } },
     "dit_enterprise_base":       { "id": "price_1UTNuCBIumCL91iAvLLueg4H", "product": "dit_enterprise",       "eur_cents": 49000, "type": "recurring/month", "tax_behavior": "exclusive", "app_sku": "enterprise_month",   "grants_per_month": { "defense": 200 } },
-    "dit_enterprise_extra_unit": { "id": "price_1UTNuEBIumCL91iAoo5gEENr", "product": "dit_enterprise_extra", "eur_cents": 250,   "type": "one_time",       "tax_behavior": "exclusive", "app_sku": "enterprise_overage", "note": "Fallback for overage as invoice items. Use until the meter exists." }
+    "dit_enterprise_extra_unit": { "id": "price_1UTNuEBIumCL91iAoo5gEENr", "product": "dit_enterprise_extra", "eur_cents": 250,   "type": "one_time",       "tax_behavior": "exclusive", "app_sku": "enterprise_overage", "note": "Fallback for overage as invoice items. Use until the meter exists." },
+    "founding_lifetime":         { "id": "not_created", "product": "dit_founding", "eur_cents": 14900, "type": "one_time", "tax_behavior": "inclusive", "tax_code": "txcd_10103000", "lookup_key": "founding_lifetime", "app_sku": "founding_lifetime", "note": "Create in the sandbox before billing is turned on. Production resolves the lookup key and does not hard-code a price id." }
   },
   "not_created": {
     "billing_meter_defense_overage": "The Stripe connector exposes no /v1/billing/meters endpoints. Create it in Dashboard > Billing > Meters (event_name defense_overage, aggregation sum, customer mapping by stripe_customer_id) or with the CTO's sandbox restricted key.",

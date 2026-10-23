@@ -13,10 +13,10 @@ describe("privacy page", () => {
   const html = renderToStaticMarkup(createElement(PrivacyPage));
 
   it("states when the page was last updated", () => {
-    expect(PRIVACY_UPDATED).toBe("22 October 2026");
+    expect(PRIVACY_UPDATED).toBe("23 October 2026");
     expect(html).toContain("Last updated");
-    expect(html).toContain("22 October 2026");
-    expect(html).toContain("2026-10-22");
+    expect(html).toContain("23 October 2026");
+    expect(html).toContain("2026-10-23");
   });
 
   it("describes storage, retention, the receipt, and deletion from the code", () => {
@@ -148,7 +148,7 @@ describe("privacy page", () => {
 
   it("keeps the draft marker in the source and the final support address", () => {
     const source = readFileSync("src/app/privacy/page.tsx", "utf8");
-    expect(source.startsWith("// Draft, last updated 2026-10-22\n")).toBe(true);
+    expect(source.startsWith("// Draft, last updated 2026-10-23\n")).toBe(true);
     expect(source).not.toContain("TODO(legal review)");
     expect(source).not.toContain(retiredContact);
     expect(source).toContain("SUPPORT_EMAIL");

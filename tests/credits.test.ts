@@ -176,18 +176,18 @@ describe("beta grant", () => {
     const first = await ensureBetaGrant(user.id);
     expect(first.granted).toBe(true);
     const balance = await getBalance(user.id);
-    expect(balance.defense).toBe(3);
-    expect(balance.challenge).toBe(2);
-    expect(balance.learnSlots).toBe(3);
+    expect(balance.defense).toBe(8);
+    expect(balance.challenge).toBe(5);
+    expect(balance.learnSlots).toBe(5);
 
     expect(await ensureBetaGrant(user.id)).toEqual({ granted: false });
     expect(await grantBetaIfFirstGoogleSignIn(user.id)).toEqual({ granted: false });
-    expect((await getBalance(user.id)).defense).toBe(3);
+    expect((await getBalance(user.id)).defense).toBe(8);
     const grants = await db.all(`SELECT user_id FROM beta_grants WHERE user_id = ?`, [user.id]);
     expect(grants).toHaveLength(1);
   });
 
-  it("grants 3 defenses, 2 challenges, and 3 Learn slots once per Google account", async () => {
+  it("grants 8 defenses, 5 challenges, and 5 Learn slots once per Google account", async () => {
     const exchange = async () => ({
       email: "First.Google@fund.example",
       email_verified: true as const,
@@ -201,11 +201,11 @@ describe("beta grant", () => {
       exchange,
     });
     const balance = await getBalance(first.user.id);
-    expect(balance.defense).toBe(3);
-    expect(balance.challenge).toBe(2);
-    expect(balance.learnSlots).toBe(3);
-    expect(balance.defenseOnly).toBe(3);
-    expect(balance.challengeOnly).toBe(2);
+    expect(balance.defense).toBe(8);
+    expect(balance.challenge).toBe(5);
+    expect(balance.learnSlots).toBe(5);
+    expect(balance.defenseOnly).toBe(8);
+    expect(balance.challengeOnly).toBe(5);
 
     const again = await resolveGoogleCallback({
       stored: txn({ state: "second-state-0123456789" }),
@@ -217,9 +217,9 @@ describe("beta grant", () => {
     expect(again.user.id).toBe(first.user.id);
     expect(await grantBetaIfFirstGoogleSignIn(first.user.id)).toEqual({ granted: false });
     const after = await getBalance(first.user.id);
-    expect(after.defense).toBe(3);
-    expect(after.challenge).toBe(2);
-    expect(after.learnSlots).toBe(3);
+    expect(after.defense).toBe(8);
+    expect(after.challenge).toBe(5);
+    expect(after.learnSlots).toBe(5);
 
     const db = await getDb();
     const grants = await db.all(`SELECT user_id FROM beta_grants WHERE user_id = ?`, [first.user.id]);
@@ -242,6 +242,43 @@ describe("beta grant", () => {
     expect(wallet.prices.defense).toBe("€4");
     expect(wallet.prices.challenge).toBe("€3");
     expect(wallet.history.some((row) => row.label.includes("Beta grant"))).toBe(true);
+  });
+
+  it("tops an existing 3/2/3 grant up to 8/5/5 once", async () => {
+    const { user } = await signIn("topup-old@fund.example");
+    const db = await getDb();
+    await db.run(`INSERT INTO beta_grants (user_id, granted_at) VALUES (?, ?)`, [
+      user.id,
+      new Date().toISOString(),
+    ]);
+    await grantCredits({
+      userId: user.id,
+      kind: "defense",
+      amount: 3,
+      reason: "grant",
+      source: "beta",
+      idempotencyKey: `beta:${user.id}:defense`,
+    });
+    await grantCredits({
+      userId: user.id,
+      kind: "challenge",
+      amount: 2,
+      reason: "grant",
+      source: "beta",
+      idempotencyKey: `beta:${user.id}:challenge`,
+    });
+    await grantCredits({
+      userId: user.id,
+      kind: "learn_slot",
+      amount: 3,
+      reason: "grant",
+      source: "beta",
+      idempotencyKey: `beta:${user.id}:learn_slot`,
+    });
+    expect(await ensureBetaGrant(user.id)).toEqual({ granted: false });
+    expect(await getBalance(user.id)).toMatchObject({ defense: 8, challenge: 5, learnSlots: 5 });
+    expect(await ensureBetaGrant(user.id)).toEqual({ granted: false });
+    expect(await getBalance(user.id)).toMatchObject({ defense: 8, challenge: 5, learnSlots: 5 });
   });
 });
 
@@ -886,9 +923,9 @@ describe("defense gate", () => {
       );
       expect(res.status).toBe(200);
       const balance = await getBalance(user.id);
-      expect(balance.defense).toBe(2);
-      expect(balance.challenge).toBe(2);
-      expect(balance.learnSlots).toBe(3);
+      expect(balance.defense).toBe(7);
+      expect(balance.challenge).toBe(5);
+      expect(balance.learnSlots).toBe(5);
       expect(balance.held.defense).toBe(1);
       const grants = await (await getDb()).all(`SELECT user_id FROM beta_grants WHERE user_id = ?`, [user.id]);
       expect(grants).toHaveLength(1);
@@ -904,8 +941,8 @@ describe("defense gate", () => {
     delete process.env.BILLING_ENABLED;
     const { user, cookie } = await signIn("allowance@fund.example");
     await ensureBetaGrant(user.id);
-    expect((await getBalance(user.id)).defense).toBe(3);
-    for (let i = 1; i <= 3; i++) {
+    expect((await getBalance(user.id)).defense).toBe(8);
+    for (let i = 1; i <= 8; i++) {
       const held = await holdCredit({ userId: user.id, kind: "defense", idempotencyKey: `allowance-hold-${i}` });
       await consumeCredit({
         userId: user.id,
@@ -922,7 +959,7 @@ describe("defense gate", () => {
       }),
     );
     expect(fourth.status).toBe(402);
-    expect(await fourth.json()).toEqual({ error: "You've used your 3 free beta defenses" });
+    expect(await fourth.json()).toEqual({ error: "You've used your 8 free beta defenses" });
     expect((await getBalance(user.id)).defense).toBe(0);
     const extended = await (await getDb()).get(
       `SELECT id FROM credit_ledger WHERE user_id = ? AND ref_type = 'beta_extend'`,
@@ -965,7 +1002,7 @@ describe("defense gate", () => {
     await grantCredits({
       userId: blocked.user.id,
       kind: "defense",
-      amount: -3,
+      amount: -8,
       reason: "admin_adjust",
       source: "beta",
       idempotencyKey: "drain-gated",
@@ -1001,7 +1038,7 @@ describe("defense gate", () => {
       }),
     );
     expect(failed.ok).toBe(false);
-    expect((await getBalance(payer.user.id)).defense).toBe(4);
+    expect((await getBalance(payer.user.id)).defense).toBe(9);
 
     const ingest = await creatorIngest({
       user: payer.user,
@@ -1018,7 +1055,7 @@ describe("defense gate", () => {
     });
     await attachDefenseCredit(payer.user.id, reserved!.idempotencyKey, session.sessionId);
     await abortDefenseCredit(payer.user.id, reserved!.idempotencyKey, session.sessionId);
-    expect((await getBalance(payer.user.id)).defense).toBe(4);
+    expect((await getBalance(payer.user.id)).defense).toBe(9);
     await expect(
       completeDefendSession({ sessionId: session.sessionId, user: payer.user }),
     ).rejects.toMatchObject({ status: 402 });
@@ -1040,7 +1077,7 @@ describe("defense gate", () => {
     expect(firstRes.status).toBe(200);
     const first = (await firstRes.json()) as { sessionId: string };
     expect((await getBalance(user.id)).held.defense).toBe(1);
-    expect((await getBalance(user.id)).defense).toBe(2);
+    expect((await getBalance(user.id)).defense).toBe(7);
     expect(await openDefenseHolds(user.id)).toBe(1);
 
     const secondRes = await start(true);
@@ -1048,7 +1085,7 @@ describe("defense gate", () => {
     const second = (await secondRes.json()) as { sessionId: string; plan: { probes: { id: string }[] } };
     expect(second.sessionId).not.toBe(first.sessionId);
     expect((await getBalance(user.id)).held.defense).toBe(1);
-    expect((await getBalance(user.id)).defense).toBe(2);
+    expect((await getBalance(user.id)).defense).toBe(7);
     expect(await openDefenseHolds(user.id)).toBe(1);
     const abandoned = await (await getDb()).get<{ status: string }>(`SELECT status FROM sessions WHERE id = ?`, [
       first.sessionId,
@@ -1058,13 +1095,13 @@ describe("defense gate", () => {
 
     await defendToReceipt(second, user);
     expect((await getBalance(user.id)).held.defense).toBe(0);
-    expect((await getBalance(user.id)).defense).toBe(2);
+    expect((await getBalance(user.id)).defense).toBe(7);
     expect(await openDefenseHolds(user.id)).toBe(0);
 
     const thirdRes = await start(true);
     expect(thirdRes.status).toBe(409);
     expect((await getBalance(user.id)).held.defense).toBe(0);
-    expect((await getBalance(user.id)).defense).toBe(2);
+    expect((await getBalance(user.id)).defense).toBe(7);
     expect(await openDefenseHolds(user.id)).toBe(0);
 
     const another = await creatorIngest({ user, fileName: "memo.md", buffer: memo, difficulty: "hard" });
@@ -1077,7 +1114,7 @@ describe("defense gate", () => {
     );
     expect(fourthRes.status).toBe(200);
     expect((await getBalance(user.id)).held.defense).toBe(1);
-    expect((await getBalance(user.id)).defense).toBe(1);
+    expect((await getBalance(user.id)).defense).toBe(6);
     expect(await openDefenseHolds(user.id)).toBe(1);
   });
 
@@ -1097,7 +1134,7 @@ describe("defense gate", () => {
       .split("\n")
       .map((line) => JSON.parse(line) as { type: string });
     expect(failLines.at(-1)?.type).toBe("error");
-    expect((await getBalance(user.id)).defense).toBe(3);
+    expect((await getBalance(user.id)).defense).toBe(8);
     expect((await getBalance(user.id)).held.defense).toBe(0);
     expect(await openDefenseHolds(user.id)).toBe(0);
     expect(await (await getDb()).get(`SELECT id FROM sessions WHERE user_id = ?`, [user.id])).toBeUndefined();
@@ -1124,13 +1161,13 @@ describe("defense gate", () => {
 
     const firstId = await readReady(await stream());
     expect((await getBalance(user.id)).held.defense).toBe(1);
-    expect((await getBalance(user.id)).defense).toBe(2);
+    expect((await getBalance(user.id)).defense).toBe(7);
     expect(await openDefenseHolds(user.id)).toBe(1);
 
     const secondId = await readReady(await stream());
     expect(secondId).not.toBe(firstId);
     expect((await getBalance(user.id)).held.defense).toBe(1);
-    expect((await getBalance(user.id)).defense).toBe(2);
+    expect((await getBalance(user.id)).defense).toBe(7);
     expect(await openDefenseHolds(user.id)).toBe(1);
     const abandoned = await (await getDb()).get<{ status: string }>(`SELECT status FROM sessions WHERE id = ?`, [
       firstId,
@@ -1158,7 +1195,7 @@ describe("defense gate", () => {
     expect(second.sessionId).not.toBe(first.sessionId);
     expect(await openDefenseHolds(user.id)).toBe(2);
     expect((await getBalance(user.id)).held.defense).toBe(2);
-    expect((await getBalance(user.id)).defense).toBe(1);
+    expect((await getBalance(user.id)).defense).toBe(6);
     const db = await getDb();
     const sessions = await db.all<{ id: string; status: string }>(
       `SELECT id, status FROM sessions WHERE user_id = ? AND mode = 'defend'`,
@@ -1254,7 +1291,7 @@ describe("defense gate", () => {
         .map((line) => JSON.parse(line) as { type: string; error?: string });
       expect(lines.at(-1)).toMatchObject({ type: "error", error: "attach failed" });
       expect(await openDefenseHolds(user.id)).toBe(0);
-      expect((await getBalance(user.id)).defense).toBe(3);
+      expect((await getBalance(user.id)).defense).toBe(8);
       expect((await getBalance(user.id)).held.defense).toBe(0);
     } finally {
       spy.mockRestore();
@@ -1285,7 +1322,7 @@ describe("defense gate", () => {
       entryIdempotencyKey: hold!.idempotency_key,
       idempotencyKey: `refund:${hold!.idempotency_key}`,
     });
-    expect((await getBalance(user.id)).defense).toBe(3);
+    expect((await getBalance(user.id)).defense).toBe(8);
     expect((await getBalance(user.id)).held.defense).toBe(0);
 
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1295,7 +1332,7 @@ describe("defense gate", () => {
       expect(spy.mock.calls.some((call) => String(call[0]).includes("no charge"))).toBe(true);
       const again = await completeDefendSession({ sessionId: body.sessionId, user });
       expect(again).toMatchObject({ idempotent: true });
-      expect((await getBalance(user.id)).defense).toBe(3);
+      expect((await getBalance(user.id)).defense).toBe(8);
       expect((await getBalance(user.id)).held.defense).toBe(0);
     } finally {
       spy.mockRestore();
@@ -1321,12 +1358,12 @@ describe("defense gate", () => {
       }),
     );
     expect(res.status).toBe(200);
-    expect((await getBalance(user.id)).defense).toBe(3);
+    expect((await getBalance(user.id)).defense).toBe(8);
     expect((await getBalance(user.id)).held.defense).toBe(1);
     const body = (await res.json()) as { sessionId: string; plan: { probes: { id: string }[] } };
     await defendToReceipt(body, user);
     const balance = await getBalance(user.id);
-    expect(balance.defense).toBe(3);
+    expect(balance.defense).toBe(8);
     expect(balance.held.defense).toBe(0);
   });
 });

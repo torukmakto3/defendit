@@ -41,8 +41,9 @@ export default async function NewChallengePage({
           </p>
           <p>
             Nothing happens unless they open it and opt in. They pick the file, can practice privately in Learn,
-            then take a short text interview. They choose whether the result is public, public without the score,
-            or private. If they keep it private, nothing is posted.
+            then take a short interview. Standard can be typed or spoken. Hard and Expert are a voice interview
+            when voice is configured, and text is the fallback. They choose whether the result is public, public
+            without the score, or private. If they keep it private, nothing is posted.
           </p>
         </div>
         <p className="text-sm text-[var(--ink-2)]">

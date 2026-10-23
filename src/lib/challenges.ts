@@ -1220,7 +1220,8 @@ export async function challengeCardCopy(slug: string): Promise<{
   return {
     kicker: view.sponsorLabel,
     title: view.subject.slice(0, 90),
-    subtitle: "Optional. Your own file, a short text interview. You choose whether the result is public.",
+    subtitle:
+      "Optional. Your own file and a short interview. Standard can be typed or spoken. You choose what is public.",
     foot:
       view.sponsorLabel === "Sponsored by DefendIT"
         ? "Free in beta, sponsored by DefendIT"

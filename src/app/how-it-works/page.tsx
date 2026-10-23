@@ -59,14 +59,15 @@ export default function HowItWorksPage() {
       <LegalSection title="The interview">
         <p>
           The questions are about claims in your file. Which claims are asked, and where an error
-          is planted, is chosen in code from a seed. The model writes the wording. It does not
-          decide the score, and it does not choose to skip a claim on its own.
+          is planted on Hard or Expert, is chosen in code from a seed. The model writes the wording.
+          It does not decide the score, and it does not choose to skip a claim on its own.
         </p>
         <p>
-          Standard asks why the key claims hold. Hard adds what-ifs and a planted error. Expert
-          pushes on edge cases. Standard can be typed or spoken. Hard and Expert are spoken, unless
-          you choose the text option for accessibility. A spoken interview starts when voice is
-          configured. Learn, if you use it first, stays private. Only Defend produces a receipt.
+          Standard asks why the key claims hold and includes a what-if. It does not plant an error.
+          Hard and Expert plant an error. Expert also pushes on edge cases. Standard can be typed or
+          spoken. Hard and Expert are spoken, unless you choose the text option for accessibility. A
+          spoken interview starts when voice is configured. Learn, if you use it first, stays private.
+          Only Defend produces a receipt.
         </p>
       </LegalSection>
 

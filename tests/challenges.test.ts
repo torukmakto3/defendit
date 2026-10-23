@@ -365,7 +365,9 @@ describe("challenge links", () => {
       difficulty: "standard",
     });
     expect(held.slug).toMatch(/^[a-z0-9]{8}$/);
-    await createChallenge({ user: broke, subject: "Second beta credit", difficulty: "standard" });
+    for (let i = 1; i < BETA_GRANT.challenge; i++) {
+      await createChallenge({ user: broke, subject: `Beta credit ${i}`, difficulty: "standard" });
+    }
     await expect(
       createChallenge({ user: broke, subject: "No challenge credit left", difficulty: "standard" }),
     ).rejects.toThrow(/challenge credit/i);

@@ -1,4 +1,4 @@
-// Draft, last updated 2026-10-22
+// Draft, last updated 2026-10-23
 import type { Metadata } from "next";
 import { demoRetentionHours } from "@/lib/demo-policy";
 import { OPERATOR_NAME, SUPPORT_EMAIL } from "@/lib/operator";
@@ -24,7 +24,7 @@ export default function PrivacyPage() {
           for that data is {contactName}.
         </p>
         <p className="text-sm text-[var(--ink-2)]">
-          Last updated <time dateTime="2026-10-22">{PRIVACY_UPDATED}</time>.
+          Last updated <time dateTime="2026-10-23">{PRIVACY_UPDATED}</time>.
         </p>
       </header>
 
@@ -78,6 +78,17 @@ export default function PrivacyPage() {
           10-minute HTTP-only cookie (<span className="mono">di_google_oauth</span>) for the handshake.
           We keep the verified email Google returns and, on the first sign-in, the name Google sends.
           We do not store a Google account id.
+        </p>
+        <p>
+          After a completed defense, the signed-in defender can save a rating from 1 to 5 and an
+          optional comment of up to 1000 characters. That row is tied to the account and the defense.
+          One rating is kept per defense. The comment is not shown on the public receipt. Counts and
+          the latest comments are available only on the token-protected stats report.
+        </p>
+        <p>
+          The founding waitlist stores an email address and the time it was added. No account is
+          required. A repeat of the same address does not add a second row. The address is not
+          published. The protected stats report includes the count only.
         </p>
         <p>
           The Day or Night choice is saved in this browser&apos;s local storage (<span className="mono">defend-it:theme</span>).

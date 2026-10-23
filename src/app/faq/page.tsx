@@ -8,6 +8,7 @@ import {
   CHALLENGE_UNCLAIMED_DAYS_DEFAULT,
 } from "@/lib/challenge-public";
 import { HELLO_EMAIL, OPERATOR_NAME, SUPPORT_EMAIL } from "@/lib/operator";
+import { BETA_GRANT, betaDefenseCredits } from "@/lib/plans";
 import { documentTtlHours, retentionDays } from "@/lib/retention";
 
 export const metadata: Metadata = {
@@ -18,6 +19,7 @@ export const metadata: Metadata = {
 
 export default function FaqPage() {
   const textHours = documentTtlHours();
+  const defenses = betaDefenseCredits();
   const keptDays = retentionDays();
 
   return (
@@ -41,8 +43,10 @@ export default function FaqPage() {
       <LegalSection title="What does it cost?">
         <PriceList />
         <p>
-          During the beta, a new account gets a one-time free grant before any of these prices
-          apply. Card checkout stays off until billing is turned on.
+          During the beta, the first time a signed-in account needs credits it gets {defenses}{" "}
+          {defenses === 1 ? "defense" : "defenses"}, {BETA_GRANT.challenge} challenges, and{" "}
+          {BETA_GRANT.learnSlots} Learn slots, once. An account that already received a smaller grant
+          is topped up to those amounts once. Card checkout stays off until billing is turned on.
         </p>
       </LegalSection>
 

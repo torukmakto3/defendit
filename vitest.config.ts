@@ -11,6 +11,7 @@ export default defineConfig({
       "e2e/**",
       // Real Postgres. `npm run test:postgres` uses vitest.postgres.config.ts.
       "tests/billing-postgres.test.ts",
+      "tests/founding-postgres.test.ts",
     ],
   },
   resolve: {

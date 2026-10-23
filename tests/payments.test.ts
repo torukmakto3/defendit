@@ -18,6 +18,11 @@ import {
   linkChallengedDefense,
 } from "../src/lib/credits";
 import { getDb } from "../src/lib/db";
+import {
+  ALREADY_FOUNDING_MESSAGE,
+  FOUNDING_AFTER_CANCEL_MESSAGE,
+  SECOND_SUBSCRIPTION_MESSAGE,
+} from "../src/lib/checkout-gate";
 import { billingEnabled } from "../src/lib/plans";
 import { POST as portal } from "../src/app/api/billing/portal/route";
 import { checkoutSessionParams, setStripeCheckoutApiForTests, type StripeCheckoutRequest } from "../src/lib/stripe-checkout";
@@ -261,10 +266,10 @@ describe("payments flags", () => {
     expect(meterEventName()).toBe("defense_overage");
     const { user } = await signIn("beta-untouched@pay.example");
     await ensureBetaGrant(user.id);
-    expect(await getBalance(user.id)).toMatchObject({ defense: 3, challenge: 2, learnSlots: 3 });
+    expect(await getBalance(user.id)).toMatchObject({ defense: 8, challenge: 5, learnSlots: 5 });
     process.env.BILLING_ENABLED = "true";
     expect(billingEnabled()).toBe(true);
-    expect((await getBalance(user.id)).defense).toBe(3);
+    expect((await getBalance(user.id)).defense).toBe(8);
   });
 
   it("keeps the server up when billing is on with a live key", () => {
@@ -497,21 +502,21 @@ describe("webhook", () => {
         paymentIntent: "pi_refund_defense",
       }),
     );
-    expect((await getBalance(untouched.user.id)).defense).toBe(4);
+    expect((await getBalance(untouched.user.id)).defense).toBe(9);
     const full = await postWebhook({
       id: "evt_refund_defense_back",
       type: "charge.refunded",
       data: { object: { id: "ch_refund_defense", payment_intent: "pi_refund_defense", amount_refunded: 400 } },
     });
     expect(full.status).toBe(200);
-    expect(await getBalance(untouched.user.id)).toMatchObject({ defense: 3, defenseOnly: 3, challenge: 2 });
+    expect(await getBalance(untouched.user.id)).toMatchObject({ defense: 8, defenseOnly: 8, challenge: 5 });
     const replay = await postWebhook({
       id: "evt_refund_defense_back",
       type: "charge.refunded",
       data: { object: { id: "ch_refund_defense", payment_intent: "pi_refund_defense", amount_refunded: 400 } },
     });
     expect(await replay.json()).toMatchObject({ duplicate: true });
-    expect((await getBalance(untouched.user.id)).defense).toBe(3);
+    expect((await getBalance(untouched.user.id)).defense).toBe(8);
     const clean = await (await getDb()).get(`SELECT flag_reason FROM billing_profiles WHERE user_id = ?`, [
       untouched.user.id,
     ]);
@@ -1325,6 +1330,8 @@ function unitAmount(key: string): number {
       return 49000;
     case "dit_enterprise_extra_unit":
       return 250;
+    case "founding_lifetime":
+      return 14900;
     default:
       return 0;
   }
@@ -1485,6 +1492,7 @@ describe("checkout session", () => {
       "subscription_month",
       "subscription_year",
       "team_month",
+      "founding_lifetime",
     ]);
     expect(catalog?.find((product) => product.sku === "pack8")?.detail).toMatch(/defense or a challenge/);
     expect(catalog?.find((product) => product.sku === "subscription_year")?.detail).toMatch(
@@ -1559,7 +1567,7 @@ describe("checkout session", () => {
         return { id: "cs_limit", url: "https://checkout.stripe.com/c/pay/cs_limit" };
       },
     });
-    const { cookie } = await signIn("limit-checkout@pay.example");
+    const { user, cookie } = await signIn("limit-checkout@pay.example");
     const headers = { cookie, "content-type": "application/json" };
     const first = await checkout(
       new Request("http://localhost/api/billing/checkout", {
@@ -1585,8 +1593,104 @@ describe("checkout session", () => {
       new Request("http://localhost/api/billing/portal", { method: "POST", headers }),
     );
     expect(limited.status).toBe(429);
+    const again = await checkout(
+      new Request("http://localhost/api/billing/checkout", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ sku: "defense" }),
+      }),
+    );
+    expect(again.status).toBe(429);
+    const account = await (await getDb()).get<{ count: number | string; window_start: string }>(
+      `SELECT count, window_start FROM rate_limits WHERE bucket_key = ?`,
+      [`checkout:${user.id}`],
+    );
+    expect(Number(account?.count)).toBe(1);
     delete process.env.RATE_LIMIT_CHECKOUT_USER;
     delete process.env.RATE_LIMIT_PORTAL_USER;
+  });
+
+  it("blocks subscription and founding checkout while a paid plan is open", async () => {
+    delete process.env.RATE_LIMIT_CHECKOUT_USER;
+    process.env.BILLING_ENABLED = "true";
+    process.env.STRIPE_SECRET_KEY = "sk_test_dummy";
+    const seen: string[] = [];
+    setStripeCheckoutApiForTests({
+      async createSession(input) {
+        seen.push(input.sku);
+        return { id: "cs_block", url: "https://checkout.stripe.com/c/pay/cs_block" };
+      },
+    });
+    setStripePriceClientForTests(catalogClient().client);
+    const { user, cookie } = await signIn("second-plan@pay.example");
+    const opened = await postWebhook(
+      invoiceEvent({
+        id: "evt_second_plan",
+        invoiceId: "in_second_plan",
+        userId: user.id,
+        sku: "subscription_month",
+        amount: 1100,
+        reason: "subscription_create",
+        subscription: "sub_second_plan",
+      }),
+    );
+    expect(opened.status).toBe(200);
+    const headers = { cookie, "content-type": "application/json" };
+    const postSku = (sku: string) =>
+      checkout(
+        new Request("http://localhost/api/billing/checkout", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ sku }),
+        }),
+      );
+    expect(await (await postSku("subscription_year")).json()).toEqual({ error: SECOND_SUBSCRIPTION_MESSAGE });
+    expect((await postSku("team_month")).status).toBe(409);
+    const founding = await postSku("founding_lifetime");
+    expect(founding.status).toBe(409);
+    expect(await founding.json()).toEqual({ error: FOUNDING_AFTER_CANCEL_MESSAGE });
+    const spots = await (await getDb()).get<{ n: number | string }>(
+      `SELECT COUNT(*) AS n FROM founding_spots WHERE user_id = ?`,
+      [user.id],
+    );
+    expect(Number(spots?.n ?? 0)).toBe(0);
+    expect((await postSku("defense")).status).toBe(200);
+    await (await getDb()).run(`UPDATE user_plans SET status = 'past_due' WHERE user_id = ?`, [user.id]);
+    expect((await postSku("subscription_month")).status).toBe(409);
+    await (await getDb()).run(`UPDATE user_plans SET status = 'trialing' WHERE user_id = ?`, [user.id]);
+    expect((await postSku("subscription_year")).status).toBe(409);
+    await (await getDb()).run(
+      `UPDATE user_plans SET status = 'canceled', interval = NULL WHERE user_id = ?`,
+      [user.id],
+    );
+    expect((await postSku("subscription_month")).status).toBe(200);
+
+    const { user: founder, cookie: founderCookie } = await signIn("lifetime-block@pay.example");
+    await (await getDb()).run(
+      `INSERT INTO user_plans
+        (user_id, plan_id, interval, status, period_id, current_period_end, stripe_subscription_id, cancel_at_period_end, updated_at)
+       VALUES (?, 'subscription', 'lifetime', 'active', NULL, NULL, ?, 0, ?)`,
+      [founder.id, `founding_${founder.id}`, new Date().toISOString()],
+    );
+    const founderHeaders = { cookie: founderCookie, "content-type": "application/json" };
+    const pro = await checkout(
+      new Request("http://localhost/api/billing/checkout", {
+        method: "POST",
+        headers: founderHeaders,
+        body: JSON.stringify({ sku: "subscription_month" }),
+      }),
+    );
+    expect(pro.status).toBe(409);
+    expect((await pro.json()).error).toMatch(/billing portal/);
+    const owned = await checkout(
+      new Request("http://localhost/api/billing/checkout", {
+        method: "POST",
+        headers: founderHeaders,
+        body: JSON.stringify({ sku: "founding_lifetime" }),
+      }),
+    );
+    expect(await owned.json()).toEqual({ error: ALREADY_FOUNDING_MESSAGE });
+    expect(seen).toEqual(["defense", "subscription_month"]);
   });
 
   it("fails closed when a lookup key is missing and caches a complete catalog", async () => {
@@ -1833,6 +1937,11 @@ describe("webhook idempotency and subscription state", () => {
       [user.id],
     );
     expect(row?.stripe_subscription_id).toBe("sub_current_year");
+    const staleNotice = await (await getDb()).get<{ payment_notice: string | null }>(
+      `SELECT payment_notice FROM billing_profiles WHERE user_id = ?`,
+      [user.id],
+    );
+    expect(staleNotice?.payment_notice ?? null).toBeNull();
 
     const scheduled = await postWebhook({
       id: "evt_stale_current_update",

@@ -56,6 +56,7 @@ import { loadQuestionPrefetch, precomputeFirstQuestion, rememberFirstQuestion } 
 import { phraseQuestions } from "./questions";
 import { listStageTimings, recordStageTiming } from "./timings";
 import { buildSignedReceipt } from "./receipt";
+import { sweepExpiredFoundingHolds } from "./founding";
 import { grantDueSubscriptionRefills, refillUserIfDue } from "./subscription-refill";
 import type {
   Claim,
@@ -1964,6 +1965,11 @@ export async function purgeExpired() {
     await grantDueSubscriptionRefills();
   } catch (e) {
     console.error("[refill]", e instanceof Error ? e.message : e);
+  }
+  try {
+    await sweepExpiredFoundingHolds();
+  } catch (e) {
+    console.error("[founding]", e instanceof Error ? e.message : e);
   }
   const db = await getDb();
   await expireDueChallenges(db);

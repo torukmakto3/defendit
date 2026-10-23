@@ -23,6 +23,8 @@ export interface StripeCheckoutRequest {
   lookupKey: string;
   successUrl: string;
   cancelUrl: string;
+  /** Unix seconds. Set only for a founding hold, which Stripe must keep at least 30 minutes. */
+  expiresAt?: number;
 }
 
 export interface StripeCheckoutApi {
@@ -68,6 +70,7 @@ export function checkoutSessionParams(input: StripeCheckoutRequest): Stripe.Chec
     params.customer_email = input.email;
     if (input.mode === "payment") params.customer_creation = "always";
   }
+  if (input.expiresAt != null) params.expires_at = input.expiresAt;
   if (input.mode === "subscription") {
     params.subscription_data = {
       metadata,

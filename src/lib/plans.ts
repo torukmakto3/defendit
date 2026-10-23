@@ -20,7 +20,7 @@ export function billingEnabled(): boolean {
 
 export type PlanId = "beta" | "payg" | "subscription" | "team" | "enterprise";
 
-export type BillingInterval = "month" | "year";
+export type BillingInterval = "month" | "year" | "lifetime";
 
 /** USD ceiling for a tier. Enforcement belongs to the cost-cap work. */
 export const COST_CAP_USD: Record<CostCapTier, number> = {
@@ -30,12 +30,31 @@ export const COST_CAP_USD: Record<CostCapTier, number> = {
 
 /** Defaults for the one-time beta grant. Defense count is overridable. */
 export const BETA_GRANT = {
+  defense: 8,
+  challenge: 5,
+  learnSlots: 5,
+} as const;
+
+/**
+ * Published grant before the beta allowance was raised. Used only when an
+ * existing account has no original ledger row, so a missing row cannot be
+ * treated as zero and stacked with a full second grant.
+ */
+export const PREVIOUS_BETA_GRANT = {
   defense: 3,
   challenge: 2,
   learnSlots: 3,
 } as const;
 
-/** Free defenses granted once per account. `BETA_DEFENSE_CREDITS`, default 3. */
+/** Idempotency key for the one-time top-up from `PREVIOUS_BETA_GRANT` to `BETA_GRANT`. */
+export const BETA_ALLOWANCE_TOPUP_KEY = "beta-allowance-v2";
+
+/** Founding member, €149 once, lifetime Pro. The spot cap is enforced in the database. */
+export const FOUNDING_PRICE_CENTS = 14900;
+export const FOUNDING_CAP = 100;
+export const FOUNDING_LOOKUP_KEY = "founding_lifetime";
+
+/** Free defenses granted once per account. `BETA_DEFENSE_CREDITS`, default 8. */
 export function betaDefenseCredits(): number {
   const raw = process.env.BETA_DEFENSE_CREDITS;
   if (raw == null || raw.trim() === "") return BETA_GRANT.defense;
@@ -66,7 +85,8 @@ export type Sku =
   | "subscription_month"
   | "subscription_year"
   | "team_month"
-  | "enterprise_month";
+  | "enterprise_month"
+  | "founding_lifetime";
 
 export interface Plan {
   id: PlanId;
@@ -226,6 +246,8 @@ export function skuPriceCents(sku: Sku): number {
       return PLANS.team.priceCents.month ?? 0;
     case "enterprise_month":
       return PLANS.enterprise.priceCents.month ?? 0;
+    case "founding_lifetime":
+      return FOUNDING_PRICE_CENTS;
     default: {
       const unknown: never = sku;
       return unknown;
@@ -243,6 +265,7 @@ export function isSku(value: string): value is Sku {
     case "subscription_year":
     case "team_month":
     case "enterprise_month":
+    case "founding_lifetime":
       return true;
     default:
       return false;
@@ -261,6 +284,8 @@ export function periodsForInterval(interval: BillingInterval): number {
       return 1;
     case "year":
       return 12;
+    case "lifetime":
+      return 1;
     default: {
       const unknown: never = interval;
       return unknown;
@@ -282,6 +307,7 @@ export function planForSku(sku: Sku): { planId: PlanId; interval: BillingInterva
     case "challenge":
     case "pack3":
     case "pack8":
+    case "founding_lifetime":
       return null;
     default: {
       const unknown: never = sku;

@@ -88,9 +88,9 @@ export default function RequestPage() {
               Difficulty
             </label>
             <select id="difficulty" name="difficulty" className="field" defaultValue="hard">
-              <option value="standard">Standard — key claims and why they hold</option>
-              <option value="hard">Hard — what-ifs, stretched assumptions, planted error</option>
-              <option value="expert">Expert — adversarial cross-examination</option>
+              <option value="standard">Standard — why the key claims hold, including a what-if</option>
+              <option value="hard">Hard — a planted error, plus what-ifs</option>
+              <option value="expert">Expert — a planted error and edge cases</option>
             </select>
           </div>
           <div>
