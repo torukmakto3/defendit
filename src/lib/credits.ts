@@ -1218,18 +1218,28 @@ export async function renewPlan(input: {
       if (topUp > 0) await insertEntry(tx, renewalEntry(input, "learn_slot", topUp));
     }
     const now = new Date().toISOString();
+    // Branch in JS. `CASE WHEN ? IS NULL` has no type on Postgres
+    // (`could not determine data type of parameter`) and every monthly
+    // invoice.paid failed before the plan or the credits were written.
+    // The upsert below does not replace a different active subscription.
+    // The credits granted above still land.
+    const cancelAtPeriodEnd = activateStatus == null ? "user_plans.cancel_at_period_end" : "0";
     await tx.run(
-      `INSERT INTO user_plans (user_id, plan_id, interval, status, period_id, current_period_end, updated_at)
-       VALUES (?, ?, ?, COALESCE(?, 'active'), ?, ?, ?)
+      `INSERT INTO user_plans
+        (user_id, plan_id, interval, status, period_id, current_period_end, stripe_subscription_id, updated_at)
+       VALUES (?, ?, ?, COALESCE(?, 'active'), ?, ?, ?, ?)
        ON CONFLICT (user_id) DO UPDATE SET
          plan_id = excluded.plan_id,
          interval = excluded.interval,
          status = COALESCE(?, user_plans.status),
          period_id = excluded.period_id,
          current_period_end = excluded.current_period_end,
-         stripe_subscription_id = COALESCE(?, user_plans.stripe_subscription_id),
-         cancel_at_period_end = CASE WHEN ? IS NULL THEN user_plans.cancel_at_period_end ELSE 0 END,
-         updated_at = excluded.updated_at`,
+         stripe_subscription_id = COALESCE(excluded.stripe_subscription_id, user_plans.stripe_subscription_id),
+         cancel_at_period_end = ${cancelAtPeriodEnd},
+         updated_at = excluded.updated_at
+       WHERE user_plans.stripe_subscription_id IS NULL
+          OR user_plans.stripe_subscription_id = excluded.stripe_subscription_id
+          OR user_plans.status NOT IN ('active', 'trialing')`,
       [
         input.userId,
         input.planId,
@@ -1237,9 +1247,8 @@ export async function renewPlan(input: {
         activateStatus,
         input.periodId,
         periodEnd(input.interval),
-        now,
-        activateStatus,
         input.subscriptionId ?? null,
+        now,
         activateStatus,
       ],
     );
@@ -1282,7 +1291,10 @@ export async function attachSubscription(input: {
        current_period_end = COALESCE(excluded.current_period_end, user_plans.current_period_end),
        stripe_subscription_id = excluded.stripe_subscription_id,
        cancel_at_period_end = excluded.cancel_at_period_end,
-       updated_at = excluded.updated_at`,
+       updated_at = excluded.updated_at
+     WHERE user_plans.stripe_subscription_id IS NULL
+        OR user_plans.stripe_subscription_id = excluded.stripe_subscription_id
+        OR user_plans.status NOT IN ('active', 'trialing')`,
     [
       input.userId,
       input.planId,
@@ -1296,27 +1308,38 @@ export async function attachSubscription(input: {
   );
 }
 
-/** Mark a payment failure. Credits already granted stay. */
-export async function markPlanPastDue(userId: string): Promise<void> {
+/** Mark a payment failure on this subscription. Credits already granted stay. */
+export async function markPlanPastDue(userId: string, subscriptionId: string): Promise<void> {
+  if (!subscriptionId) return;
   const db = await getDb();
   await db.run(
-    `UPDATE user_plans SET status = 'past_due', updated_at = ? WHERE user_id = ? AND status IN ('active', 'trialing')`,
-    [new Date().toISOString(), userId],
+    `UPDATE user_plans SET status = 'past_due', updated_at = ?
+     WHERE user_id = ? AND status IN ('active', 'trialing') AND stripe_subscription_id = ?`,
+    [new Date().toISOString(), userId, subscriptionId],
   );
 }
 
 /**
  * Subscription ended. Unused subscription defenses and challenges expire.
  * Purchased, pack, and beta credits stay. The plan returns to pay as you go.
+ * A different subscription id is ignored, and its credits stay. Returns false
+ * when this subscription is not the one stored on the plan.
  */
 export async function endPaidPlan(
   userId: string,
   subscriptionId: string,
   opts?: { keepCredits?: boolean },
-): Promise<void> {
+): Promise<boolean> {
   const periodId = `end:${subscriptionId}`;
-  await withTx(undefined, async (tx) => {
+  return withTx(undefined, async (tx) => {
     await lockWallet(tx, userId);
+    const current = await tx.get<{ stripe_subscription_id: string | null }>(
+      `SELECT stripe_subscription_id FROM user_plans WHERE user_id = ?`,
+      [userId],
+    );
+    // A deleted Stripe subscription that is not the one on the plan must not
+    // expire this period's credits or replace the plan.
+    if (current && current.stripe_subscription_id !== subscriptionId) return false;
     if (!opts?.keepCredits) {
       await expireSource(tx, userId, "defense", periodId);
       await expireSource(tx, userId, "challenge", periodId);
@@ -1333,9 +1356,11 @@ export async function endPaidPlan(
          period_id = excluded.period_id,
          cancel_at_period_end = 0,
          stripe_subscription_id = COALESCE(user_plans.stripe_subscription_id, excluded.stripe_subscription_id),
-         updated_at = excluded.updated_at`,
-      [userId, periodId, subscriptionId, now],
+         updated_at = excluded.updated_at
+       WHERE user_plans.stripe_subscription_id = ?`,
+      [userId, periodId, subscriptionId, now, subscriptionId],
     );
+    return true;
   });
 }
 

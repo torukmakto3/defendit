@@ -10,7 +10,7 @@ import { randomBytes } from "crypto";
 import Stripe from "stripe";
 import { appUrl } from "./config";
 import { HttpError } from "./errors";
-import { checkoutProductName, stripeTaxEnabled } from "./stripe-config";
+import { checkoutProductName, stripeTaxEnabled, stripeTaxIdCollectionEnabled } from "./stripe-config";
 import { stripeSdk } from "./stripe-client";
 
 export interface StripeCheckoutRequest {
@@ -48,7 +48,7 @@ export function checkoutSessionParams(input: StripeCheckoutRequest): Stripe.Chec
     cancel_url: input.cancelUrl,
     metadata: { ...metadata, lookup_key: input.lookupKey },
     adaptive_pricing: { enabled: false },
-    tax_id_collection: { enabled: true },
+    tax_id_collection: { enabled: stripeTaxIdCollectionEnabled() },
     automatic_tax: { enabled: stripeTaxEnabled() },
     allow_promotion_codes: true,
     consent_collection: { terms_of_service: "required" },
@@ -61,6 +61,9 @@ export function checkoutSessionParams(input: StripeCheckoutRequest): Stripe.Chec
   };
   if (input.customerId) {
     params.customer = input.customerId;
+    // Stripe rejects a saved customer when tax id collection is on unless
+    // Checkout is allowed to write the name and address it collects.
+    params.customer_update = { name: "auto", address: "auto" };
   } else if (input.email && input.email.includes("@")) {
     params.customer_email = input.email;
     if (input.mode === "payment") params.customer_creation = "always";

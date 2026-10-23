@@ -115,7 +115,12 @@ export async function syncYearlySubscriptionWindow(input: {
          ELSE last_granted_period_index
        END,
        updated_at = ?
-     WHERE user_id = ?`,
+     WHERE user_id = ?
+       AND (
+         stripe_subscription_id IS NULL
+         OR stripe_subscription_id = ?
+         OR status NOT IN ('active', 'trialing')
+       )`,
     [
       input.subscriptionId,
       input.periodStart?.toISOString() ?? null,
@@ -126,6 +131,7 @@ export async function syncYearlySubscriptionWindow(input: {
       input.subscriptionId,
       new Date().toISOString(),
       input.userId,
+      input.subscriptionId,
     ],
   );
 }
